@@ -2,12 +2,14 @@
 """Install resh locally, preserving Rex config and rolling back invalid Lua changes."""
 import argparse
 import datetime
+import json
 import os
 from pathlib import Path
 import plistlib
 import shutil
 import subprocess
 import sys
+import time
 
 ROOT = Path(__file__).resolve().parent.parent
 MARKER = '-- resh: native project picker (managed by resh)'
@@ -42,6 +44,15 @@ def main():
     # Keep the previous app too, so upgrades are reversible.
     if destination.exists():
         shutil.copytree(destination, backup / 'resh.app')
+    executable = source / 'Contents/MacOS/resh'
+    subprocess.run([str(executable), '--quit'], check=True, stdout=subprocess.DEVNULL, timeout=5)
+    for _ in range(100):
+        status = json.loads(subprocess.check_output([str(executable), '--status'], timeout=5))
+        if not status.get('running'):
+            break
+        time.sleep(0.02)
+    else:
+        raise RuntimeError('The previous resh helper is still running; its app was not replaced.')
     destination.parent.mkdir(parents=True, exist_ok=True)
     shutil.copytree(source, destination, dirs_exist_ok=True)
     config.parent.mkdir(parents=True, exist_ok=True)
@@ -55,6 +66,7 @@ def main():
             config.write_text(text.lstrip('\n'))
         subprocess.run([str(rex), '--autostart=false', 'config', 'check', str(config)], check=True)
         subprocess.run([str(rex), '--autostart=false', 'config', 'reload'], check=True)
+        subprocess.run([str(destination / 'Contents/MacOS/resh'), '--warmup'], check=True, timeout=10)
     except Exception:
         for path, data in original.items():
             if data is None:

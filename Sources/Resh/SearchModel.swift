@@ -13,14 +13,14 @@ final class SearchModel: ObservableObject {
     @Published var error: String?
     @Published var theme: RexTheme
     @Published private(set) var results: [Candidate] = []
-    let service: ReshService
+    private(set) var service: ReshService
     let tools: Tools
     var loadingTask: Task<Void, Never>?
     var onDismiss: ((Bool) -> Void)?
     var isPresentingConfirmation = false
     private var generation = 0
     private var hasSessions = false
-    let receivedLiveSnapshot: Bool
+    private(set) var receivedLiveSnapshot: Bool
     let themeReadMilliseconds: Double
 
     init(service: ReshService, tools: Tools, sessions: [RexSession]? = nil) {
@@ -48,6 +48,27 @@ final class SearchModel: ObservableObject {
 
     func loadInitial() {
         if !hasSessions { load(refreshSessions: true) }
+    }
+
+    func prepare(service: ReshService, sessions: [RexSession]?) {
+        clear()
+        self.service = service
+        receivedLiveSnapshot = sessions != nil
+        if let sessions {
+            catalog.sessions = ReshService.candidates(from: sessions)
+            hasSessions = true
+            isLoading = false
+            updateResults()
+        }
+    }
+
+    func clear() {
+        generation += 1
+        loadingTask?.cancel(); loadingTask = nil
+        catalog = Catalog(); hasSessions = false
+        query = ""; scope = .sessions; selection = 0
+        isLoading = false; isConnecting = false; error = nil
+        updateResults()
     }
 
     func reload() { load(refreshSessions: true) }

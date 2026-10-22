@@ -7,6 +7,10 @@ import ReshCore
 enum LaunchMetrics {
     static var processStarted = ProcessInfo.processInfo.systemUptime
     static var applicationReadyMilliseconds = 0.0
+    static var stages: [String: Double] = [:]
+    static func mark(_ name: String) {
+        stages[name] = (ProcessInfo.processInfo.systemUptime - processStarted) * 1000
+    }
 }
 
 private struct Options {
@@ -19,6 +23,12 @@ private struct Options {
     var sessions: [RexSession]?
     var diagnose = false
     var help = false
+    var standby = false
+    var once = false
+    var quit = false
+    var status = false
+    var warmup = false
+    var nativeHotkeySmoke = false
 
     init(_ arguments: [String]) throws {
         var index = 0
@@ -38,6 +48,12 @@ private struct Options {
             case "--smoke-test": smokeTest = try value()
             case "--sessions-json": sessions = try JSONDecoder().decode([RexSession].self, from: Data(value().utf8))
             case "--diagnose": diagnose = true
+            case "--standby": standby = true
+            case "--once": once = true
+            case "--quit": quit = true
+            case "--status": status = true
+            case "--warmup": warmup = true
+            case "--native-hotkey-smoke": nativeHotkeySmoke = true; smokeTest = try value()
             case "--help", "-h": help = true
             default: throw ReshError("Unknown option: \(argument)")
             }
@@ -53,44 +69,110 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
     private let options: Options
     private var controller: PanelController?
     private var lockDescriptor: Int32 = -1
-    private var reopenObserver: NSObjectProtocol?
+    private var host: LauncherHost?
+    private var hotkey: RexHotkey?
+    private var hotkeyInFlight = false
+    private var nativeSmokeReport: String?
+    private var nativeHotkeyStarted: Double?
+    private var dataConnection: RexDataConnection?
 
     init(service: ReshService, tools: Tools, options: Options) {
         self.service = service; self.tools = tools; self.options = options
     }
     func applicationDidFinishLaunching(_ notification: Notification) {
         LaunchMetrics.applicationReadyMilliseconds = (ProcessInfo.processInfo.systemUptime - LaunchMetrics.processStarted) * 1000
+        LaunchMetrics.mark("applicationReady")
         trace("Application launched")
         let cache = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Caches/resh")
         do { try FileManager.default.createDirectory(at: cache, withIntermediateDirectories: true) }
         catch { fail(error); return }
         lockDescriptor = Darwin.open(cache.appendingPathComponent("panel.lock").path, O_CREAT | O_RDWR, S_IRUSR | S_IWUSR)
         guard lockDescriptor >= 0 else { fail(ReshError("Cannot create resh's panel lock.")); return }
-        if flock(lockDescriptor, LOCK_EX | LOCK_NB) != 0 {
-            trace("Another panel owns the lock (errno \(errno))")
-            DistributedNotificationCenter.default().postNotificationName(
-                Notification.Name("io.github.CruelAddict.resh.reopen"), object: nil, userInfo: nil, deliverImmediately: true)
+        if !options.once, flock(lockDescriptor, LOCK_EX | LOCK_NB) != 0 {
             NSApp.terminate(nil)
             return
         }
-        reopenObserver = DistributedNotificationCenter.default().addObserver(
-            forName: Notification.Name("io.github.CruelAddict.resh.reopen"), object: nil, queue: .main) { [weak self] _ in
-                MainActor.assumeIsolated {
-                    NSApp.activate(ignoringOtherApps: true)
-                    self?.controller?.panel.makeKeyAndOrderFront(nil)
-                }
-            }
-        installMenu()
+        LaunchMetrics.mark("panelLock")
         controller = PanelController(service: service, tools: tools, sessions: options.sessions, smokeTest: options.smokeTest)
-        trace("Showing panel")
-        controller?.show()
+        controller?.terminateOnDismiss = options.once
+        if options.once {
+            controller?.show()
+        } else {
+            do {
+                host = try LauncherHost()
+                host?.onRequest = { [weak self] request in self?.handle(request) ?? ["error": "Host is stopping."] }
+            } catch { fail(error); return }
+        }
+        installMenu()
+        if !options.once {
+            let connection = RexDataConnection(tools: tools)
+            dataConnection = connection
+            Task.detached { try? connection.warmup() }
+            hotkey = RexHotkey()
+            hotkey?.onPress = { [weak self] in self?.openFromNativeHotkey() }
+        }
+        LaunchMetrics.mark("menu")
     }
-    // Accessory panels are not normal document windows; dismissal owns termination.
+    // Hiding the accessory panel must not terminate its resident native controls.
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
     func applicationWillTerminate(_ notification: Notification) {
         trace("Application terminating")
         if lockDescriptor >= 0 { flock(lockDescriptor, LOCK_UN); close(lockDescriptor) }
-        if let reopenObserver { DistributedNotificationCenter.default().removeObserver(reopenObserver) }
+        host?.stop()
+        hotkey?.stop()
+        dataConnection?.stop()
+    }
+    private func openFromNativeHotkey() {
+        guard !hotkeyInFlight, let controller else { return }
+        if controller.panel.isVisible {
+            controller.panel.makeKeyAndOrderFront(nil)
+            return
+        }
+        hotkeyInFlight = true
+        nativeHotkeyStarted = ProcessInfo.processInfo.systemUptime
+        let smokeReport = nativeSmokeReport
+        nativeSmokeReport = nil
+        guard let appPID = NSWorkspace.shared.frontmostApplication?.processIdentifier, let dataConnection else {
+            hotkeyInFlight = false
+            return
+        }
+        Task {
+            do {
+                let snapshot = try await Task.detached { try dataConnection.snapshot(appPID: appPID) }.value
+                _ = handle(LauncherRequest(client: snapshot.client, sessions: snapshot.sessions ?? [],
+                    smokeTest: smokeReport, sentAt: nativeHotkeyStarted ?? ProcessInfo.processInfo.systemUptime))
+            } catch { controller.present(error: error) }
+            hotkeyInFlight = false
+        }
+    }
+    private func handle(_ request: LauncherRequest) -> [String: Any] {
+        guard let controller else { return ["error": "Panel is not ready."] }
+        if request.operation == "quit" {
+            DispatchQueue.main.async { NSApp.terminate(nil) }
+            return ["stopping": true]
+        }
+        if request.operation == "nativeHotkeySmoke" {
+            guard let hotkey, hotkey.isRegistered else { return ["error": "Rex must be frontmost for its scoped hotkey."] }
+            nativeSmokeReport = request.smokeTest
+            let status = hotkey.exerciseHandler()
+            return status == 0 ? ["scheduled": true] : ["error": "Native handler returned \(status)."]
+        }
+        if request.operation == "show" {
+            guard !controller.model.isConnecting, !controller.model.isPresentingConfirmation else {
+                return ["error": "A session operation is still in progress."]
+            }
+            let target = RexTarget(clientID: request.client, sessionID: request.session, server: request.server)
+            controller.prepare(service: ReshService(client: RexClient(tools: tools, target: target)), request: request)
+            controller.nativeHotkeyStartedAt = nativeHotkeyStarted
+            nativeHotkeyStarted = nil
+            controller.show()
+        }
+        return ["running": true, "pid": getpid(), "visible": controller.panel.isVisible,
+                "retainedSessions": controller.model.catalog.sessions.count,
+                "retainedFolders": controller.model.catalog.directories.count,
+                "query": controller.model.query,
+                "nativeHotkeyRegistered": hotkey?.isRegistered ?? false,
+                "nativeHotkeyStatus": hotkey?.registrationStatus ?? 0]
     }
     private func trace(_ message: String) {
         if options.smokeTest != nil { FileHandle.standardError.write(Data(("resh smoke: " + message + "\n").utf8)) }
@@ -122,6 +204,7 @@ struct ReshMain {
         LaunchMetrics.processStarted = ProcessInfo.processInfo.systemUptime
         do {
             let options = try Options(Array(CommandLine.arguments.dropFirst()))
+            LaunchMetrics.mark("options")
             if options.help {
                 print("""
                 resh — native, sesh-inspired session/folder picker for Rex
@@ -130,6 +213,7 @@ struct ReshMain {
                 resh --connect DIRECTORY [--client CLIENT_ID]
                 resh --name DIRECTORY
                 resh --diagnose
+                resh --status | --quit
 
                 ⌘1 Sessions · ⌘2 All · ⌘3 Recent folders · ⌘4 Find folders
                 ↑/↓ or Tab/Shift-Tab navigate · Return open · Esc dismiss
@@ -137,7 +221,42 @@ struct ReshMain {
                 """)
                 return
             }
+            if !options.standby, !options.once, options.connect == nil, !options.diagnose, options.name == nil {
+                var request = LauncherRequest(client: options.client, session: options.session, server: options.server,
+                    sessions: options.sessions, smokeTest: options.smokeTest)
+                if options.quit { request.operation = "quit" }
+                if options.status { request.operation = "status" }
+                if options.warmup { request.operation = "status" }
+                if options.nativeHotkeySmoke { request.operation = "nativeHotkeySmoke" }
+                if let output = options.smokeTest {
+                    let report = URL(fileURLWithPath: output + ".json")
+                    if FileManager.default.fileExists(atPath: report.path) { try FileManager.default.removeItem(at: report) }
+                }
+                var response = try LauncherIPC.send(request)
+                if response == nil, request.operation == "show" || options.warmup {
+                    try LauncherIPC.launchHost()
+                    for _ in 0..<200 {
+                        usleep(10_000)
+                        response = try LauncherIPC.send(request)
+                        if response != nil { break }
+                    }
+                    guard response != nil else { throw ReshError("The resh background panel did not start.") }
+                }
+                if options.status || options.quit {
+                    let data = try JSONSerialization.data(withJSONObject: response ?? ["running": false])
+                    FileHandle.standardOutput.write(data); print("")
+                }
+                if let output = options.smokeTest {
+                    for _ in 0..<2000 {
+                        if FileManager.default.fileExists(atPath: output + ".json") { return }
+                        usleep(10_000)
+                    }
+                    throw ReshError("Timed out waiting for the UI smoke report.")
+                }
+                return
+            }
             let tools = try Tools.discover()
+            LaunchMetrics.mark("tools")
             if let path = options.name { print(SessionNamer().name(for: path)); return }
             let target = RexTarget(clientID: options.client, sessionID: options.session, server: options.server)
             let client = RexClient(tools: tools, target: target)
@@ -166,7 +285,9 @@ struct ReshMain {
                 dispatchMain()
             }
             let app = NSApplication.shared
+            LaunchMetrics.mark("applicationCreated")
             app.setActivationPolicy(.accessory)
+            LaunchMetrics.mark("activationPolicy")
             let delegate = AppDelegate(service: service, tools: tools, options: options)
             app.delegate = delegate
             withExtendedLifetime(delegate) { app.run() }

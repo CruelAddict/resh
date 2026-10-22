@@ -6,7 +6,7 @@ private final class SelectionRow: NSTableRowView {
     var color = NSColor.selectedContentBackgroundColor
     override func drawSelection(in dirtyRect: NSRect) {
         color.setFill()
-        NSBezierPath(roundedRect: bounds, xRadius: 5, yRadius: 5).fill()
+        NSBezierPath(roundedRect: bounds, xRadius: 8, yRadius: 8).fill()
     }
 }
 
@@ -39,7 +39,8 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
         autoresizingMask = [.width, .height]
 
         searchBackground.wantsLayer = true
-        searchBackground.layer?.cornerRadius = 6
+        searchBackground.layer?.cornerRadius = 16
+        searchBackground.layer?.borderWidth = 1
         addSubview(searchBackground)
         searchField.isBordered = false
         searchField.drawsBackground = false
@@ -105,6 +106,7 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
 
         bindModel()
         apply(theme: model.theme)
+        emptyLabel.stringValue = model.emptyMessage
     }
 
     required init?(coder: NSCoder) { nil }
@@ -147,7 +149,8 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
 
     func apply(theme: RexTheme) {
         self.theme = theme
-        searchBackground.layer?.backgroundColor = theme.foreground.nsColor.withAlphaComponent(0.05).cgColor
+        searchBackground.layer?.backgroundColor = NSColor.black.withAlphaComponent(theme.isDark ? 0.12 : 0.03).cgColor
+        searchBackground.layer?.borderColor = theme.foreground.nsColor.withAlphaComponent(0.2).cgColor
         searchField.textColor = theme.foreground.nsColor
         searchField.placeholderAttributedString = NSAttributedString(string: "Search sessions and folders…",
             attributes: [.foregroundColor: theme.foreground.nsColor.withAlphaComponent(0.45), .font: NSFont.systemFont(ofSize: 14)])
@@ -155,6 +158,7 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
         updateSources()
         table.reloadData()
         selectRow(model.selection)
+        (searchField.currentEditor() as? NSTextView)?.insertionPointColor = theme.accent.nsColor
     }
 
     private func updateSources() {
@@ -168,7 +172,7 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
                 .font: NSFont.systemFont(ofSize: 10), .foregroundColor: theme.foreground.nsColor.withAlphaComponent(0.4),
             ]))
             button.attributedTitle = text
-            button.layer?.backgroundColor = (selected ? theme.accent.nsColor.withAlphaComponent(0.13) : .clear).cgColor
+            button.layer?.backgroundColor = (selected ? theme.foreground.nsColor.withAlphaComponent(0.1) : .clear).cgColor
         }
         needsLayout = true
     }
@@ -176,22 +180,32 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
     override func layout() {
         super.layout()
         let width = bounds.width
-        searchBackground.frame = NSRect(x: 8, y: 8, width: width - 16, height: 32)
+        let padding = PanelLayout.outerPadding
+        searchBackground.frame = NSRect(x: padding, y: padding, width: width - padding * 2, height: PanelLayout.searchHeight)
         searchField.frame = NSRect(x: 10, y: 7, width: width - 58, height: 19)
         progress.frame = NSRect(x: width - 45, y: 10, width: 12, height: 12)
         var x: CGFloat = 8
         for button in sourceButtons {
             let size = ceil(button.attributedTitle.size().width) + 14
-            button.frame = NSRect(x: x, y: 45, width: size, height: 22)
+            button.frame = NSRect(x: x, y: PanelLayout.sourcesTop, width: size, height: PanelLayout.sourcesHeight)
             x += size + 4
         }
         let errorHeight: CGFloat = hasError ? 44 : 0
-        errorLabel.frame = NSRect(x: 14, y: 70, width: width - 80, height: errorHeight)
-        retry.frame = NSRect(x: width - 58, y: 78, width: 44, height: 24)
-        let y = 70 + errorHeight, listHeight = PanelLayout.listHeight(resultCount: rows.count)
-        scroll.frame = NSRect(x: 6, y: y, width: width - 12, height: listHeight)
+        errorLabel.frame = NSRect(x: 14, y: PanelLayout.listTop, width: width - 80, height: errorHeight)
+        retry.frame = NSRect(x: width - 58, y: PanelLayout.listTop + 8, width: 44, height: 24)
+        let y = PanelLayout.listTop + errorHeight, listHeight = PanelLayout.listHeight(resultCount: rows.count)
+        scroll.frame = NSRect(x: padding, y: y, width: width - padding * 2, height: listHeight)
         table.tableColumns.first?.width = scroll.contentSize.width
         emptyLabel.frame = NSRect(x: 14, y: y + 5, width: width - 28, height: 19)
+    }
+
+    var edgeInsets: (top: CGFloat, bottom: CGFloat, left: CGFloat, right: CGFloat) {
+        (searchBackground.frame.minY, bounds.height - scroll.frame.maxY,
+         scroll.frame.minX, bounds.width - scroll.frame.maxX)
+    }
+    var sectionGaps: (searchToSources: CGFloat, sourcesToList: CGFloat) {
+        guard let source = sourceButtons.first else { return (-1, -1) }
+        return (source.frame.minY - searchBackground.frame.maxY, scroll.frame.minY - source.frame.maxY)
     }
 
     func numberOfRows(in tableView: NSTableView) -> Int { rows.count }
@@ -210,7 +224,7 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
         }
         cell.textField?.frame = NSRect(x: 8, y: 5, width: max(0, tableView.bounds.width - 16), height: 17)
         cell.textField?.stringValue = rows[row].displayTitle
-        cell.textField?.textColor = theme.foreground.nsColor
+        cell.textField?.textColor = tableView.selectedRow == row ? .white : theme.foreground.nsColor
         cell.setAccessibilityLabel("\(rows[row].kind == .session ? "Session" : "Folder"), \(rows[row].displayTitle)")
         return cell
     }
@@ -223,6 +237,10 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
 
     func tableViewSelectionDidChange(_ notification: Notification) {
         if !isSelecting, table.selectedRow >= 0 { model.selection = table.selectedRow }
+        for row in table.rows(in: table.visibleRect).location..<NSMaxRange(table.rows(in: table.visibleRect)) {
+            (table.view(atColumn: 0, row: row, makeIfNecessary: false) as? NSTableCellView)?.textField?.textColor =
+                row == table.selectedRow ? .white : theme.foreground.nsColor
+        }
     }
 
     private func selectRow(_ row: Int) {
@@ -235,6 +253,9 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
     }
 
     func controlTextDidChange(_ notification: Notification) { model.query = searchField.stringValue }
+    func controlTextDidBeginEditing(_ notification: Notification) {
+        (searchField.currentEditor() as? NSTextView)?.insertionPointColor = theme.accent.nsColor
+    }
 
     @objc private func sourceClicked(_ sender: NSButton) {
         model.changeScope(scopes[sender.tag])

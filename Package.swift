@@ -9,6 +9,7 @@ let package = Package(
         .target(name: "ReshCore"),
         .executableTarget(name: "Resh", dependencies: ["ReshCore"]),
         .testTarget(name: "ReshCoreTests", dependencies: ["ReshCore"]),
+        .testTarget(name: "ReshTests", dependencies: ["Resh", "ReshCore"]),
     ],
     swiftLanguageModes: [.v5]
 )

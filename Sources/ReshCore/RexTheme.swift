@@ -33,6 +33,8 @@ public struct RexTheme: Codable, Equatable, Sendable {
     public var foreground: RGBA
     public var selection: RGBA
     public var accent: RGBA
+    public var surface: RGBA?
+    public var panelBackground: RGBA { surface ?? background }
 
     public static func preferences() -> [String: Any] {
         let domain = "com.superlogical.rex" as CFString
@@ -56,7 +58,7 @@ public struct RexTheme: Codable, Equatable, Sendable {
         var theme = RexTheme(name: "System", isDark: dark, usesGlass: ["modern", "blendTheme"].contains(style),
             usesTint: ["useTheme", "blendTheme"].contains(style), background: fallbackBackground,
             foreground: fallbackForeground, selection: RGBA(hex: dark ? "#353542" : "#dcdce8")!,
-            accent: RGBA(hex: "#9eaddb")!)
+            accent: RGBA(hex: "#9eaddb")!, surface: nil)
         let customData = preferences["Workspace.customThemes"] as? Data
         let custom = customData.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [[String: Any]] } ?? []
         let bundled = builtins.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [[String: Any]] } ?? []
@@ -69,7 +71,12 @@ public struct RexTheme: Codable, Equatable, Sendable {
         theme.foreground = RGBA.parse(palette["foreground"]) ?? theme.foreground
         theme.selection = RGBA.parse(palette["selectionBackground"]) ?? theme.selection
         let ansi = palette["ansi"] as? [Any] ?? []
-        theme.accent = (ansi.count > 4 ? RGBA.parse(ansi[4]) : nil) ?? RGBA.parse(palette["cursor"]) ?? theme.accent
+        let semantic = entry["semantic"] as? [String: Any] ?? [:]
+        theme.surface = RGBA.parse(semantic["surfaceRaised"])
+        theme.accent = RGBA.parse(semantic["accentSolid"]) ?? RGBA.parse(palette["cursor"])
+            ?? (ansi.count > 4 ? RGBA.parse(ansi[4]) : nil) ?? theme.accent
+        // UI selection is not the terminal's text-selection background.
+        theme.selection = RGBA.parse(semantic["selection"]) ?? RGBA.parse(palette["cursor"]) ?? theme.selection
         return theme
     }
 }

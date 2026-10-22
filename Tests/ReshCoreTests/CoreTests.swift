@@ -110,6 +110,17 @@ struct ThemeTests {
         #expect(theme.name == "System" && theme.isDark)
         #expect(RGBA(hex: "#gggggg") == nil)
     }
+    @Test func usesRexUISemanticsNotTerminalAnsiBlue() {
+        let data = Data("""
+        [{"id":"native","source":{"background":"#161616","selectionBackground":"#3a3835",
+        "ansi":["#000000","#000000","#000000","#000000","#8aa0b4"]},
+        "semantic":{"accentSolid":"#e05d3a","selection":"#e05d3a","surfaceRaised":"#262626"}}]
+        """.utf8)
+        let theme = RexTheme.resolve(preferences: ["Workspace.darkThemeID": "native"], builtins: data, systemIsDark: true)
+        #expect(theme.accent.hex == "#e05d3a")
+        #expect(theme.selection.hex == "#e05d3a")
+        #expect(theme.panelBackground.hex == "#262626")
+    }
 }
 
 private final class FakeRunner: CommandRunning, @unchecked Sendable {
@@ -250,6 +261,13 @@ struct ServiceTests {
 
 @Suite("Compact layout and layout-independent keyboard")
 struct PanelTests {
+    @Test func physicalLauncherIsScopedToRexNotTheInputLanguage() {
+        #expect(PanelShortcut.launcherKeyCode == 1)
+        #expect(PanelShortcut.launcherIsEnabled(frontmostBundleID: "com.superlogical.rex"))
+        for app in [nil, "com.mitchellh.ghostty", "com.apple.TextEdit", "com.apple.finder"] {
+            #expect(!PanelShortcut.launcherIsEnabled(frontmostBundleID: app))
+        }
+    }
     @Test func commandSourcesUsePhysicalNumberKeys() {
         #expect(PanelShortcut.action(keyCode: 18, command: true) == .scope(.sessions))
         #expect(PanelShortcut.action(keyCode: 19, command: true) == .scope(.all))
@@ -276,10 +294,20 @@ struct PanelTests {
     @Test func heightTracksResultsWithoutAnOversizedEmptyPanel() {
         #expect(PanelLayout.width == 560)
         #expect(PanelLayout.rowHeight == 26)
-        #expect(PanelLayout.height(resultCount: 5) == 202)
-        #expect(PanelLayout.height(resultCount: 0) == 98)
-        #expect(PanelLayout.height(resultCount: 100) == 384)
-        #expect(PanelLayout.height(resultCount: 5, hasError: true) == 246)
+        #expect(PanelLayout.height(resultCount: 5) == 216)
+        #expect(PanelLayout.height(resultCount: 0) == 112)
+        #expect(PanelLayout.height(resultCount: 100) == 398)
+        #expect(PanelLayout.height(resultCount: 5, hasError: true) == 260)
+    }
+    @Test func bottomPaddingMatchesTopPaddingForEveryResultCount() {
+        for count in [0, 1, 5, 12, 100] {
+            #expect(PanelLayout.height(resultCount: count) - PanelLayout.listTop
+                - PanelLayout.listHeight(resultCount: count) == PanelLayout.outerPadding)
+        }
+    }
+    @Test func sectionsHaveTheSameBreathingRoomAsOuterEdges() {
+        #expect(PanelLayout.sourcesTop - PanelLayout.outerPadding - PanelLayout.searchHeight == 8)
+        #expect(PanelLayout.listTop - PanelLayout.sourcesTop - PanelLayout.sourcesHeight == 8)
     }
 }
 

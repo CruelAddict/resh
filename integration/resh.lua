@@ -49,4 +49,10 @@ rex.action{
   end,
 }
 
+-- Fallbacks if the native helper is not running yet. Its macOS hotkey handles
+-- physical Cmd+S on every layout while Rex is active (older Rex clients don't).
 rex.bind("cmd+[KeyS]", "resh")
+rex.bind("cmd+s", "resh")
+
+-- Prepare native controls once when Rex loads its config, not on each shortcut.
+rex.exec.start({ executable, "--warmup" }, { detach = true, stdout = false, stderr = false })

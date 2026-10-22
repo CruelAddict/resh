@@ -2,7 +2,7 @@
 
 A compact native macOS session/folder picker for **Rex**, inspired by **sesh**.
 Press **⌘S** in Rex, fuzzy-find a folder, and open it as a named Rex session.
-No tmux, fzf, Electron, Accessibility permission, or background daemon required.
+No tmux, fzf, Electron, or Accessibility permission required.
 
 ## Build & install
 
@@ -37,23 +37,48 @@ to show the selected session. This is a Rex permission, not macOS Accessibility.
 The shortcut is scoped to Rex; it intentionally shadows Save inside programs
 running in Rex. Native copy, paste, and select-all work in the search field.
 Source shortcuts also use physical key positions; ⌘A/C/V/X/Z and ⌘Backspace remain native text
-editing shortcuts. The picker exits when closed. Repeated launches bring the existing panel forward.
+editing shortcuts. The resident helper registers physical Cmd+S with macOS only
+while Rex is frontmost. It does not rely on Rex's character/keyboard-layout
+matching (or on a Unicode binding, which older Rex parsers reject). Outside Rex
+the hotkey is unregistered, so other apps retain their normal Save shortcut.
+This uses Carbon's hotkey API, not an Accessibility event tap.
+The same physical-key/typed-text distinction is used in
+[Ghostty's event handling](https://github.com/ghostty-org/ghostty/blob/f54340ad77814fe319d136e5e915d6a48de8dd23/macos/Sources/Ghostty/NSEvent%2BExtension.swift#L18).
+It is one keycode for every language, not a table of keyboard layouts.
 
 ## Compact UI and fresh data
 
 There is no title/header, theme-name badge, footer, result-kind badge, or result
 icon. A session occupies one 26-point row containing only its name; folders show
 their shortened path on one line. The panel sizes to its results (up to 12 rows),
-instead of reserving a large empty area.
+instead of reserving a large empty area. The outer padding is 8 points on all
+sides. Search uses a capsule-shaped field, and selected rows use Rex's UI accent.
+Search → sources and sources → results also have 8-point gaps, including when
+filtering leaves a single row. This follows the grouping/alignment principles in
+[Apple's layout guidance](https://developer.apple.com/design/human-interface-guidelines/layout),
+not a claim that Apple mandates one spacing value for every interface.
 
-The Rex Lua action reads `session.list` directly and passes that **fresh snapshot**
-to the helper, so sessions exist before the first paint. No session cache or
-resident helper is needed. There are no per-session/tab/process queries on the
+The native shortcut reads `client.list` and `session.list` over one persistent,
+supported `rex do` connection (`resh-data.lua`). Each opening reads a **fresh snapshot**;
+there are no new CLI processes on this path. The command-palette Lua action can
+also pass a fresh snapshot to the helper. There is no session cache.
+There are no per-session/tab/process queries on the
 list path. zoxide and filesystem search run only when their source is requested;
 switching back to Sessions does not wait for them. The UI uses AppKit controls.
-This removes late session-list loading, not the cost of cold-starting a macOS
-application. The smoke report measures that separately as `panelReadyMs`; no
-resident process or persisted session cache is used to hide it.
+
+The native helper now stays resident: Rex's config warms it once, and each shortcut
+reuses its data connection and AppKit controls. Command-palette invocations use a
+small Foundation-only IPC sender rather than relaunching AppKit. The same
+window, text editor, and glass view are reused. Each invocation replaces its data
+with a fresh server snapshot; hiding the panel clears sessions, folders and query.
+There is no saved session-list cache and no login agent. `resh --quit` stops the
+helper; reloading Rex's config or running `resh --warmup` starts it again.
+`resh --status` reports its state and native hotkey registration.
+
+The non-activating panel accepts keyboard input without deactivating or dimming Rex.
+It opens on the display containing the pointer. Opening never enumerates other
+apps' windows: that WindowServer call can stall for hundreds of milliseconds.
+Smoke reports measure `requestToPanelMs` separately from one-time application startup.
 
 ## Naming and reuse
 
@@ -77,8 +102,9 @@ There is no presets source because there are no configured sesh presets to show.
 
 Each launch reads Rex's selected light/dark theme and interface style.
 Built-in palettes are read from Rex's bundled `themes.json`; imported/custom
-palettes come from its preferences. Colors and style refresh while the panel is
-open. Glass uses native `NSGlassEffectView` on macOS 26+, with an
+palettes come from its preferences. UI colors use Rex's bundled semantic tokens,
+not the terminal's ANSI blue or text-selection color. Colors and style refresh while
+the panel is open. Glass uses native `NSGlassEffectView` on macOS 26+, with an
 `NSVisualEffectView` fallback on macOS 15. Classic or Reduce Transparency uses
 a solid theme background. This is a matching companion, not a copy of Rex's
 private material renderer. If Rex changes its internal formats, resh falls back
@@ -92,12 +118,20 @@ dist/resh.app/Contents/MacOS/resh --diagnose
 dist/resh.app/Contents/MacOS/resh --name ~/personal/resh
 dist/resh.app/Contents/MacOS/resh --connect ~/personal/resh --client client:…
 dist/resh.app/Contents/MacOS/resh --smoke-test "$PWD/.build/ui-smoke"
+python3 scripts/smoke.py
 ```
 
 `--diagnose`, `--name`, and the UI smoke test do not create sessions. The smoke
 test saves a JSON report and a view snapshot, including startup timing,
 layout-independent input routing, and actual native text-field input; it does not need Accessibility or
-screen-recording permissions. `--connect` is deliberately state-changing.
+screen-recording permissions. `scripts/smoke.py` verifies reuse of one process,
+new snapshots on each opening, native editing, equal padding, and data clearing
+on dismissal. Its synthetic session rows exist only in the UI, not in Rex.
+`--native-hotkey-smoke PATH` exercises the Carbon callback and full live data path
+while Rex is frontmost; it does not synthesize a physical OS keypress or require
+Accessibility. Real keyboard testing is a separate check.
+`--connect` is deliberately state-changing. `--once --smoke-test PATH` runs an
+isolated, short-lived UI test instead of using the resident helper.
 
 Override CLI discovery with `RESH_REX_BIN`; override the Rex application bundle
 with `RESH_REX_APP`. Creation is serialized by a file lock and identities are
@@ -108,7 +142,7 @@ existing terminal or takes a client ID from another pane's environment.
 
 ### Uninstall
 
-Remove the marked resh `dofile(...)` line from Rex's `init.lua`, remove
+Run `~/Applications/resh.app/Contents/MacOS/resh --quit`. Remove the marked resh `dofile(...)` line from Rex's `init.lua`, remove
 `resh.lua` beside it, and run `rex config reload`. Then remove
 `~/Applications/resh.app`. The backup directory contains previous configuration
 and app versions. Existing Rex sessions remain untouched.
