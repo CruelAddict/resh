@@ -230,7 +230,7 @@ struct ReshMain {
                 Config: ~/.config/resh/config.toml (or $RESH_CONFIG / --config FILE)
 
                 ⌘1 Sessions · ⌘2 All · ⌘3 Recent folders · ⌘4 Find folders
-                ↑/↓ or Tab/Shift-Tab navigate · Return open · Esc dismiss
+                ↑/↓ or Tab/Shift-Tab navigate · Return open · Esc or Ctrl+[ dismiss
                 ⌘⇧Backspace close a selected session (asks for confirmation)
                 """)
                 return

@@ -115,7 +115,8 @@ struct PanelTests {
         await controller.model.loadingTask?.value
         #expect(controller.model.scope == .all && controller.model.results.map(\.title) == ["Fresh session"])
         try await stage("The same panel reopens with a fresh snapshot; Cmd+2 switches sources")
-        try press("escape")
+        try press("ctrl+[", characters: "\u{1b}")
+        #expect(!controller.panel.isVisible && controller.model.results.isEmpty)
         if recording != nil {
             let report: [String: Any] = ["input": "synthetic AppKit events", "sessionData": "synthetic", "stages": stages]
             try JSONSerialization.data(withJSONObject: report).write(to: root.appendingPathComponent("report.json"))

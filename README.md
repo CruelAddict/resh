@@ -31,7 +31,7 @@ to show the selected session. This is a Rex permission, not macOS Accessibility.
 | ⌘4 | `fd -H -d 2 -t d -E .Trash . ~` |
 | ↑ / ↓, Tab / Shift-Tab, ⌃P / ⌃N | Select a result |
 | Return / click | Switch or create |
-| Esc / click outside | Dismiss without creating a session |
+| Esc / Ctrl+[ / click outside | Dismiss without creating a session |
 | ⌘⇧Backspace | Close a selected session, **after confirmation** |
 
 The shortcut is scoped to Rex; it intentionally shadows Save inside programs
