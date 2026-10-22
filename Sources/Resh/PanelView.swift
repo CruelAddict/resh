@@ -1,144 +1,249 @@
 import AppKit
+import Combine
 import ReshCore
-import SwiftUI
 
-struct PanelView: View {
-    @ObservedObject var model: SearchModel
-    @FocusState private var searchFocused: Bool
+private final class SelectionRow: NSTableRowView {
+    var color = NSColor.selectedContentBackgroundColor
+    override func drawSelection(in dirtyRect: NSRect) {
+        color.setFill()
+        NSBezierPath(roundedRect: bounds, xRadius: 5, yRadius: 5).fill()
+    }
+}
 
-    private var foreground: Color { model.theme.foreground.color }
-    private var accent: Color { model.theme.accent.color }
+/// AppKit controls keep the picker compact and avoid cold-start SwiftUI layout work.
+@MainActor
+final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTextFieldDelegate {
+    let searchField = NSTextField()
+    private let model: SearchModel
+    private let searchBackground = NSView()
+    private let progress = NSProgressIndicator()
+    private let table = NSTableView()
+    private let scroll = NSScrollView()
+    private let emptyLabel = NSTextField(labelWithString: "")
+    private let errorLabel = NSTextField(wrappingLabelWithString: "")
+    private let retry = NSButton(title: "Retry", target: nil, action: nil)
+    private let scopes: [SearchScope] = [.sessions, .all, .directories, .find]
+    private var sourceButtons: [NSButton] = []
+    private var rows: [Candidate] = []
+    private var theme: RexTheme
+    private var activeScope: SearchScope = .sessions
+    private var hasError = false
+    private var isSelecting = false
+    private var subscriptions = Set<AnyCancellable>()
 
-    var body: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 10) {
-                Image(systemName: "terminal.fill")
-                    .font(.system(size: 19, weight: .medium)).foregroundStyle(accent)
-                Text("resh").font(.system(size: 20, weight: .semibold, design: .rounded))
-                Text("Projects & sessions").font(.system(size: 12)).foregroundStyle(foreground.opacity(0.5))
-                Spacer()
-                Text(model.theme.name).font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(foreground.opacity(0.4)).lineLimit(1)
-                keycap("esc")
-            }
-            .padding(.horizontal, 24).padding(.top, 21).padding(.bottom, 17)
+    override var isFlipped: Bool { true }
 
-            HStack(spacing: 12) {
-                Image(systemName: "magnifyingglass").font(.system(size: 20, weight: .regular))
-                    .foregroundStyle(accent.opacity(0.8))
-                TextField("Find a project, folder, or session…", text: $model.query)
-                    .textFieldStyle(.plain).font(.system(size: 21, weight: .regular))
-                    .focused($searchFocused).accessibilityIdentifier("resh.search")
-                    .onChange(of: model.query) { _, _ in model.selection = 0 }
-                if model.isLoading || model.isConnecting { ProgressView().controlSize(.small) }
-                else if !model.query.isEmpty {
-                    Button { model.query = ""; searchFocused = true } label: {
-                        Image(systemName: "xmark.circle.fill").foregroundStyle(foreground.opacity(0.4))
-                    }.buttonStyle(.plain).accessibilityLabel("Clear search")
-                }
-            }
-            .padding(16)
-            .background(foreground.opacity(0.045), in: RoundedRectangle(cornerRadius: 13))
-            .overlay(RoundedRectangle(cornerRadius: 13).strokeBorder(foreground.opacity(0.08)))
-            .padding(.horizontal, 20)
+    init(model: SearchModel) {
+        self.model = model; self.theme = model.theme
+        super.init(frame: NSRect(x: 0, y: 0, width: PanelLayout.width, height: model.panelHeight))
+        autoresizingMask = [.width, .height]
 
-            HStack(spacing: 5) {
-                ForEach([SearchScope.sessions, .all, .directories, .find], id: \.self) { scope in
-                    Button { model.changeScope(scope); searchFocused = true } label: {
-                        HStack(spacing: 6) {
-                            Text(scope.title).font(.system(size: 11, weight: model.scope == scope ? .semibold : .medium))
-                            Text(scope.shortcut).font(.system(size: 10)).opacity(0.5)
-                        }
-                        .padding(.horizontal, 10).padding(.vertical, 7)
-                        .background(model.scope == scope ? accent.opacity(0.14) : .clear, in: Capsule())
-                        .foregroundStyle(model.scope == scope ? accent : foreground.opacity(0.5))
-                        .contentShape(Capsule())
-                    }.buttonStyle(.plain).accessibilityIdentifier("resh.scope.\(scope.rawValue)")
-                }
-                Spacer(minLength: 0)
-            }
-            .padding(.horizontal, 20).padding(.vertical, 12)
+        searchBackground.wantsLayer = true
+        searchBackground.layer?.cornerRadius = 6
+        addSubview(searchBackground)
+        searchField.isBordered = false
+        searchField.drawsBackground = false
+        searchField.focusRingType = .none
+        searchField.font = .systemFont(ofSize: 14)
+        searchField.placeholderString = "Search sessions and folders…"
+        searchField.delegate = self
+        searchField.setAccessibilityIdentifier("resh.search")
+        searchBackground.addSubview(searchField)
+        progress.style = .spinning
+        progress.controlSize = .mini
+        progress.isIndeterminate = true
+        progress.isDisplayedWhenStopped = false
+        searchBackground.addSubview(progress)
 
-            Rectangle().fill(foreground.opacity(0.08)).frame(height: 1).padding(.horizontal, 20)
-
-            ScrollViewReader { scroll in
-                ScrollView {
-                    LazyVStack(spacing: 3) {
-                        if model.results.isEmpty && !model.isLoading {
-                            VStack(spacing: 10) {
-                                Image(systemName: "folder.badge.questionmark").font(.system(size: 30, weight: .light))
-                                Text(model.query.isEmpty ? "No \(model.scope.title.lowercased()) yet" : "No matching projects")
-                                    .font(.system(size: 14, weight: .medium))
-                                Text("⌃X for recent folders · ⌃F to search your home folder")
-                                    .font(.system(size: 11)).opacity(0.6)
-                            }.foregroundStyle(foreground.opacity(0.5)).frame(maxWidth: .infinity).padding(.top, 55)
-                        }
-                        ForEach(Array(model.results.enumerated()), id: \.element.id) { index, candidate in
-                            row(candidate, selected: model.selection == index)
-                                .id(candidate.id)
-                                .onTapGesture { model.selection = index; model.openSelection() }
-                        }
-                    }.padding(.horizontal, 12).padding(.vertical, 9)
-                }
-                .onChange(of: model.selection) { _, index in
-                    if model.results.indices.contains(index) { scroll.scrollTo(model.results[index].id) }
-                }
-            }
-
-            Rectangle().fill(foreground.opacity(0.08)).frame(height: 1)
-            HStack(spacing: 7) {
-                if model.error != nil { Image(systemName: "exclamationmark.circle").foregroundStyle(.orange) }
-                Text(model.status).font(.system(size: 11)).lineLimit(3)
-                    .foregroundStyle(model.error == nil ? foreground.opacity(0.55) : Color.orange)
-                    .textSelection(.enabled)
-                Spacer(minLength: 12)
-                if model.error == nil {
-                    Text("\(model.results.count)").font(.system(size: 10, design: .monospaced))
-                        .foregroundStyle(foreground.opacity(0.35))
-                    keycap("↑↓"); Text("navigate").font(.system(size: 10)).foregroundStyle(foreground.opacity(0.4))
-                    keycap("↵")
-                } else {
-                    Button("Retry") { model.reload() }.buttonStyle(.plain).font(.system(size: 11, weight: .medium))
-                }
-            }.padding(.horizontal, 22).padding(.vertical, 14)
+        for (index, scope) in scopes.enumerated() {
+            let button = NSButton(title: "", target: self, action: #selector(sourceClicked(_:)))
+            button.tag = index
+            button.isBordered = false
+            button.focusRingType = .none
+            button.wantsLayer = true
+            button.layer?.cornerRadius = 5
+            button.setAccessibilityIdentifier("resh.scope.\(scope.rawValue)")
+            sourceButtons.append(button)
+            addSubview(button)
         }
-        .foregroundStyle(foreground)
-        .frame(width: 740, height: 520)
-        .preferredColorScheme(model.theme.isDark ? .dark : .light)
-        .onAppear { searchFocused = true }
+
+        let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("entry"))
+        table.addTableColumn(column)
+        table.headerView = nil
+        table.style = .plain
+        table.rowHeight = PanelLayout.rowHeight
+        table.intercellSpacing = .zero
+        table.backgroundColor = .clear
+        table.focusRingType = .none
+        table.dataSource = self
+        table.delegate = self
+        table.target = self
+        table.action = #selector(rowClicked)
+        table.allowsEmptySelection = true
+        table.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle
+        scroll.drawsBackground = false
+        scroll.hasVerticalScroller = true
+        scroll.autohidesScrollers = true
+        scroll.scrollerStyle = .overlay
+        scroll.borderType = .noBorder
+        scroll.documentView = table
+        addSubview(scroll)
+
+        emptyLabel.font = .systemFont(ofSize: 12)
+        emptyLabel.lineBreakMode = .byTruncatingTail
+        addSubview(emptyLabel)
+        errorLabel.font = .systemFont(ofSize: 11)
+        errorLabel.textColor = .systemOrange
+        errorLabel.maximumNumberOfLines = 2
+        errorLabel.isSelectable = true
+        addSubview(errorLabel)
+        retry.isBordered = false
+        retry.font = .systemFont(ofSize: 11)
+        retry.target = self
+        retry.action = #selector(retryClicked)
+        addSubview(retry)
+
+        bindModel()
+        apply(theme: model.theme)
     }
 
-    private func row(_ candidate: Candidate, selected: Bool) -> some View {
-        HStack(spacing: 13) {
-            Image(systemName: candidate.kind == .session ? "rectangle.stack.fill" : "folder.fill")
-                .font(.system(size: 18, weight: .regular))
-                .foregroundStyle(selected ? accent : foreground.opacity(0.45))
-                .frame(width: 28, height: 28)
-            VStack(alignment: .leading, spacing: 4) {
-                Text(candidate.title).font(.system(size: 14, weight: selected ? .semibold : .medium)).lineLimit(1)
-                Text(candidate.subtitle).font(.system(size: 11, design: .monospaced))
-                    .foregroundStyle(foreground.opacity(selected ? 0.65 : 0.4)).lineLimit(1).truncationMode(.middle)
+    required init?(coder: NSCoder) { nil }
+
+    private func bindModel() {
+        model.$results.sink { [weak self] entries in
+            guard let self else { return }
+            rows = entries
+            table.reloadData()
+            selectRow(model.selection)
+            emptyLabel.isHidden = !entries.isEmpty
+            needsLayout = true
+        }.store(in: &subscriptions)
+        model.$selection.sink { [weak self] in self?.selectRow($0) }.store(in: &subscriptions)
+        model.$scope.sink { [weak self] scope in
+            self?.activeScope = scope
+            self?.updateSources()
+        }.store(in: &subscriptions)
+        model.$query.sink { [weak self] query in
+            if self?.searchField.stringValue != query { self?.searchField.stringValue = query }
+        }.store(in: &subscriptions)
+        model.$error.sink { [weak self] error in
+            self?.hasError = error != nil
+            self?.errorLabel.stringValue = error ?? ""
+            self?.errorLabel.isHidden = error == nil
+            self?.retry.isHidden = error == nil
+            self?.needsLayout = true
+        }.store(in: &subscriptions)
+        Publishers.CombineLatest(model.$isLoading, model.$isConnecting).sink { [weak self] loading, connecting in
+            if loading || connecting { self?.progress.startAnimation(nil) }
+            else { self?.progress.stopAnimation(nil) }
+        }.store(in: &subscriptions)
+        model.objectWillChange.sink { [weak self] in
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                emptyLabel.stringValue = model.emptyMessage
             }
-            Spacer()
-            Text(candidate.kind == .session ? "SESSION" : "FOLDER")
-                .font(.system(size: 8, weight: .semibold, design: .monospaced)).tracking(1)
-                .foregroundStyle(foreground.opacity(0.3))
-            Image(systemName: "return").font(.system(size: 11, weight: .medium))
-                .foregroundStyle(accent).opacity(selected ? 1 : 0).frame(width: 18)
-        }
-        .padding(.horizontal, 12).padding(.vertical, 10)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(selected ? model.theme.selection.color.opacity(0.65) : .clear,
-                    in: RoundedRectangle(cornerRadius: 10))
-        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(selected ? accent.opacity(0.2) : .clear))
-        .contentShape(Rectangle())
-        .accessibilityElement(children: .combine)
-        .accessibilityAddTraits(selected ? [.isSelected] : [])
+        }.store(in: &subscriptions)
     }
 
-    private func keycap(_ text: String) -> some View {
-        Text(text).font(.system(size: 10, weight: .medium, design: .monospaced))
-            .foregroundStyle(foreground.opacity(0.45)).padding(.horizontal, 5).padding(.vertical, 3)
-            .background(foreground.opacity(0.055), in: RoundedRectangle(cornerRadius: 4))
+    func apply(theme: RexTheme) {
+        self.theme = theme
+        searchBackground.layer?.backgroundColor = theme.foreground.nsColor.withAlphaComponent(0.05).cgColor
+        searchField.textColor = theme.foreground.nsColor
+        searchField.placeholderAttributedString = NSAttributedString(string: "Search sessions and folders…",
+            attributes: [.foregroundColor: theme.foreground.nsColor.withAlphaComponent(0.45), .font: NSFont.systemFont(ofSize: 14)])
+        emptyLabel.textColor = theme.foreground.nsColor.withAlphaComponent(0.5)
+        updateSources()
+        table.reloadData()
+        selectRow(model.selection)
     }
+
+    private func updateSources() {
+        for (index, button) in sourceButtons.enumerated() {
+            let scope = scopes[index], selected = scope == activeScope
+            let text = NSMutableAttributedString(string: scope.title, attributes: [
+                .font: NSFont.systemFont(ofSize: 11, weight: selected ? .medium : .regular),
+                .foregroundColor: theme.foreground.nsColor.withAlphaComponent(selected ? 1 : 0.55),
+            ])
+            text.append(NSAttributedString(string: "  " + scope.shortcut, attributes: [
+                .font: NSFont.systemFont(ofSize: 10), .foregroundColor: theme.foreground.nsColor.withAlphaComponent(0.4),
+            ]))
+            button.attributedTitle = text
+            button.layer?.backgroundColor = (selected ? theme.accent.nsColor.withAlphaComponent(0.13) : .clear).cgColor
+        }
+        needsLayout = true
+    }
+
+    override func layout() {
+        super.layout()
+        let width = bounds.width
+        searchBackground.frame = NSRect(x: 8, y: 8, width: width - 16, height: 32)
+        searchField.frame = NSRect(x: 10, y: 7, width: width - 58, height: 19)
+        progress.frame = NSRect(x: width - 45, y: 10, width: 12, height: 12)
+        var x: CGFloat = 8
+        for button in sourceButtons {
+            let size = ceil(button.attributedTitle.size().width) + 14
+            button.frame = NSRect(x: x, y: 45, width: size, height: 22)
+            x += size + 4
+        }
+        let errorHeight: CGFloat = hasError ? 44 : 0
+        errorLabel.frame = NSRect(x: 14, y: 70, width: width - 80, height: errorHeight)
+        retry.frame = NSRect(x: width - 58, y: 78, width: 44, height: 24)
+        let y = 70 + errorHeight, listHeight = PanelLayout.listHeight(resultCount: rows.count)
+        scroll.frame = NSRect(x: 6, y: y, width: width - 12, height: listHeight)
+        table.tableColumns.first?.width = scroll.contentSize.width
+        emptyLabel.frame = NSRect(x: 14, y: y + 5, width: width - 28, height: 19)
+    }
+
+    func numberOfRows(in tableView: NSTableView) -> Int { rows.count }
+
+    func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
+        let identifier = NSUserInterfaceItemIdentifier("entry.cell")
+        let cell = tableView.makeView(withIdentifier: identifier, owner: self) as? NSTableCellView ?? NSTableCellView()
+        cell.identifier = identifier
+        if cell.textField == nil {
+            let label = NSTextField(labelWithString: "")
+            label.font = .systemFont(ofSize: 13)
+            label.lineBreakMode = .byTruncatingMiddle
+            label.autoresizingMask = [.width]
+            cell.textField = label
+            cell.addSubview(label)
+        }
+        cell.textField?.frame = NSRect(x: 8, y: 5, width: max(0, tableView.bounds.width - 16), height: 17)
+        cell.textField?.stringValue = rows[row].displayTitle
+        cell.textField?.textColor = theme.foreground.nsColor
+        cell.setAccessibilityLabel("\(rows[row].kind == .session ? "Session" : "Folder"), \(rows[row].displayTitle)")
+        return cell
+    }
+
+    func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
+        let view = SelectionRow()
+        view.color = theme.selection.nsColor.withAlphaComponent(0.75)
+        return view
+    }
+
+    func tableViewSelectionDidChange(_ notification: Notification) {
+        if !isSelecting, table.selectedRow >= 0 { model.selection = table.selectedRow }
+    }
+
+    private func selectRow(_ row: Int) {
+        isSelecting = true
+        defer { isSelecting = false }
+        if rows.indices.contains(row) {
+            table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+            table.scrollRowToVisible(row)
+        } else { table.deselectAll(nil) }
+    }
+
+    func controlTextDidChange(_ notification: Notification) { model.query = searchField.stringValue }
+
+    @objc private func sourceClicked(_ sender: NSButton) {
+        model.changeScope(scopes[sender.tag])
+        window?.makeFirstResponder(searchField)
+    }
+    @objc private func rowClicked() {
+        guard table.clickedRow >= 0 else { return }
+        model.selection = table.clickedRow
+        model.openSelection()
+    }
+    @objc private func retryClicked() { model.reload() }
 }

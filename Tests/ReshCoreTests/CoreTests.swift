@@ -118,8 +118,10 @@ private final class FakeRunner: CommandRunning, @unchecked Sendable {
     var creations = 0
     var selections: [String] = []
     var rejectSelection = false
+    var calls: [(String, [String])] = []
     func run(_ executable: String, _ arguments: [String], timeout: TimeInterval) throws -> CommandResult {
         lock.lock(); defer { lock.unlock() }
+        calls.append((executable, arguments))
         func json(_ value: Any) throws -> CommandResult {
             CommandResult(stdout: try JSONSerialization.data(withJSONObject: value))
         }
@@ -192,12 +194,13 @@ struct ServiceTests {
         #expect(id != "session:other")
         #expect(runner.sessions.last?.label == "work/api")
     }
-    @Test func matchingExistingSessionIsAdopted() async throws {
+    @Test func aTabsDirectoryDoesNotIdentifyAnUnregisteredSession() async throws {
         let temporary = try TemporaryDirectory(), runner = FakeRunner()
         let folder = try temporary.folder("project")
         runner.sessions = [("session:existing", "project", folder)]
-        #expect(try await service(runner, temporary).connect(path: folder) == "session:existing")
-        #expect(runner.creations == 0)
+        #expect(try await service(runner, temporary).connect(path: folder) != "session:existing")
+        #expect(runner.creations == 1)
+        #expect(!runner.calls.contains { $0.1.contains("inspect") || $0.1.contains("process") })
     }
     @Test func unsafeCharactersStayData() async throws {
         let temporary = try TemporaryDirectory(), runner = FakeRunner()
@@ -226,6 +229,57 @@ struct ServiceTests {
         #expect(directories.count == 1)
         let session = Candidate(id: "s1", kind: .session, title: "project", path: folder, sessionID: "s1")
         #expect(Catalog(sessions: [session], directories: directories).entries(for: .all).count == 1)
+    }
+    @Test func listingOneHundredSessionsUsesOneRequestAndNoTabInspection() async throws {
+        let temporary = try TemporaryDirectory(), runner = FakeRunner()
+        runner.sessions = (0..<100).map { ("session:\($0)", "session-\($0)", "/irrelevant/tab/path") }
+        let sessions = try await service(runner, temporary).sessionCandidates()
+        #expect(sessions.count == 100)
+        #expect(runner.calls.count == 1)
+        #expect(runner.calls.first?.1.contains("ls") == true)
+        #expect(sessions.allSatisfy { $0.path == nil && $0.subtitle.isEmpty })
+    }
+    @Test func liveSnapshotMappingPerformsNoIO() {
+        let sessions = [RexSession(sessionID: "session:live", label: "live")]
+        let rows = ReshService.candidates(from: sessions)
+        #expect(rows.map(\.title) == ["live"])
+        #expect(rows[0].path == nil)
+        #expect(ReshService.candidates(from: []).isEmpty)
+    }
+}
+
+@Suite("Compact layout and layout-independent keyboard")
+struct PanelTests {
+    @Test func commandSourcesUsePhysicalNumberKeys() {
+        #expect(PanelShortcut.action(keyCode: 18, command: true) == .scope(.sessions))
+        #expect(PanelShortcut.action(keyCode: 19, command: true) == .scope(.all))
+        #expect(PanelShortcut.action(keyCode: 20, command: true) == .scope(.directories))
+        #expect(PanelShortcut.action(keyCode: 21, command: true) == .scope(.find))
+        #expect(PanelShortcut.action(keyCode: 1, command: true) == .ignore)
+        #expect(PanelShortcut.action(keyCode: 51, command: true, shift: true) == .delete)
+        #expect(PanelShortcut.action(keyCode: 18, command: true, option: true) == nil)
+    }
+    @Test func nativeTextEditingIsNotStolen() {
+        for key: UInt16 in [0, 8, 9, 7, 6, 51] { // A, C, V, X, Z, Backspace
+            #expect(PanelShortcut.action(keyCode: key, command: true) == nil)
+        }
+        #expect(PanelShortcut.action(keyCode: 0, control: true) == nil)
+        #expect(PanelShortcut.action(keyCode: 48, shift: true) == .move(-1))
+        #expect(PanelShortcut.action(keyCode: 53) == .dismiss)
+    }
+    @Test func sessionRowsNeverDisplayOrSearchTabPaths() {
+        let session = Candidate(id: "s", kind: .session, title: "session-name", path: "/wrong/tab/folder", sessionID: "s")
+        #expect(session.displayTitle == "session-name")
+        #expect(session.subtitle.isEmpty)
+        #expect(session.searchText == "session-name")
+    }
+    @Test func heightTracksResultsWithoutAnOversizedEmptyPanel() {
+        #expect(PanelLayout.width == 560)
+        #expect(PanelLayout.rowHeight == 26)
+        #expect(PanelLayout.height(resultCount: 5) == 202)
+        #expect(PanelLayout.height(resultCount: 0) == 98)
+        #expect(PanelLayout.height(resultCount: 100) == 384)
+        #expect(PanelLayout.height(resultCount: 5, hasError: true) == 246)
     }
 }
 

@@ -11,7 +11,7 @@ public enum SearchScope: String, CaseIterable, Sendable {
         }
     }
     public var shortcut: String {
-        switch self { case .sessions: return "⌃T"; case .all: return "⌃A"; case .directories: return "⌃X"; case .find: return "⌃F" }
+        switch self { case .sessions: return "⌘1"; case .all: return "⌘2"; case .directories: return "⌘3"; case .find: return "⌘4" }
     }
 }
 
@@ -26,9 +26,10 @@ public struct Candidate: Identifiable, Hashable, Codable, Sendable {
     public init(id: String, kind: Kind, title: String, path: String? = nil, sessionID: String? = nil) {
         self.id = id; self.kind = kind; self.title = title; self.path = path; self.sessionID = sessionID
     }
-    public var subtitle: String { path.map(PathIdentity.shortenHome) ?? "Running Rex session" }
+    public var displayTitle: String { kind == .directory ? path.map(PathIdentity.shortenHome) ?? title : title }
+    public var subtitle: String { kind == .directory ? path.map(PathIdentity.shortenHome) ?? "" : "" }
     // Never match the common /Users/<name> prefix of every project.
-    public var searchText: String { path.map(PathIdentity.shortenHome) ?? title }
+    public var searchText: String { kind == .session ? title : path.map(PathIdentity.shortenHome) ?? title }
 }
 
 public struct Catalog: Sendable {

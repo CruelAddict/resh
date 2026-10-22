@@ -3,7 +3,7 @@ local executable = os.getenv("HOME") .. "/Applications/resh.app/Contents/MacOS/r
 
 rex.action{
   name = "resh",
-  title = "resh: Projects & Sessions",
+  title = "resh: Sessions & Folders",
   description = "Find a folder or switch to a named Rex session in a native macOS panel.",
   category = "Session",
   keywords = "project directory folder fuzzy sesh resh session switch create",
@@ -16,6 +16,18 @@ rex.action{
     if ctx.session_id then
       table.insert(argv, "--session")
       table.insert(argv, ctx.session_id)
+    end
+    -- Fresh server-side data, not a cache: first paint needs no CLI subprocesses.
+    local listed, list_err = rex.call("session.list", {})
+    if not listed then error("Could not list Rex sessions: " .. tostring(list_err)) end
+    local snapshot, encode_err
+    if not listed.sessions or #listed.sessions == 0 then snapshot = "[]"
+    else snapshot, encode_err = rex.json.encode(listed.sessions) end
+    if not snapshot then error(tostring(encode_err)) end
+    -- Keep ample room in macOS's argv limit; the app falls back to one list call.
+    if #snapshot < 65536 then
+      table.insert(argv, "--sessions-json")
+      table.insert(argv, snapshot)
     end
     -- smoke_test is only used by the end-to-end installer verification.
     local smoke_test = args.smoke_test
@@ -37,4 +49,4 @@ rex.action{
   end,
 }
 
-rex.bind("cmd+s", "resh")
+rex.bind("cmd+[KeyS]", "resh")

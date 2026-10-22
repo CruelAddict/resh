@@ -3,6 +3,12 @@ import Darwin
 import Foundation
 import ReshCore
 
+@MainActor
+enum LaunchMetrics {
+    static var processStarted = ProcessInfo.processInfo.systemUptime
+    static var applicationReadyMilliseconds = 0.0
+}
+
 private struct Options {
     var client: String?
     var session: String?
@@ -10,6 +16,7 @@ private struct Options {
     var connect: String?
     var name: String?
     var smokeTest: String?
+    var sessions: [RexSession]?
     var diagnose = false
     var help = false
 
@@ -29,6 +36,7 @@ private struct Options {
             case "--connect": connect = try value()
             case "--name": name = try value()
             case "--smoke-test": smokeTest = try value()
+            case "--sessions-json": sessions = try JSONDecoder().decode([RexSession].self, from: Data(value().utf8))
             case "--diagnose": diagnose = true
             case "--help", "-h": help = true
             default: throw ReshError("Unknown option: \(argument)")
@@ -51,6 +59,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         self.service = service; self.tools = tools; self.options = options
     }
     func applicationDidFinishLaunching(_ notification: Notification) {
+        LaunchMetrics.applicationReadyMilliseconds = (ProcessInfo.processInfo.systemUptime - LaunchMetrics.processStarted) * 1000
         trace("Application launched")
         let cache = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Caches/resh")
         do { try FileManager.default.createDirectory(at: cache, withIntermediateDirectories: true) }
@@ -72,7 +81,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
         installMenu()
-        controller = PanelController(service: service, tools: tools, smokeTest: options.smokeTest)
+        controller = PanelController(service: service, tools: tools, sessions: options.sessions, smokeTest: options.smokeTest)
         trace("Showing panel")
         controller?.show()
     }
@@ -110,20 +119,21 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
 struct ReshMain {
     @MainActor
     static func main() {
+        LaunchMetrics.processStarted = ProcessInfo.processInfo.systemUptime
         do {
             let options = try Options(Array(CommandLine.arguments.dropFirst()))
             if options.help {
                 print("""
-                resh — native, sesh-inspired project switcher for Rex
+                resh — native, sesh-inspired session/folder picker for Rex
 
                 resh [--client CLIENT_ID] [--session SESSION_ID] [--server ADDRESS]
                 resh --connect DIRECTORY [--client CLIENT_ID]
                 resh --name DIRECTORY
                 resh --diagnose
 
-                ⌃A All · ⌃T Sessions · ⌃X Recent folders · ⌃F Find folders
+                ⌘1 Sessions · ⌘2 All · ⌘3 Recent folders · ⌘4 Find folders
                 ↑/↓ or Tab/Shift-Tab navigate · Return open · Esc dismiss
-                ⌃D close a selected session (asks for confirmation)
+                ⌘⇧Backspace close a selected session (asks for confirmation)
                 """)
                 return
             }

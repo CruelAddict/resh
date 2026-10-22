@@ -14,6 +14,7 @@ public struct RexTarget: Codable, Sendable {
 public struct RexSession: Codable, Sendable {
     public let sessionID: String
     public let label: String
+    public init(sessionID: String, label: String) { self.sessionID = sessionID; self.label = label }
     enum CodingKeys: String, CodingKey { case sessionID = "session_id", label }
 }
 
@@ -60,18 +61,5 @@ public struct RexClient: Sendable {
     public func select(_ sessionID: String, clientID: String) throws {
         let arguments = String(decoding: try JSONSerialization.data(withJSONObject: ["session_id": sessionID]), as: UTF8.self)
         _ = try command(["-C", clientID, "do", "session.select", "--args", arguments, "--json"])
-    }
-    public func initialDirectory(sessionID: String) -> String? {
-        guard let data = try? command(["session", "inspect", sessionID, "--json"]),
-              let view = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let window = (view["windows"] as? [[String: Any]])?.first,
-              let layer = (window["layers"] as? [[String: Any]])?.first,
-              let block = (layer["blocks"] as? [[String: Any]])?.first,
-              let blockID = block["block_id"] as? String,
-              let processData = try? command(["block", "call", "-s", sessionID, "-b", blockID, "process"]),
-              let process = try? JSONSerialization.jsonObject(with: processData) as? [String: Any] else { return nil }
-        let foreground = process["foreground"] as? [String: Any]
-        let child = process["child"] as? [String: Any]
-        return (foreground?["cwd"] as? String ?? child?["cwd"] as? String).map(PathIdentity.canonical)
     }
 }

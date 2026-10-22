@@ -9,6 +9,11 @@ public actor ReshService {
 
     public func catalog(find: Bool = false) throws -> Catalog {
         let sessions = try sessionCandidates()
+        let directories = try directoryCatalog(find: find)
+        return Catalog(sessions: sessions, directories: directories.directories, warnings: directories.warnings)
+    }
+
+    public func directoryCatalog(find: Bool = false) throws -> Catalog {
         var warnings = [String]()
         var paths = [String]()
         if find {
@@ -20,19 +25,18 @@ public actor ReshService {
         } else if let zoxide = client.tools.zoxide {
             let result = try client.runner.run(zoxide, ["query", "-l"], timeout: 5)
             if result.status == 0 { paths = result.text.split(separator: "\n").map(String.init) }
-            else { warnings.append("No zoxide history yet. Use Find folders (⌃F).") }
-        } else { warnings.append("zoxide not found. Use Find folders (⌃F), or install zoxide.") }
-        return Catalog(sessions: sessions, directories: PathIdentity.directories(paths), warnings: warnings)
+            else { warnings.append("No zoxide history yet. Use Find folders (⌘4).") }
+        } else { warnings.append("zoxide not found. Use Find folders (⌘4), or install zoxide.") }
+        return Catalog(directories: PathIdentity.directories(paths), warnings: warnings)
     }
 
-    private func sessionCandidates() throws -> [Candidate] {
-        let records = try registry.load().filter { $0.server == client.target.server }
-        return try client.sessions().map { session in
-            let path = records.first { $0.sessionID == session.sessionID }?.path
-                ?? client.initialDirectory(sessionID: session.sessionID)
-            return Candidate(id: session.sessionID, kind: .session, title: session.label,
-                             path: path, sessionID: session.sessionID)
-        }
+    public func sessionCandidates() throws -> [Candidate] {
+        Self.candidates(from: try client.sessions())
+    }
+
+    public nonisolated static func candidates(from sessions: [RexSession]) -> [Candidate] {
+        // A Rex session has no global working directory. Do not inspect its tabs.
+        sessions.map { Candidate(id: $0.sessionID, kind: .session, title: $0.label, sessionID: $0.sessionID) }
     }
 
     public func resolveClient() throws -> (id: String, pid: Int32?) { try client.resolveClient() }
@@ -67,15 +71,8 @@ public actor ReshService {
             return record.sessionID
         }
         let base = SessionNamer(runner: client.runner, git: client.tools.git).name(for: path)
-        // Adopt an unregistered session only when both its label AND directory agree.
-        if let existing = sessions.first(where: {
-            $0.label == base && client.initialDirectory(sessionID: $0.sessionID) == path
-        }) {
-            records.append(SessionRecord(server: client.target.server, path: path, sessionID: existing.sessionID))
-            try registry.save(records)
-            try client.select(existing.sessionID, clientID: clientID)
-            return existing.sessionID
-        }
+        // An unregistered session's current tab directory is not its identity.
+        // Only resh's explicit creation records can associate a folder with a session.
         let label = SessionNamer.availableName(base: base, path: path, occupied: Set(sessions.map(\.label)))
         let reply = try client.api("session.create", ["label": label, "initial_windows": [[
             "window_label": "Terminal",

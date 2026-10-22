@@ -1,6 +1,6 @@
 # resh
 
-A native macOS project/session picker for **Rex**, inspired by **sesh**.
+A compact native macOS session/folder picker for **Rex**, inspired by **sesh**.
 Press **⌘S** in Rex, fuzzy-find a folder, and open it as a named Rex session.
 No tmux, fzf, Electron, Accessibility permission, or background daemon required.
 
@@ -24,19 +24,36 @@ to show the selected session. This is a Rex permission, not macOS Accessibility.
 
 | Key | Action |
 | --- | --- |
-| ⌘S in Rex | Open the native panel |
-| ⌃T | Existing Rex sessions (initial source, like the original sesh binding) |
-| ⌃A | Sessions + zoxide folders |
-| ⌃X | Recent/frequent folders, in zoxide order |
-| ⌃F | `fd -H -d 2 -t d -E .Trash . ~` |
+| ⌘S in Rex | Open the native panel (physical S key, on any keyboard layout) |
+| ⌘1 | Existing Rex sessions (initial source, like the original sesh binding) |
+| ⌘2 | Sessions + zoxide folders |
+| ⌘3 | Recent/frequent folders, in zoxide order |
+| ⌘4 | `fd -H -d 2 -t d -E .Trash . ~` |
 | ↑ / ↓, Tab / Shift-Tab, ⌃P / ⌃N | Select a result |
 | Return / click | Switch or create |
 | Esc / click outside | Dismiss without creating a session |
-| ⌃D | Close a selected session, **after confirmation** |
+| ⌘⇧Backspace | Close a selected session, **after confirmation** |
 
 The shortcut is scoped to Rex; it intentionally shadows Save inside programs
 running in Rex. Native copy, paste, and select-all work in the search field.
-The picker exits when closed. Repeated launches bring the existing panel forward.
+Source shortcuts also use physical key positions; ⌘A/C/V/X/Z and ⌘Backspace remain native text
+editing shortcuts. The picker exits when closed. Repeated launches bring the existing panel forward.
+
+## Compact UI and fresh data
+
+There is no title/header, theme-name badge, footer, result-kind badge, or result
+icon. A session occupies one 26-point row containing only its name; folders show
+their shortened path on one line. The panel sizes to its results (up to 12 rows),
+instead of reserving a large empty area.
+
+The Rex Lua action reads `session.list` directly and passes that **fresh snapshot**
+to the helper, so sessions exist before the first paint. No session cache or
+resident helper is needed. There are no per-session/tab/process queries on the
+list path. zoxide and filesystem search run only when their source is requested;
+switching back to Sessions does not wait for them. The UI uses AppKit controls.
+This removes late session-list loading, not the cost of cold-starting a macOS
+application. The smoke report measures that separately as `panelReadyMs`; no
+resident process or persisted session cache is used to hide it.
 
 ## Naming and reuse
 
@@ -47,12 +64,14 @@ The picker exits when closed. Repeated launches bring the existing panel forward
 - Reuse the same session for a canonical folder, even after `cd` inside it.
 - Same names in different directories do **not** collide: use `parent/name`,
   then a stable short path hash when necessary.
-- Reuse old, non-resh sessions only when both their label and directory agree.
+- Never infer a session's identity from a tab's current directory: Rex sessions
+  do not have one global working directory. Folder reuse uses resh's explicit
+  creation records; unregistered sessions remain available by name.
 - Never rename or close pre-existing sessions automatically.
 
 Unlike sesh, resh does not yet import `sesh.toml` startup/window presets or
 tmuxinator projects. Those were not configured in the original installation.
-There is no ⌃G source because there are no configured sesh presets to show.
+There is no presets source because there are no configured sesh presets to show.
 
 ## Theme
 
@@ -76,7 +95,8 @@ dist/resh.app/Contents/MacOS/resh --smoke-test "$PWD/.build/ui-smoke"
 ```
 
 `--diagnose`, `--name`, and the UI smoke test do not create sessions. The smoke
-test saves a JSON report and a view snapshot; it does not need Accessibility or
+test saves a JSON report and a view snapshot, including startup timing,
+layout-independent input routing, and actual native text-field input; it does not need Accessibility or
 screen-recording permissions. `--connect` is deliberately state-changing.
 
 Override CLI discovery with `RESH_REX_BIN`; override the Rex application bundle

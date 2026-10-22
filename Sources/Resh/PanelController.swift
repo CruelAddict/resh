@@ -3,14 +3,13 @@ import Combine
 import CoreGraphics
 import Darwin
 import ReshCore
-import SwiftUI
 
 final class LauncherPanel: NSPanel {
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
 }
 
-/// There is no resident daemon: the panel exits when dismissed.
+/// There is no resident daemon or session cache: the panel exits when dismissed.
 @MainActor
 final class PanelController: NSObject, NSWindowDelegate {
     let panel: LauncherPanel
@@ -19,15 +18,17 @@ final class PanelController: NSObject, NSWindowDelegate {
     private var themeTimer: Timer?
     private var subscriptions = Set<AnyCancellable>()
     private var background: NSView?
-    private var hosting: NSHostingView<PanelView>?
+    private var picker: PanelView?
     private var rexPID: Int32?
     private var isDismissing = false
     private let smokeTest: String?
+    private var panelReadyMilliseconds = 0.0
 
-    init(service: ReshService, tools: Tools, smokeTest: String? = nil) {
-        self.model = SearchModel(service: service, tools: tools)
+    init(service: ReshService, tools: Tools, sessions: [RexSession]? = nil, smokeTest: String? = nil) {
+        self.model = SearchModel(service: service, tools: tools, sessions: sessions)
         self.smokeTest = smokeTest
-        panel = LauncherPanel(contentRect: NSRect(x: 0, y: 0, width: 740, height: 520),
+        panel = LauncherPanel(contentRect: NSRect(x: 0, y: 0, width: PanelLayout.width,
+            height: PanelLayout.height(resultCount: sessions?.count ?? 0)),
             styleMask: [.borderless, .fullSizeContentView], backing: .buffered, defer: false)
         super.init()
         panel.delegate = self
@@ -37,18 +38,30 @@ final class PanelController: NSObject, NSWindowDelegate {
         panel.backgroundColor = .clear
         panel.hasShadow = true
         panel.level = .floating
-        panel.isMovableByWindowBackground = true
+        panel.isMovableByWindowBackground = false
         panel.hidesOnDeactivate = false
         panel.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
         model.onDismiss = { [weak self] focusRex in self?.dismiss(focusRex: focusRex) }
         model.$theme.dropFirst().sink { [weak self] theme in self?.apply(theme: theme) }.store(in: &subscriptions)
+        model.$results.dropFirst().sink { [weak self] entries in
+            self?.resize(resultCount: entries.count, hasError: self?.model.error != nil)
+        }.store(in: &subscriptions)
+        model.$error.dropFirst().sink { [weak self] error in
+            self?.resize(resultCount: self?.model.results.count ?? 0, hasError: error != nil)
+        }.store(in: &subscriptions)
         apply(theme: model.theme)
     }
 
     func show() {
-        position(over: NSWorkspace.shared.frontmostApplication?.processIdentifier)
+        let frontmost = NSWorkspace.shared.frontmostApplication
+        if frontmost?.bundleIdentifier == "com.superlogical.rex" { rexPID = frontmost?.processIdentifier }
+        position(over: frontmost?.processIdentifier)
         NSApp.activate(ignoringOtherApps: true)
         panel.makeKeyAndOrderFront(nil)
+        if let picker { panel.makeFirstResponder(picker.searchField) }
+        panel.contentView?.layoutSubtreeIfNeeded()
+        panel.displayIfNeeded()
+        panelReadyMilliseconds = (ProcessInfo.processInfo.systemUptime - LaunchMetrics.processStarted) * 1000
         monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self, event.window === self.panel else { return event }
             return self.handle(event) ? nil : event
@@ -56,11 +69,13 @@ final class PanelController: NSObject, NSWindowDelegate {
         themeTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.model.refreshTheme() }
         }
-        model.reload()
-        Task {
-            if let client = try? await model.service.resolveClient() {
-                rexPID = client.pid
-                if let pid = client.pid { position(over: pid) }
+        model.loadInitial()
+        if rexPID == nil {
+            Task {
+                if let client = try? await model.service.resolveClient() {
+                    rexPID = client.pid
+                    if let pid = client.pid { position(over: pid) }
+                }
             }
         }
         if let smokeTest {
@@ -70,16 +85,17 @@ final class PanelController: NSObject, NSWindowDelegate {
 
     private func apply(theme: RexTheme) {
         panel.appearance = NSAppearance(named: theme.isDark ? .darkAqua : .aqua)
-        let view = NSHostingView(rootView: PanelView(model: model))
-        view.sizingOptions = []
-        view.frame = NSRect(x: 0, y: 0, width: 740, height: 520)
+        let view = picker ?? PanelView(model: model)
+        picker = view
+        view.apply(theme: theme)
+        view.frame = NSRect(origin: .zero, size: panel.frame.size)
         view.autoresizingMask = [.width, .height]
         let material: NSView
         let glass = theme.usesGlass && !NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency
         if glass, #available(macOS 26.0, *) {
             let effect = NSGlassEffectView(frame: view.frame)
             effect.style = .clear
-            effect.cornerRadius = 20
+            effect.cornerRadius = 10
             effect.tintColor = theme.usesTint ? theme.background.nsColor.withAlphaComponent(0.45) : nil
             effect.contentView = view
             material = effect
@@ -102,41 +118,37 @@ final class PanelController: NSObject, NSWindowDelegate {
             material = solid
         }
         material.wantsLayer = true
-        material.layer?.cornerRadius = 20
+        material.layer?.cornerRadius = 10
         material.layer?.masksToBounds = true
         material.layer?.borderWidth = 1
         material.layer?.borderColor = theme.foreground.nsColor.withAlphaComponent(0.12).cgColor
-        hosting = view; background = material
+        background = material
         panel.contentView = material
+        if panel.isKeyWindow { panel.makeFirstResponder(view.searchField) }
     }
 
     func handle(_ event: NSEvent) -> Bool {
         let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-        if modifiers.contains(.command) {
-            if event.charactersIgnoringModifiers?.lowercased() == "s" { return true }
-            return false // Preserve native copy/paste/select-all.
+        guard let shortcut = PanelShortcut.action(keyCode: event.keyCode,
+            command: modifiers.contains(.command), control: modifiers.contains(.control),
+            option: modifiers.contains(.option), shift: modifiers.contains(.shift)) else { return false }
+        switch shortcut {
+        case let .scope(scope): model.changeScope(scope)
+        case let .move(delta): model.move(delta)
+        case .open: model.openSelection()
+        case .dismiss: if !model.isConnecting { dismiss(focusRex: true) }
+        case .delete: model.deleteSelection()
+        case .ignore: break
         }
-        if modifiers.contains(.control), let key = event.charactersIgnoringModifiers?.lowercased() {
-            switch key {
-            case "a": model.changeScope(.all)
-            case "t": model.changeScope(.sessions)
-            case "x": model.changeScope(.directories)
-            case "f": model.changeScope(.find)
-            case "d": model.deleteSelection()
-            case "n": model.move(1)
-            case "p": model.move(-1)
-            default: return false
-            }
-            return true
-        }
-        switch event.keyCode {
-        case 53: if !model.isConnecting { dismiss(focusRex: true) }; return true
-        case 125: model.move(1); return true
-        case 126: model.move(-1); return true
-        case 48: model.move(modifiers.contains(.shift) ? -1 : 1); return true
-        case 36, 76: model.openSelection(); return true
-        default: return false
-        }
+        return true
+    }
+
+    private func resize(resultCount: Int, hasError: Bool) {
+        var frame = panel.frame
+        let height = PanelLayout.height(resultCount: resultCount, hasError: hasError)
+        frame.origin.y = frame.maxY - height // Keep the search field stationary.
+        frame.size.height = height
+        panel.setFrame(frame, display: true, animate: false)
     }
 
     private func position(over pid: Int32?) {
@@ -177,16 +189,26 @@ final class PanelController: NSObject, NSWindowDelegate {
     private func runSmokeTest(output: String) async {
         FileHandle.standardError.write(Data("resh smoke: Waiting for catalog\n".utf8))
         await model.loadingTask?.value
-        try? await Task.sleep(for: .milliseconds(350))
+        try? await Task.sleep(for: .milliseconds(30))
         let initialCount = model.results.count
+        let initialHeight = panel.frame.height
         let focused = panel.firstResponder is NSTextView
-        if let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .control, timestamp: 0,
-            windowNumber: panel.windowNumber, context: nil, characters: "a", charactersIgnoringModifiers: "a", isARepeat: false, keyCode: 0) {
+        // Returning to the already-present sessions must not await filesystem work.
+        model.changeScope(.find)
+        model.changeScope(.sessions)
+        let sessionsDoNotWaitForFolders = !model.isLoading && model.results.count == initialCount
+        if let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command, timestamp: 0,
+            windowNumber: panel.windowNumber, context: nil, characters: "@", charactersIgnoringModifiers: "@", isARepeat: false, keyCode: 19) {
             _ = handle(event)
         }
         let sourceShortcutWorks = model.scope == .all
+        await model.loadingTask?.value
         let allCount = model.results.count
-        model.query = "resh"
+        if let editor = panel.firstResponder as? NSTextView {
+            editor.insertText("resh", replacementRange: NSRange(location: 0, length: editor.string.utf16.count))
+        }
+        await Task.yield()
+        let nativeTypingWorks = model.query == "resh"
         let filtered = model.results.map(\.title)
         model.query = ""
         model.selection = 0
@@ -195,11 +217,29 @@ final class PanelController: NSObject, NSWindowDelegate {
             _ = handle(event)
         }
         let arrowWorks = model.results.count < 2 || model.selection == 1
+        let sessionPathsHidden = model.catalog.sessions.allSatisfy { $0.path == nil && $0.subtitle.isEmpty }
+        let russianSave = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command, timestamp: 0,
+            windowNumber: panel.windowNumber, context: nil, characters: "ы", charactersIgnoringModifiers: "ы", isARepeat: false, keyCode: 1)!
+        let saveWorksInRussian = handle(russianSave)
+        let nativeSelectAll = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command, timestamp: 0,
+            windowNumber: panel.windowNumber, context: nil, characters: "ф", charactersIgnoringModifiers: "ф", isARepeat: false, keyCode: 0)!
+        let nativeEditingUnclaimed = !handle(nativeSelectAll)
+        model.changeScope(.sessions)
         model.selection = 0
+        panel.contentView?.layoutSubtreeIfNeeded()
+        panel.displayIfNeeded()
         let report: [String: Any] = ["visible": panel.isVisible, "keyWindow": panel.isKeyWindow,
             "searchFocused": focused, "sessionCount": initialCount, "allCount": allCount,
             "fuzzyResults": filtered, "arrowNavigation": arrowWorks,
             "sourceShortcut": sourceShortcutWorks,
+            "russianSaveKey": saveWorksInRussian, "nativeEditingUnclaimed": nativeEditingUnclaimed,
+            "sessionPathsHidden": sessionPathsHidden, "liveSessionSnapshot": model.receivedLiveSnapshot,
+            "sessionsDoNotWaitForFolders": sessionsDoNotWaitForFolders,
+            "panelReadyMs": panelReadyMilliseconds, "initialHeight": initialHeight,
+            "nativeTypingUpdatesQuery": nativeTypingWorks,
+            "applicationReadyMs": LaunchMetrics.applicationReadyMilliseconds,
+            "themeReadMs": model.themeReadMilliseconds,
+            "width": panel.frame.width, "rowHeight": PanelLayout.rowHeight,
             "theme": model.theme.name, "glass": model.theme.usesGlass,
             "error": model.error as Any? ?? NSNull()]
         panel.contentView?.layoutSubtreeIfNeeded()

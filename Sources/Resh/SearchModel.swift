@@ -1,49 +1,85 @@
 import AppKit
 import ReshCore
-import SwiftUI
+import Combine
 
 @MainActor
 final class SearchModel: ObservableObject {
-    @Published var query = ""
-    @Published var scope: SearchScope = .sessions
+    @Published var query = "" { didSet { updateResults(); selection = 0 } }
+    @Published private(set) var scope: SearchScope = .sessions
     @Published var catalog = Catalog()
     @Published var selection = 0
     @Published var isLoading = true
     @Published var isConnecting = false
     @Published var error: String?
     @Published var theme: RexTheme
+    @Published private(set) var results: [Candidate] = []
     let service: ReshService
     let tools: Tools
     var loadingTask: Task<Void, Never>?
     var onDismiss: ((Bool) -> Void)?
     var isPresentingConfirmation = false
     private var generation = 0
+    private var hasSessions = false
+    let receivedLiveSnapshot: Bool
+    let themeReadMilliseconds: Double
 
-    init(service: ReshService, tools: Tools) {
+    init(service: ReshService, tools: Tools, sessions: [RexSession]? = nil) {
         self.service = service; self.tools = tools
+        receivedLiveSnapshot = sessions != nil
+        let themeStarted = ProcessInfo.processInfo.systemUptime
         theme = RexTheme.read(rexApp: tools.rexApp, systemIsDark: Self.systemIsDark)
+        themeReadMilliseconds = (ProcessInfo.processInfo.systemUptime - themeStarted) * 1000
+        if let sessions {
+            catalog.sessions = ReshService.candidates(from: sessions)
+            hasSessions = true
+            isLoading = false
+            updateResults()
+        }
     }
     static var systemIsDark: Bool { UserDefaults.standard.string(forKey: "AppleInterfaceStyle") == "Dark" }
-    var results: [Candidate] { FuzzyMatcher.filter(catalog.entries(for: scope), query: query) }
     var selected: Candidate? { results.indices.contains(selection) ? results[selection] : nil }
-    var status: String {
-        if isConnecting { return "Opening in Rex…" }
-        if isLoading { return scope == .find ? "Finding folders…" : "Loading sessions & folders…" }
-        if let error { return error }
-        if let warning = catalog.warnings.first { return warning }
-        if let selected { return selected.kind == .session ? "↵ Switch to session" : "↵ Open folder as a Rex session" }
-        return "No matches · try Recent folders or Find folders"
+    var panelHeight: CGFloat { PanelLayout.height(resultCount: results.count, hasError: error != nil) }
+    var emptyMessage: String {
+        if isLoading { return "Loading…" }
+        if !query.isEmpty { return "No matches" }
+        if let warning = catalog.warnings.first, scope != .sessions { return warning }
+        return scope == .sessions ? "No sessions" : "No folders"
     }
 
-    func reload() {
+    func loadInitial() {
+        if !hasSessions { load(refreshSessions: true) }
+    }
+
+    func reload() { load(refreshSessions: true) }
+
+    private func updateResults() {
+        let updated = FuzzyMatcher.filter(catalog.entries(for: scope), query: query)
+        if updated != results { results = updated }
+        if !results.indices.contains(selection) { selection = 0 }
+    }
+
+    private func load(refreshSessions: Bool = false) {
         generation += 1
         let request = generation, find = scope == .find
+        let needsSessions = refreshSessions || !hasSessions
+        let needsDirectories = scope != .sessions
         isLoading = true; error = nil
         loadingTask = Task {
             do {
-                let loaded = try await service.catalog(find: find)
-                guard generation == request else { return }
-                catalog = loaded
+                if needsSessions {
+                    let sessions = try await service.sessionCandidates()
+                    guard generation == request else { return }
+                    catalog.sessions = sessions
+                    hasSessions = true
+                    updateResults()
+                }
+                if needsDirectories {
+                    let folders = try await service.directoryCatalog(find: find)
+                    guard generation == request else { return }
+                    catalog.directories = folders.directories
+                    catalog.warnings = folders.warnings
+                    updateResults()
+                }
             } catch {
                 guard generation == request else { return }
                 self.error = error.localizedDescription
@@ -53,9 +89,12 @@ final class SearchModel: ObservableObject {
     }
     func changeScope(_ scope: SearchScope) {
         guard !isConnecting, self.scope != scope else { return }
-        let needsReload = self.scope == .find || scope == .find
+        generation += 1
+        if self.scope == .find || scope == .find { catalog.directories = [] }
         self.scope = scope; selection = 0; error = nil
-        if needsReload { reload() }
+        updateResults()
+        if scope != .sessions || !hasSessions { load() }
+        else { isLoading = false }
     }
     func move(_ delta: Int) {
         let count = results.count
@@ -63,7 +102,7 @@ final class SearchModel: ObservableObject {
         selection = (selection + delta + count) % count
     }
     func openSelection() {
-        guard !isConnecting, !isLoading, let candidate = selected else { return }
+        guard !isConnecting, let candidate = selected else { return }
         isConnecting = true; error = nil
         Task {
             do {
@@ -97,12 +136,14 @@ final class SearchModel: ObservableObject {
         }
     }
     func refreshTheme() {
-        let updated = RexTheme.read(rexApp: tools.rexApp, systemIsDark: Self.systemIsDark)
-        if updated != theme { theme = updated }
+        let app = tools.rexApp, dark = Self.systemIsDark
+        Task {
+            let updated = await Task.detached { RexTheme.read(rexApp: app, systemIsDark: dark) }.value
+            if updated != theme { theme = updated }
+        }
     }
 }
 
 extension RGBA {
     var nsColor: NSColor { NSColor(srgbRed: red, green: green, blue: blue, alpha: alpha) }
-    var color: Color { Color(nsColor: nsColor) }
 }
