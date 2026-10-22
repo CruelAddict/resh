@@ -22,7 +22,10 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
     private let emptyLabel = NSTextField(labelWithString: "")
     private let errorLabel = NSTextField(wrappingLabelWithString: "")
     private let retry = NSButton(title: "Retry", target: nil, action: nil)
-    private let scopes: [SearchScope] = [.sessions, .all, .directories, .find]
+    private var sources: [SourceDefinition] = []
+    private var keymap = ReshConfiguration.defaults.keymap
+    private let sourceScroll = NSScrollView()
+    private let sourceContainer = NSView()
     private var sourceButtons: [NSButton] = []
     private var rows: [Candidate] = []
     private var theme: RexTheme
@@ -56,17 +59,12 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
         progress.isDisplayedWhenStopped = false
         searchBackground.addSubview(progress)
 
-        for (index, scope) in scopes.enumerated() {
-            let button = NSButton(title: "", target: self, action: #selector(sourceClicked(_:)))
-            button.tag = index
-            button.isBordered = false
-            button.focusRingType = .none
-            button.wantsLayer = true
-            button.layer?.cornerRadius = 5
-            button.setAccessibilityIdentifier("resh.scope.\(scope.rawValue)")
-            sourceButtons.append(button)
-            addSubview(button)
-        }
+        sourceScroll.drawsBackground = false
+        sourceScroll.hasHorizontalScroller = true
+        sourceScroll.autohidesScrollers = true
+        sourceScroll.scrollerStyle = .overlay
+        sourceScroll.documentView = sourceContainer
+        addSubview(sourceScroll)
 
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("entry"))
         table.addTableColumn(column)
@@ -112,6 +110,21 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
     required init?(coder: NSCoder) { nil }
 
     private func bindModel() {
+        model.$configuration.sink { [weak self] configuration in
+            guard let self else { return }
+            sources = configuration.visibleSources
+            keymap = configuration.keymap
+            for button in sourceButtons { button.removeFromSuperview() }
+            sourceButtons = sources.enumerated().map { index, source in
+                let button = NSButton(title: "", target: self, action: #selector(self.sourceClicked(_:)))
+                button.tag = index; button.isBordered = false; button.focusRingType = .none
+                button.wantsLayer = true; button.layer?.cornerRadius = 5
+                button.setAccessibilityIdentifier("resh.scope.\(source.id.rawValue)")
+                self.sourceContainer.addSubview(button)
+                return button
+            }
+            updateSources()
+        }.store(in: &subscriptions)
         model.$results.sink { [weak self] entries in
             guard let self else { return }
             rows = entries
@@ -163,12 +176,13 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
 
     private func updateSources() {
         for (index, button) in sourceButtons.enumerated() {
-            let scope = scopes[index], selected = scope == activeScope
-            let text = NSMutableAttributedString(string: scope.title, attributes: [
+            let source = sources[index], selected = source.id == activeScope
+            let text = NSMutableAttributedString(string: source.title, attributes: [
                 .font: NSFont.systemFont(ofSize: 11, weight: selected ? .medium : .regular),
                 .foregroundColor: theme.foreground.nsColor.withAlphaComponent(selected ? 1 : 0.55),
             ])
-            text.append(NSAttributedString(string: "  " + scope.shortcut, attributes: [
+            let shortcut = keymap.label(for: source.id)
+            text.append(NSAttributedString(string: shortcut.isEmpty ? "" : "  " + shortcut, attributes: [
                 .font: NSFont.systemFont(ofSize: 10), .foregroundColor: theme.foreground.nsColor.withAlphaComponent(0.4),
             ]))
             button.attributedTitle = text
@@ -184,11 +198,16 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
         searchBackground.frame = NSRect(x: padding, y: padding, width: width - padding * 2, height: PanelLayout.searchHeight)
         searchField.frame = NSRect(x: 10, y: 7, width: width - 58, height: 19)
         progress.frame = NSRect(x: width - 45, y: 10, width: 12, height: 12)
-        var x: CGFloat = 8
+        sourceScroll.frame = NSRect(x: padding, y: PanelLayout.sourcesTop, width: width - padding * 2, height: PanelLayout.sourcesHeight)
+        var x: CGFloat = 0
         for button in sourceButtons {
             let size = ceil(button.attributedTitle.size().width) + 14
-            button.frame = NSRect(x: x, y: PanelLayout.sourcesTop, width: size, height: PanelLayout.sourcesHeight)
+            button.frame = NSRect(x: x, y: 0, width: size, height: PanelLayout.sourcesHeight)
             x += size + 4
+        }
+        sourceContainer.setFrameSize(NSSize(width: max(sourceScroll.contentSize.width, x - 4), height: PanelLayout.sourcesHeight))
+        if let index = sources.firstIndex(where: { $0.id == activeScope }) {
+            sourceContainer.scrollToVisible(sourceButtons[index].frame)
         }
         let errorHeight: CGFloat = hasError ? 44 : 0
         errorLabel.frame = NSRect(x: 14, y: PanelLayout.listTop, width: width - 80, height: errorHeight)
@@ -197,15 +216,6 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
         scroll.frame = NSRect(x: padding, y: y, width: width - padding * 2, height: listHeight)
         table.tableColumns.first?.width = scroll.contentSize.width
         emptyLabel.frame = NSRect(x: 14, y: y + 5, width: width - 28, height: 19)
-    }
-
-    var edgeInsets: (top: CGFloat, bottom: CGFloat, left: CGFloat, right: CGFloat) {
-        (searchBackground.frame.minY, bounds.height - scroll.frame.maxY,
-         scroll.frame.minX, bounds.width - scroll.frame.maxX)
-    }
-    var sectionGaps: (searchToSources: CGFloat, sourcesToList: CGFloat) {
-        guard let source = sourceButtons.first else { return (-1, -1) }
-        return (source.frame.minY - searchBackground.frame.maxY, scroll.frame.minY - source.frame.maxY)
     }
 
     func numberOfRows(in tableView: NSTableView) -> Int { rows.count }
@@ -258,7 +268,7 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
     }
 
     @objc private func sourceClicked(_ sender: NSButton) {
-        model.changeScope(scopes[sender.tag])
+        model.changeScope(sources[sender.tag].id)
         window?.makeFirstResponder(searchField)
     }
     @objc private func rowClicked() {

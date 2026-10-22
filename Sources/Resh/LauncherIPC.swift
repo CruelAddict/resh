@@ -10,6 +10,7 @@ struct LauncherRequest: Codable {
     var server: String?
     var sessions: [RexSession]?
     var smokeTest: String?
+    var config: String?
     var sentAt = ProcessInfo.processInfo.systemUptime
 }
 

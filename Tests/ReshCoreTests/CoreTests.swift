@@ -2,7 +2,7 @@ import Foundation
 import ReshCore
 import Testing
 
-private final class TemporaryDirectory: @unchecked Sendable {
+final class TemporaryDirectory: @unchecked Sendable {
     let url: URL
     init() throws {
         url = FileManager.default.temporaryDirectory.appendingPathComponent("resh-tests-" + UUID().uuidString)
@@ -60,22 +60,21 @@ struct FuzzyTests {
         Candidate(id: "2", kind: .directory, title: "research", path: "/work/research"),
         Candidate(id: "3", kind: .directory, title: "Привет", path: "/work/Привет"),
     ]
-    @Test func emptyQueryKeepsSourceOrder() { #expect(FuzzyMatcher.filter(entries, query: " ").map(\.id) == ["1", "2", "3"]) }
+    @Test func emptyQueryKeepsSourceOrder() { #expect(FuzzyMatcher(entries).filter(query: " ").map(\.id) == ["1", "2", "3"]) }
     @Test func fuzzyAndUnicode() {
-        #expect(FuzzyMatcher.filter(entries, query: "rsh").first?.title == "resh")
-        #expect(FuzzyMatcher.filter(entries, query: "ПРВ").first?.title == "Привет")
-        #expect(FuzzyMatcher.filter(entries, query: "work res").map(\.id) == ["2"])
-        #expect(FuzzyMatcher.filter(entries, query: "xyz").isEmpty)
-        #expect(FuzzyMatcher.score("cafe", in: "café") != nil)
-        #expect(FuzzyMatcher.filter(entries, query: "", limit: 1).count == 1)
+        let search = FuzzyMatcher(entries + [Candidate(id: "4", kind: .session, title: "café")])
+        #expect(search.filter(query: "rsh").first?.title == "resh")
+        #expect(search.filter(query: "ПРВ").first?.title == "Привет")
+        #expect(search.filter(query: "work res").map(\.id) == ["2"])
+        #expect(search.filter(query: "cafe").map(\.id) == ["4"])
+        #expect(search.filter(query: "xyz").isEmpty)
+        #expect(search.filter(query: "", limit: 1).count == 1)
     }
-    @Test func homePrefixAndSeparateFieldsDoNotProduceFalseMatches() {
+    @Test func foldersUseHomeRelativePaths() {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         let entry = Candidate(id: "one", kind: .directory, title: "api", path: home + "/work/api")
-        #expect(!entry.searchText.contains(home))
-        #expect(FuzzyMatcher.filter([entry], query: "Users").isEmpty)
-        let separate = Candidate(id: "two", kind: .session, title: "xy", path: "/abc/z", sessionID: "s")
-        #expect(FuzzyMatcher.filter([separate], query: "xyz").isEmpty)
+        #expect(entry.displayTitle == "~/work/api")
+        #expect(entry.searchText == "~/work/api")
     }
 }
 
@@ -127,10 +126,11 @@ private final class FakeRunner: CommandRunning, @unchecked Sendable {
     private let lock = NSLock()
     var sessions: [(id: String, label: String, path: String)] = []
     var creations = 0
+    var startupInputs: [String] = []
     var selections: [String] = []
     var rejectSelection = false
     var calls: [(String, [String])] = []
-    func run(_ executable: String, _ arguments: [String], timeout: TimeInterval) throws -> CommandResult {
+    func run(_ executable: String, _ arguments: [String], timeout: TimeInterval, directory: String?) throws -> CommandResult {
         lock.lock(); defer { lock.unlock() }
         calls.append((executable, arguments))
         func json(_ value: Any) throws -> CommandResult {
@@ -147,7 +147,9 @@ private final class FakeRunner: CommandRunning, @unchecked Sendable {
             let object = try JSONSerialization.jsonObject(with: Data(arguments.last!.utf8)) as! [String: Any]
             let windows = object["initial_windows"] as! [[String: Any]]
             let block = (windows[0]["layout"] as! [String: Any])["block"] as! [String: Any]
-            let path = (block["options"] as! [String: Any])["cwd"] as! String
+            let options = block["options"] as! [String: Any]
+            let path = options["cwd"] as! String
+            if let input = options["initial_input"] as? String { startupInputs.append(input) }
             creations += 1
             let id = "session:\(creations)"
             sessions.append((id, object["label"] as! String, path))
@@ -158,13 +160,6 @@ private final class FakeRunner: CommandRunning, @unchecked Sendable {
             let args = try JSONSerialization.jsonObject(with: Data(arguments[arguments.firstIndex(of: "--args")! + 1].utf8)) as! [String: String]
             selections.append(args["session_id"]!)
             return try json([:])
-        }
-        if let index = arguments.firstIndex(of: "inspect"), index + 1 < arguments.count {
-            return try json(["windows": [["layers": [["blocks": [["block_id": arguments[index + 1]]]]]]]])
-        }
-        if arguments.contains("process"), let index = arguments.firstIndex(of: "-s") {
-            let session = sessions.first { $0.id == arguments[index + 1] }!
-            return try json(["foreground": ["cwd": session.path]])
         }
         return CommandResult(stdout: Data())
     }
@@ -205,13 +200,12 @@ struct ServiceTests {
         #expect(id != "session:other")
         #expect(runner.sessions.last?.label == "work/api")
     }
-    @Test func aTabsDirectoryDoesNotIdentifyAnUnregisteredSession() async throws {
+    @Test func unregisteredSessionsRemainIndependent() async throws {
         let temporary = try TemporaryDirectory(), runner = FakeRunner()
         let folder = try temporary.folder("project")
         runner.sessions = [("session:existing", "project", folder)]
         #expect(try await service(runner, temporary).connect(path: folder) != "session:existing")
         #expect(runner.creations == 1)
-        #expect(!runner.calls.contains { $0.1.contains("inspect") || $0.1.contains("process") })
     }
     @Test func unsafeCharactersStayData() async throws {
         let temporary = try TemporaryDirectory(), runner = FakeRunner()
@@ -233,101 +227,22 @@ struct ServiceTests {
         try Data("not json".utf8).write(to: registry.url)
         #expect(throws: ReshError.self) { try registry.load() }
     }
-    @Test func folderDeduplicationAndAllScope() throws {
-        let temporary = try TemporaryDirectory()
-        let folder = try temporary.folder("project")
-        let directories = PathIdentity.directories([folder, folder + "/.", "/not/a/real/resh/folder"])
-        #expect(directories.count == 1)
-        let session = Candidate(id: "s1", kind: .session, title: "project", path: folder, sessionID: "s1")
-        #expect(Catalog(sessions: [session], directories: directories).entries(for: .all).count == 1)
-    }
-    @Test func listingOneHundredSessionsUsesOneRequestAndNoTabInspection() async throws {
+    @Test(arguments: [0, 1, 100]) func listingUsesOneRequest(_ count: Int) async throws {
         let temporary = try TemporaryDirectory(), runner = FakeRunner()
-        runner.sessions = (0..<100).map { ("session:\($0)", "session-\($0)", "/irrelevant/tab/path") }
+        runner.sessions = (0..<count).map { ("session:\($0)", "session-\($0)", "/irrelevant/tab/path") }
         let sessions = try await service(runner, temporary).sessionCandidates()
-        #expect(sessions.count == 100)
+        #expect(sessions.map(\.title) == runner.sessions.map(\.label))
         #expect(runner.calls.count == 1)
-        #expect(runner.calls.first?.1.contains("ls") == true)
-        #expect(sessions.allSatisfy { $0.path == nil && $0.subtitle.isEmpty })
     }
-    @Test func liveSnapshotMappingPerformsNoIO() {
-        let sessions = [RexSession(sessionID: "session:live", label: "live")]
-        let rows = ReshService.candidates(from: sessions)
-        #expect(rows.map(\.title) == ["live"])
-        #expect(rows[0].path == nil)
-        #expect(ReshService.candidates(from: []).isEmpty)
-    }
-}
-
-@Suite("Compact layout and layout-independent keyboard")
-struct PanelTests {
-    @Test func physicalLauncherIsScopedToRexNotTheInputLanguage() {
-        #expect(PanelShortcut.launcherKeyCode == 1)
-        #expect(PanelShortcut.launcherIsEnabled(frontmostBundleID: "com.superlogical.rex"))
-        for app in [nil, "com.mitchellh.ghostty", "com.apple.TextEdit", "com.apple.finder"] {
-            #expect(!PanelShortcut.launcherIsEnabled(frontmostBundleID: app))
-        }
-    }
-    @Test func commandSourcesUsePhysicalNumberKeys() {
-        #expect(PanelShortcut.action(keyCode: 18, command: true) == .scope(.sessions))
-        #expect(PanelShortcut.action(keyCode: 19, command: true) == .scope(.all))
-        #expect(PanelShortcut.action(keyCode: 20, command: true) == .scope(.directories))
-        #expect(PanelShortcut.action(keyCode: 21, command: true) == .scope(.find))
-        #expect(PanelShortcut.action(keyCode: 1, command: true) == .ignore)
-        #expect(PanelShortcut.action(keyCode: 51, command: true, shift: true) == .delete)
-        #expect(PanelShortcut.action(keyCode: 18, command: true, option: true) == nil)
-    }
-    @Test func nativeTextEditingIsNotStolen() {
-        for key: UInt16 in [0, 8, 9, 7, 6, 51] { // A, C, V, X, Z, Backspace
-            #expect(PanelShortcut.action(keyCode: key, command: true) == nil)
-        }
-        #expect(PanelShortcut.action(keyCode: 0, control: true) == nil)
-        #expect(PanelShortcut.action(keyCode: 48, shift: true) == .move(-1))
-        #expect(PanelShortcut.action(keyCode: 53) == .dismiss)
-    }
-    @Test func sessionRowsNeverDisplayOrSearchTabPaths() {
-        let session = Candidate(id: "s", kind: .session, title: "session-name", path: "/wrong/tab/folder", sessionID: "s")
-        #expect(session.displayTitle == "session-name")
-        #expect(session.subtitle.isEmpty)
-        #expect(session.searchText == "session-name")
-    }
-    @Test func heightTracksResultsWithoutAnOversizedEmptyPanel() {
-        #expect(PanelLayout.width == 560)
-        #expect(PanelLayout.rowHeight == 26)
-        #expect(PanelLayout.height(resultCount: 5) == 216)
-        #expect(PanelLayout.height(resultCount: 0) == 112)
-        #expect(PanelLayout.height(resultCount: 100) == 398)
-        #expect(PanelLayout.height(resultCount: 5, hasError: true) == 260)
-    }
-    @Test func bottomPaddingMatchesTopPaddingForEveryResultCount() {
-        for count in [0, 1, 5, 12, 100] {
-            #expect(PanelLayout.height(resultCount: count) - PanelLayout.listTop
-                - PanelLayout.listHeight(resultCount: count) == PanelLayout.outerPadding)
-        }
-    }
-    @Test func sectionsHaveTheSameBreathingRoomAsOuterEdges() {
-        #expect(PanelLayout.sourcesTop - PanelLayout.outerPadding - PanelLayout.searchHeight == 8)
-        #expect(PanelLayout.listTop - PanelLayout.sourcesTop - PanelLayout.sourcesHeight == 8)
-    }
-}
-
-@Suite("Subprocess isolation")
-struct RunnerTests {
-    @Test func drainsBothPipes() throws {
-        let result = try SystemCommandRunner().run("/usr/bin/python3",
-            ["-c", "import sys; sys.stdout.write('o'*200000); sys.stderr.write('e'*200000)"], timeout: 10)
-        #expect(result.status == 0 && result.stdout.count == 200_000 && result.stderr.count == 200_000)
-    }
-    @Test func timesOut() throws {
-        let start = Date()
-        let result = try SystemCommandRunner().run("/bin/sleep", ["5"], timeout: 0.1)
-        #expect(result.status != 0)
-        #expect(Date().timeIntervalSince(start) < 3)
-    }
-    @Test func doesNotInheritRexContext() throws {
-        let result = try SystemCommandRunner().run("/usr/bin/env", [], timeout: 3)
-        for key in ["TMUX", "REX_SERVER", "REX_SESSION", "REX_BLOCK", "REX_CLIENT"] {
-            #expect(!result.text.split(separator: "\n").contains(where: { $0.hasPrefix(key + "=") }))
-        }
+    @Test func projectStartupIsOnlyPartOfNewSessionCreation() async throws {
+        let temporary = try TemporaryDirectory(), runner = FakeRunner()
+        let folder = try temporary.folder("project's folder")
+        let service = service(runner, temporary)
+        let candidate = Candidate(id: folder, kind: .project, title: "My project", path: folder, startupCommand: "printf '%s' {}")
+        let first = try await service.connect(candidate)
+        let second = try await service.connect(candidate)
+        #expect(first == second && runner.creations == 1)
+        #expect(runner.sessions.first?.label == "My project")
+        #expect(runner.startupInputs == ["printf '%s' '" + folder.replacingOccurrences(of: "'", with: "'\\''") + "'\n"])
     }
 }

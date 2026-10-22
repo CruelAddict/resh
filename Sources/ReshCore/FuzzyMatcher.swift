@@ -1,12 +1,18 @@
 import Foundation
 
-public enum FuzzyMatcher {
+public struct FuzzyMatcher: Sendable {
+    public let entries: [Candidate]
+    private let keys: [(text: [Character], title: [Character])]
+
+    /// Normalize once per source snapshot, not once per row on every keystroke.
+    public init(_ entries: [Candidate]) {
+        self.entries = entries
+        keys = entries.map { (Array(Self.normalized($0.searchText)), Array(Self.normalized($0.title))) }
+    }
+
     /// A subsequence matcher with bonuses for contiguous, boundary, and title matches.
     /// Every word must match. Empty queries preserve source order (zoxide's frecency).
-    public static func score(_ query: String, in text: String) -> Int? {
-        let words = normalized(query).split(whereSeparator: \.isWhitespace)
-        if words.isEmpty { return 0 }
-        let haystack = Array(normalized(text))
+    private static func score(_ words: [[Character]], in haystack: [Character]) -> Int? {
         var total = 0
         for word in words {
             var previous = -2, cursor = 0, score = 0
@@ -18,19 +24,18 @@ public enum FuzzyMatcher {
                 score -= min(index - cursor, 12)
                 previous = index; cursor = index + 1
             }
-            if let range = String(haystack).range(of: String(word)), range.lowerBound == String(haystack).startIndex {
-                score += 30
-            }
+            if haystack.starts(with: word) { score += 30 }
             total += score
         }
         return total
     }
 
-    public static func filter(_ entries: [Candidate], query: String, limit: Int = 100) -> [Candidate] {
-        if query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return Array(entries.prefix(limit)) }
+    public func filter(query: String, limit: Int = 100) -> [Candidate] {
+        let words = Self.normalized(query).split(whereSeparator: \.isWhitespace).map(Array.init)
+        if words.isEmpty { return Array(entries.prefix(limit)) }
         return entries.enumerated().compactMap { index, entry -> (Candidate, Int, Int)? in
-            let pathScore = score(query, in: entry.searchText)
-            let titleScore = score(query, in: entry.title).map { $0 + 50 }
+            let pathScore = Self.score(words, in: keys[index].text)
+            let titleScore = Self.score(words, in: keys[index].title).map { $0 + 50 }
             guard pathScore != nil || titleScore != nil else { return nil }
             return (entry, max(pathScore ?? Int.min, titleScore ?? Int.min), index)
         }.sorted { $0.1 == $1.1 ? $0.2 < $1.2 : $0.1 > $1.1 }.prefix(limit).map(\.0)

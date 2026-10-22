@@ -57,7 +57,7 @@ struct DataConnectionTests {
         let model = SearchModel(service: service, tools: tools, sessions: [RexSession(sessionID: "first", label: "first")])
         model.query = "first"
         model.clear()
-        #expect(model.query.isEmpty && model.results.isEmpty && model.catalog.sessions.isEmpty)
+        #expect(model.query.isEmpty && model.results.isEmpty && model.sessionCount == 0)
         model.prepare(service: service, sessions: [RexSession(sessionID: "second", label: "second")])
         #expect(model.results.map(\.title) == ["second"])
         #expect(!model.isLoading)

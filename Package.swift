@@ -5,8 +5,9 @@ let package = Package(
     name: "resh",
     platforms: [.macOS(.v15)],
     products: [.executable(name: "resh", targets: ["Resh"])],
+    dependencies: [.package(url: "https://github.com/dduan/TOMLDecoder", from: "0.4.5")],
     targets: [
-        .target(name: "ReshCore"),
+        .target(name: "ReshCore", dependencies: [.product(name: "TOMLDecoder", package: "TOMLDecoder")]),
         .executableTarget(name: "Resh", dependencies: ["ReshCore"]),
         .testTarget(name: "ReshCoreTests", dependencies: ["ReshCore"]),
         .testTarget(name: "ReshTests", dependencies: ["Resh", "ReshCore"]),

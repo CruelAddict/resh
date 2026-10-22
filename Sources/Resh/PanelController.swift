@@ -17,7 +17,6 @@ final class PanelController: NSObject, NSWindowDelegate {
     private var themeTimer: Timer?
     private var subscriptions = Set<AnyCancellable>()
     private var picker: PanelView?
-    private var background: NSView?
     private var rexPID: Int32?
     private var isDismissing = false
     private var smokeTest: String?
@@ -30,9 +29,11 @@ final class PanelController: NSObject, NSWindowDelegate {
     var terminateOnDismiss = false
     var nativeHotkeyStartedAt: Double?
     private var nativeHotkeyToPanelMilliseconds: Double?
+    private let defaultConfigurationURL: URL
 
-    init(service: ReshService, tools: Tools, sessions: [RexSession]? = nil, smokeTest: String? = nil) {
-        self.model = SearchModel(service: service, tools: tools, sessions: sessions)
+    init(service: ReshService, tools: Tools, sessions: [RexSession]? = nil, smokeTest: String? = nil, configurationURL: URL = ConfigurationFile.url()) {
+        self.model = SearchModel(service: service, tools: tools, sessions: sessions, configurationURL: configurationURL)
+        self.defaultConfigurationURL = configurationURL
         LaunchMetrics.mark("model")
         self.smokeTest = smokeTest
         panel = LauncherPanel(contentRect: NSRect(x: 0, y: 0, width: PanelLayout.width,
@@ -70,13 +71,18 @@ final class PanelController: NSObject, NSWindowDelegate {
         requestStarted = request.sentAt
         presentationStages = [:]
         markPresentation("received")
-        model.prepare(service: service, sessions: request.sessions)
+        model.prepare(service: service, sessions: request.sessions,
+            configurationURL: request.config.map { URL(fileURLWithPath: $0) } ?? defaultConfigurationURL)
         markPresentation("prepared")
     }
 
     func present(error: Error) {
-        model.error = error.localizedDescription
         show()
+        let presentation = presentationCount
+        Task {
+            await model.loadingTask?.value
+            if presentationCount == presentation, panel.isVisible { model.error = error.localizedDescription }
+        }
     }
 
     private func markPresentation(_ name: String) {
@@ -85,6 +91,8 @@ final class PanelController: NSObject, NSWindowDelegate {
 
     func show() {
         isDismissing = false
+        if let monitor { NSEvent.removeMonitor(monitor); self.monitor = nil }
+        themeTimer?.invalidate()
         presentationCount += 1
         let frontmost = NSWorkspace.shared.frontmostApplication
         frontmostPID = frontmost?.processIdentifier
@@ -166,16 +174,15 @@ final class PanelController: NSObject, NSWindowDelegate {
         material.layer?.masksToBounds = true
         material.layer?.borderWidth = 1
         material.layer?.borderColor = theme.foreground.nsColor.withAlphaComponent(0.18).cgColor
-        background = material
         panel.contentView = material
         if panel.isKeyWindow { panel.makeFirstResponder(view.searchField) }
     }
 
     func handle(_ event: NSEvent) -> Bool {
         let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-        guard let shortcut = PanelShortcut.action(keyCode: event.keyCode,
+        guard let shortcut = model.configuration.keymap.action(for: KeyChord(code: event.keyCode,
             command: modifiers.contains(.command), control: modifiers.contains(.control),
-            option: modifiers.contains(.option), shift: modifiers.contains(.shift)) else { return false }
+            option: modifiers.contains(.option), shift: modifiers.contains(.shift))) else { return false }
         switch shortcut {
         case let .scope(scope): model.changeScope(scope)
         case let .move(delta): model.move(delta)
@@ -183,6 +190,9 @@ final class PanelController: NSObject, NSWindowDelegate {
         case .dismiss: if !model.isConnecting { dismiss(focusRex: true) }
         case .delete: model.deleteSelection()
         case .ignore: break
+        case .reload: model.reload()
+        case .nextSource: model.cycleSource(1)
+        case .previousSource: model.cycleSource(-1)
         }
         return true
     }
@@ -229,93 +239,32 @@ final class PanelController: NSObject, NSWindowDelegate {
     }
 
     private func runSmokeTest(output: String) async {
-        FileHandle.standardError.write(Data("resh smoke: Waiting for catalog\n".utf8))
         await model.loadingTask?.value
-        try? await Task.sleep(for: .milliseconds(30))
-        let initialCount = model.results.count
-        let initialTitles = model.results.map(\.title)
-        let initialHeight = panel.frame.height
-        let focused = panel.firstResponder is NSTextView
-        // Returning to the already-present sessions must not await filesystem work.
-        model.changeScope(.find)
-        model.changeScope(.sessions)
-        let sessionsDoNotWaitForFolders = !model.isLoading && model.results.count == initialCount
-        if let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command, timestamp: 0,
-            windowNumber: panel.windowNumber, context: nil, characters: "@", charactersIgnoringModifiers: "@", isARepeat: false, keyCode: 19) {
-            _ = handle(event)
-        }
-        let sourceShortcutWorks = model.scope == .all
-        await model.loadingTask?.value
-        let allCount = model.results.count
-        if let editor = panel.firstResponder as? NSTextView {
-            editor.insertText("resh", replacementRange: NSRange(location: 0, length: editor.string.utf16.count))
-        }
-        await Task.yield()
-        let nativeTypingWorks = model.query == "resh"
-        let selectAllEvent = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command,
-            timestamp: 0, windowNumber: panel.windowNumber, context: nil, characters: "a",
-            charactersIgnoringModifiers: "a", isARepeat: false, keyCode: 0)!
-        let nativeSelectAll = NSApp.mainMenu?.performKeyEquivalent(with: selectAllEvent) == true
-            && (panel.firstResponder as? NSTextView)?.selectedRange().length == 4
-        let filtered = model.results.map(\.title)
-        model.query = ""
-        model.selection = 0
-        if let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
-            windowNumber: panel.windowNumber, context: nil, characters: "", charactersIgnoringModifiers: "", isARepeat: false, keyCode: 125) {
-            _ = handle(event)
-        }
-        let arrowWorks = model.results.count < 2 || model.selection == 1
-        let sessionPathsHidden = model.catalog.sessions.allSatisfy { $0.path == nil && $0.subtitle.isEmpty }
-        let russianSave = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command, timestamp: 0,
-            windowNumber: panel.windowNumber, context: nil, characters: "ы", charactersIgnoringModifiers: "ы", isARepeat: false, keyCode: 1)!
-        let saveWorksInRussian = handle(russianSave)
-        let nativeSelectAllKey = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command, timestamp: 0,
-            windowNumber: panel.windowNumber, context: nil, characters: "ф", charactersIgnoringModifiers: "ф", isARepeat: false, keyCode: 0)!
-        let nativeEditingUnclaimed = !handle(nativeSelectAllKey)
-        model.changeScope(.sessions)
-        model.selection = 0
+        markPresentation("resultsReady")
         panel.contentView?.layoutSubtreeIfNeeded()
         panel.displayIfNeeded()
-        let insets = picker?.edgeInsets
-        let gaps = picker?.sectionGaps
         var report: [String: Any] = ["visible": panel.isVisible, "keyWindow": panel.isKeyWindow,
-            "searchFocused": focused, "sessionCount": initialCount, "allCount": allCount,
-            "fuzzyResults": filtered, "arrowNavigation": arrowWorks,
-            "sourceShortcut": sourceShortcutWorks,
-            "russianSaveKey": saveWorksInRussian, "nativeEditingUnclaimed": nativeEditingUnclaimed,
-            "sessionPathsHidden": sessionPathsHidden, "liveSessionSnapshot": model.receivedLiveSnapshot,
-            "sessionsDoNotWaitForFolders": sessionsDoNotWaitForFolders,
-            "panelReadyMs": panelReadyMilliseconds, "initialHeight": initialHeight,
+            "searchFocused": panel.firstResponder is NSTextView,
+            "sessionCount": model.sessionCount, "initialSessionTitles": model.results.map(\.title),
+            "liveSessionSnapshot": model.receivedLiveSnapshot,
+            "panelReadyMs": panelReadyMilliseconds,
             "requestToPanelMs": requestToPanelMilliseconds, "pid": getpid(), "presentationCount": presentationCount,
             "nativeHotkeyToPanelMs": nativeHotkeyToPanelMilliseconds as Any? ?? NSNull(),
-            "presentationStagesMs": presentationStages, "initialSessionTitles": initialTitles,
-            "nativeTypingUpdatesQuery": nativeTypingWorks,
-            "nativeSelectAll": nativeSelectAll,
+            "presentationStagesMs": presentationStages,
             "applicationReadyMs": LaunchMetrics.applicationReadyMilliseconds,
             "startupStagesMs": LaunchMetrics.stages,
             "themeReadMs": model.themeReadMilliseconds,
-            "width": panel.frame.width, "rowHeight": PanelLayout.rowHeight,
-            "theme": model.theme.name, "glass": model.theme.usesGlass,
-            "nativeMaterial": background.map { NSStringFromClass(type(of: $0)) } ?? "none",
-            "selectionColor": model.theme.selection.hex, "accentColor": model.theme.accent.hex,
             "nonactivating": panel.styleMask.contains(.nonactivatingPanel),
             "frontmostApplicationPreserved": frontmostPID == NSWorkspace.shared.frontmostApplication?.processIdentifier,
-            "topInset": insets?.top ?? -1, "bottomInset": insets?.bottom ?? -1,
-            "leftInset": insets?.left ?? -1, "rightInset": insets?.right ?? -1,
-            "searchToSourcesGap": gaps?.searchToSources ?? -1, "sourcesToListGap": gaps?.sourcesToList ?? -1,
             "error": model.error as Any? ?? NSNull()]
-        panel.contentView?.layoutSubtreeIfNeeded()
         if let view = panel.contentView, let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
             view.cacheDisplay(in: view.bounds, to: bitmap)
             try? bitmap.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: output + ".png"))
         }
         if !terminateOnDismiss {
-            let escape = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
-                windowNumber: panel.windowNumber, context: nil, characters: "", charactersIgnoringModifiers: "",
-                isARepeat: false, keyCode: 53)!
-            _ = handle(escape)
-            report["escapeHidesWithoutQuitting"] = !panel.isVisible
-            report["sessionDataClearedOnHide"] = model.catalog.sessions.isEmpty && model.catalog.directories.isEmpty
+            dismiss(focusRex: false)
+            report["hidden"] = !panel.isVisible
+            report["sessionDataClearedOnHide"] = model.sessionCount == 0 && model.folderCount == 0
                 && model.query.isEmpty && model.results.isEmpty
         }
         if let data = try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]) {

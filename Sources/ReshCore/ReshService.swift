@@ -7,29 +7,6 @@ public actor ReshService {
         self.client = client; self.registry = registry
     }
 
-    public func catalog(find: Bool = false) throws -> Catalog {
-        let sessions = try sessionCandidates()
-        let directories = try directoryCatalog(find: find)
-        return Catalog(sessions: sessions, directories: directories.directories, warnings: directories.warnings)
-    }
-
-    public func directoryCatalog(find: Bool = false) throws -> Catalog {
-        var warnings = [String]()
-        var paths = [String]()
-        if find {
-            guard let fd = client.tools.fd else { throw ReshError("Find folders needs fd. Install it with brew install fd.") }
-            let result = try client.runner.run(fd, ["-H", "-d", "2", "-t", "d", "-E", ".Trash", "--print0", ".",
-                FileManager.default.homeDirectoryForCurrentUser.path], timeout: 12)
-            if result.status != 0 { warnings.append("Folder search was incomplete. Some directories may be inaccessible.") }
-            paths = result.text.split(separator: "\0").prefix(20_000).map(String.init)
-        } else if let zoxide = client.tools.zoxide {
-            let result = try client.runner.run(zoxide, ["query", "-l"], timeout: 5)
-            if result.status == 0 { paths = result.text.split(separator: "\n").map(String.init) }
-            else { warnings.append("No zoxide history yet. Use Find folders (⌘4).") }
-        } else { warnings.append("zoxide not found. Use Find folders (⌘4), or install zoxide.") }
-        return Catalog(directories: PathIdentity.directories(paths), warnings: warnings)
-    }
-
     public func sessionCandidates() throws -> [Candidate] {
         Self.candidates(from: try client.sessions())
     }
@@ -50,11 +27,12 @@ public actor ReshService {
             return sessionID
         }
         guard let path = candidate.path else { throw ReshError("The selected folder has no path.") }
-        return try connect(path: path, clientID: targetClient)
+        return try connect(path: path, clientID: targetClient, name: candidate.kind == .project ? candidate.title : nil,
+                           startupCommand: candidate.startupCommand)
     }
 
     @discardableResult
-    public func connect(path: String, clientID requestedClient: String? = nil) throws -> String {
+    public func connect(path: String, clientID requestedClient: String? = nil, name: String? = nil, startupCommand: String? = nil) throws -> String {
         let clientID = try requestedClient ?? client.resolveClient().id
         let path = PathIdentity.canonical(path)
         var isDirectory: ObjCBool = false
@@ -70,13 +48,18 @@ public actor ReshService {
             try client.select(record.sessionID, clientID: clientID)
             return record.sessionID
         }
-        let base = SessionNamer(runner: client.runner, git: client.tools.git).name(for: path)
+        let base = name ?? SessionNamer(runner: client.runner, git: client.tools.git).name(for: path)
         // An unregistered session's current tab directory is not its identity.
         // Only resh's explicit creation records can associate a folder with a session.
         let label = SessionNamer.availableName(base: base, path: path, occupied: Set(sessions.map(\.label)))
+        var options: [String: Any] = ["cwd": path]
+        if let startupCommand, !startupCommand.isEmpty {
+            let quotedPath = "'" + path.replacingOccurrences(of: "'", with: "'\\''") + "'"
+            options["initial_input"] = startupCommand.replacingOccurrences(of: "{}", with: quotedPath) + "\n"
+        }
         let reply = try client.api("session.create", ["label": label, "initial_windows": [[
             "window_label": "Terminal",
-            "layout": ["block": ["flavor": "com.superlogical.terminal.shell", "options": ["cwd": path]]],
+            "layout": ["block": ["flavor": "com.superlogical.terminal.shell", "options": options]],
         ]]])
         struct Created: Decodable { let session_id: String }
         let sessionID = try JSONDecoder().decode(Created.self, from: reply).session_id

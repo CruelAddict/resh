@@ -29,6 +29,8 @@ private struct Options {
     var status = false
     var warmup = false
     var nativeHotkeySmoke = false
+    var config: String?
+    var checkConfig = false
 
     init(_ arguments: [String]) throws {
         var index = 0
@@ -54,6 +56,8 @@ private struct Options {
             case "--status": status = true
             case "--warmup": warmup = true
             case "--native-hotkey-smoke": nativeHotkeySmoke = true; smokeTest = try value()
+            case "--config": config = URL(fileURLWithPath: (try value() as NSString).expandingTildeInPath).standardizedFileURL.path
+            case "--check-config": checkConfig = true
             case "--help", "-h": help = true
             default: throw ReshError("Unknown option: \(argument)")
             }
@@ -93,7 +97,8 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         LaunchMetrics.mark("panelLock")
-        controller = PanelController(service: service, tools: tools, sessions: options.sessions, smokeTest: options.smokeTest)
+        controller = PanelController(service: service, tools: tools, sessions: options.sessions, smokeTest: options.smokeTest,
+            configurationURL: options.config.map { URL(fileURLWithPath: $0) } ?? ConfigurationFile.url())
         controller?.terminateOnDismiss = options.once
         if options.once {
             controller?.show()
@@ -168,9 +173,15 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
             controller.show()
         }
         return ["running": true, "pid": getpid(), "visible": controller.panel.isVisible,
-                "retainedSessions": controller.model.catalog.sessions.count,
-                "retainedFolders": controller.model.catalog.directories.count,
+                "retainedSessions": controller.model.sessionCount,
+                "retainedFolders": controller.model.folderCount,
                 "query": controller.model.query,
+                "source": controller.model.scope.rawValue,
+                "sources": controller.model.configuration.visibleSources.map(\.id.rawValue),
+                "resultCount": controller.model.results.count,
+                "selectedTitle": controller.model.selected?.displayTitle as Any? ?? NSNull(),
+                "configPath": controller.model.configurationURL.path,
+                "panelError": controller.model.error as Any? ?? NSNull(),
                 "nativeHotkeyRegistered": hotkey?.isRegistered ?? false,
                 "nativeHotkeyStatus": hotkey?.registrationStatus ?? 0]
     }
@@ -214,6 +225,9 @@ struct ReshMain {
                 resh --name DIRECTORY
                 resh --diagnose
                 resh --status | --quit
+                resh --check-config [--config FILE]
+
+                Config: ~/.config/resh/config.toml (or $RESH_CONFIG / --config FILE)
 
                 ⌘1 Sessions · ⌘2 All · ⌘3 Recent folders · ⌘4 Find folders
                 ↑/↓ or Tab/Shift-Tab navigate · Return open · Esc dismiss
@@ -221,9 +235,18 @@ struct ReshMain {
                 """)
                 return
             }
+            let configURL = options.config.map { URL(fileURLWithPath: $0) } ?? ConfigurationFile.url()
+            if options.config != nil, !FileManager.default.fileExists(atPath: configURL.path) {
+                throw ReshError("Config file does not exist: \(configURL.path)")
+            }
+            if options.checkConfig {
+                let config = try ConfigurationFile.load(configURL)
+                print("Config: \(configURL.path)\nSources: \(config.visibleSources.map(\.id.rawValue).joined(separator: ", "))\nProjects: \(config.projects.count)\nValid")
+                return
+            }
             if !options.standby, !options.once, options.connect == nil, !options.diagnose, options.name == nil {
                 var request = LauncherRequest(client: options.client, session: options.session, server: options.server,
-                    sessions: options.sessions, smokeTest: options.smokeTest)
+                    sessions: options.sessions, smokeTest: options.smokeTest, config: configURL.path)
                 if options.quit { request.operation = "quit" }
                 if options.status { request.operation = "status" }
                 if options.warmup { request.operation = "status" }
@@ -266,16 +289,22 @@ struct ReshMain {
                     do {
                         let result: [String: Any]
                         if let path = options.connect {
-                            let id = try await service.connect(path: path)
-                            result = ["session_id": id, "path": PathIdentity.canonical(path)]
+                            let configuration = try ConfigurationFile.load(configURL)
+                            let project = configuration.projects.first { $0.name == path } ?? configuration.project(at: path)
+                            let directory = project?.path ?? PathIdentity.canonical(path)
+                            let candidate = project?.candidate ?? Candidate(id: directory, kind: .directory,
+                                title: directory, path: directory, startupCommand: configuration.defaultStartupCommand)
+                            let id = try await service.connect(candidate)
+                            result = ["session_id": id, "path": directory]
                         } else {
-                            let catalog = try await service.catalog()
+                            let sessions = try await service.sessionCandidates()
+                            let folders = try SourceLoader(tools: tools).load(.directories, configuration: .defaults, sessions: [])
                             let app = try await service.resolveClient()
                             let theme = RexTheme.read(rexApp: tools.rexApp,
                                 systemIsDark: UserDefaults.standard.string(forKey: "AppleInterfaceStyle") == "Dark")
                             result = ["rex": tools.rex, "client": app.id, "server": target.server,
-                                "sessions": catalog.sessions.count, "directories": catalog.directories.count,
-                                "theme": theme.name, "glass": theme.usesGlass, "warnings": catalog.warnings]
+                                "sessions": sessions.count, "directories": folders.entries.count,
+                                "theme": theme.name, "glass": theme.usesGlass, "warnings": folders.warnings]
                         }
                         let data = try JSONSerialization.data(withJSONObject: result, options: [.prettyPrinted, .sortedKeys])
                         FileHandle.standardOutput.write(data); print("")

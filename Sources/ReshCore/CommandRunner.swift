@@ -21,23 +21,23 @@ public struct ReshError: LocalizedError, Sendable {
 }
 
 public protocol CommandRunning: Sendable {
-    func run(_ executable: String, _ arguments: [String], timeout: TimeInterval) throws -> CommandResult
+    func run(_ executable: String, _ arguments: [String], timeout: TimeInterval, directory: String?) throws -> CommandResult
 }
 
-private final class DataBox: @unchecked Sendable {
-    private let lock = NSLock()
-    private var storage = Data()
-    func set(_ data: Data) { lock.lock(); defer { lock.unlock() }; storage = data }
-    var value: Data { lock.lock(); defer { lock.unlock() }; return storage }
+public extension CommandRunning {
+    func run(_ executable: String, _ arguments: [String], timeout: TimeInterval = 8) throws -> CommandResult {
+        try run(executable, arguments, timeout: timeout, directory: nil)
+    }
 }
 
 public struct SystemCommandRunner: CommandRunning {
     public init() {}
 
-    public func run(_ executable: String, _ arguments: [String], timeout: TimeInterval = 8) throws -> CommandResult {
+    public func run(_ executable: String, _ arguments: [String], timeout: TimeInterval, directory: String?) throws -> CommandResult {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = arguments
+        if let directory { process.currentDirectoryURL = URL(fileURLWithPath: directory) }
         var environment = ProcessInfo.processInfo.environment
         // The selected Rex target is always explicit; never inherit another pane's context.
         for key in ["TMUX", "REX_SERVER", "REX_CLIENT", "REX_SESSION", "REX_BLOCK", "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"] {
@@ -50,27 +50,63 @@ public struct SystemCommandRunner: CommandRunning {
         let output = Pipe(), errors = Pipe()
         process.standardOutput = output
         process.standardError = errors
+        let exited = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in exited.signal() }
         try process.run()
-
-        let group = DispatchGroup(), stdout = DataBox(), stderr = DataBox()
-        for (pipe, box) in [(output, stdout), (errors, stderr)] {
-            group.enter()
-            DispatchQueue.global(qos: .userInitiated).async {
-                box.set(pipe.fileHandleForReading.readDataToEndOfFile())
-                group.leave()
-            }
+        // NSTask creates a process group on macOS. Only signal a group when we
+        // verified it belongs to this child, never the caller's terminal group.
+        let group = getpgid(process.processIdentifier) == process.processIdentifier ? process.processIdentifier : nil
+        let handles = [output.fileHandleForReading, errors.fileHandleForReading]
+        for handle in handles {
+            let descriptor = handle.fileDescriptor
+            _ = fcntl(descriptor, F_SETFL, fcntl(descriptor, F_GETFL) | O_NONBLOCK)
         }
-        let deadline = DispatchWorkItem {
-            if process.isRunning { process.terminate() }
-            DispatchQueue.global().asyncAfter(deadline: .now() + 1) {
+        defer {
+            if let group {
+                _ = kill(-group, SIGTERM)
+                for _ in 0..<20 { if kill(-group, 0) != 0 { break }; usleep(5_000) }
+                if kill(-group, 0) == 0 { _ = kill(-group, SIGKILL) }
+            } else if process.isRunning {
+                process.terminate()
+                for _ in 0..<20 { if !process.isRunning { break }; usleep(5_000) }
                 if process.isRunning { kill(process.processIdentifier, SIGKILL) }
             }
+            process.waitUntilExit()
+            for handle in handles { try? handle.close() }
         }
-        DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: deadline)
+        var data = [Data(), Data()]
+        var descriptors = handles.map { pollfd(fd: $0.fileDescriptor, events: Int16(POLLIN), revents: 0) }
+        let deadline = ProcessInfo.processInfo.systemUptime + timeout
+        var buffer = [UInt8](repeating: 0, count: 16_384)
+        while true {
+            try Task.checkCancellation()
+            if ProcessInfo.processInfo.systemUptime >= deadline {
+                return CommandResult(status: 124, stdout: data[0],
+                    stderr: Data("Command timed out after \(timeout) seconds: \(executable)".utf8))
+            }
+            let remaining = deadline - ProcessInfo.processInfo.systemUptime
+            let wait = max(0.001, min(0.05, remaining))
+            if descriptors.allSatisfy({ $0.fd < 0 }) {
+                if exited.wait(timeout: .now() + wait) == .success { break }
+                continue
+            }
+            let ready = Darwin.poll(&descriptors, nfds_t(descriptors.count), Int32(wait * 1000))
+            if ready < 0 {
+                if errno == EINTR { continue }
+                throw ReshError("Could not wait for command output: \(executable)")
+            }
+            for index in descriptors.indices where descriptors[index].fd >= 0 && descriptors[index].revents != 0 {
+                let count = Darwin.read(handles[index].fileDescriptor, &buffer, buffer.count)
+                if count > 0 {
+                    data[index].append(contentsOf: buffer.prefix(count))
+                    guard data[0].count + data[1].count <= 2_097_152 else { throw ReshError("Command output exceeded 2 MiB: \(executable)") }
+                } else if count == 0 { descriptors[index].fd = -1 }
+                else if errno != EAGAIN && errno != EINTR { throw ReshError("Could not read command output: \(executable)") }
+            }
+            if !process.isRunning && descriptors.allSatisfy({ $0.fd < 0 }) { break }
+        }
         process.waitUntilExit()
-        deadline.cancel()
-        group.wait()
-        return CommandResult(status: process.terminationStatus, stdout: stdout.value, stderr: stderr.value)
+        return CommandResult(status: process.terminationStatus, stdout: data[0], stderr: data[1])
     }
 }
 
