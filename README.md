@@ -14,9 +14,10 @@ swift test
 python3 scripts/install.py
 ```
 
-Installs `~/Applications/resh.app` and a Lua action in Rex's config. Existing
-configuration is preserved and backed up under
-`~/Library/Application Support/resh/backups/`. No server restart is necessary.
+Installs `~/Applications/resh.app` and one `dofile(...)` line in Rex's config.
+The action implementation and Lua resources stay inside the app, not in dotfiles.
+The installer adds this line without rewriting personal Rex settings.
+No server restart is necessary.
 Enable **Rex Settings → Rex Server → Remote Control** so the helper can ask Rex
 to show the selected session. This is a Rex permission, not macOS Accessibility.
 
@@ -39,61 +40,12 @@ running in Rex. Native copy, paste, and select-all work in the search field.
 Source shortcuts also use physical key positions; ⌘A/C/V/X/Z and ⌘Backspace remain native text
 editing shortcuts. The resident helper registers physical Cmd+S with macOS only
 while Rex is frontmost. It does not rely on Rex's character/keyboard-layout
-matching (or on a Unicode binding, which older Rex parsers reject). Outside Rex
+matching. There are no duplicate launcher bindings in Rex's keymap. Outside Rex
 the hotkey is unregistered, so other apps retain their normal Save shortcut.
 This uses Carbon's hotkey API, not an Accessibility event tap.
 The same physical-key/typed-text distinction is used in
 [Ghostty's event handling](https://github.com/ghostty-org/ghostty/blob/f54340ad77814fe319d136e5e915d6a48de8dd23/macos/Sources/Ghostty/NSEvent%2BExtension.swift#L18).
 It is one keycode for every language, not a table of keyboard layouts.
-
-### Optional tmux-like Rex shortcuts
-
-The picker keymap below configures **resh**, not Rex's terminals and tabs.
-For tmux-style control of **Rex itself**, copy
-[`integration/rex-tmux.lua`](integration/rex-tmux.lua) to `~/.config/rex/rex-tmux.lua`
-and load it **after** `resh.lua` in Rex's `init.lua`:
-
-```lua
-dofile(os.getenv("HOME") .. "/.config/rex/rex-tmux.lua")
-```
-
-Then run `rex config check` and use **Reload Config in the Rex app**. From the CLI:
-
-```sh
-rex client ls
-rex -C CLIENT do client.config.reload
-```
-
-Replace `CLIENT` with the app's label or ID from the listing. This explicitly
-refreshes the client as well as the server. If `rex keymap` shows new bindings
-but keypresses still use the old ones, a server-only `rex config reload` was not
-sufficient: reload through the app instead. Both ordinary N/P and held-Ctrl
-N/P were verified in the live app, including with the Russian input layout.
-
-This is an opt-in profile;
-the resh installer preserves it and never replaces it. Edit the installed Lua
-file to change Rex's bindings; edit `~/.config/resh/config.toml` to change the picker.
-
-Press **Ctrl+A**, release it, then press the command:
-
-| After Ctrl+A | Rex action |
-| --- | --- |
-| c / n / p | New / next / previous tab |
-| 0…9 | Tabs 1…10 (tmux's zero-based numbering) |
-| % / " | Split right / below |
-| h / j / k / l or arrows | Focus a pane |
-| o / z / x | Next pane / zoom / close pane |
-| s / Shift+S / Shift+K | Select / create / close a session |
-| , / $ | Rename tab / session |
-| Ctrl+S | Open resh |
-| Ctrl+A | Send a literal Ctrl+A to the terminal |
-
-For n/p you can keep Ctrl held after the prefix: Ctrl+A then Ctrl+N/Ctrl+P
-also switches tabs, just like tmux. Ctrl+A then Ctrl+S still opens resh.
-Escape cancels an unfinished prefix. Physical keys work across input layouts;
-Cmd shortcuts remain available. This is not a tmux emulator: copy-mode, tmux
-plugins, last-window (`Ctrl+A Ctrl+L`), and hidden-pane join/break scripts are
-not ported by this profile.
 
 ## Compact UI and fresh data
 
@@ -103,9 +55,10 @@ accepts keyboard input without deactivating Rex.
 
 The resident helper reuses its AppKit controls and a persistent `rex do`
 connection (`resh-data.lua`). Each opening reads a fresh client/session snapshot,
-without spawning CLI processes or inspecting individual tabs. The command-palette
-action passes its own fresh snapshot through IPC. Hiding clears session and
-folder data and the query.
+without spawning CLI processes or inspecting individual tabs. The native hotkey,
+Rex action and CLI all use this same opening path; explicit reloads use the same connection.
+Hiding clears session and folder data and the query.
+Errors wrap and scroll in one compact, selectable field without expanding the panel.
 
 Configuration, filesystem providers and search-index preparation run in the
 background. Combined sources show available sessions/projects while providers
@@ -113,8 +66,7 @@ load; returning to Sessions is immediate. Search normalizes each list once,
 then reuses it for keystrokes until the source changes or the panel closes.
 
 `resh --quit` stops the helper; `resh --warmup` or reloading Rex's config starts
-it. `resh --status` reports its state and native hotkey registration. Smoke
-reports separate `requestToPanelMs` from one-time application startup.
+it. `resh --status` reports its state and native hotkey registration.
 
 Sessions with an unseen result, a request for user action, or an error show a small
 dot beside their name. Running agents and plain idle agents have no indicator;
@@ -126,10 +78,10 @@ when the panel hides. Folder and project rows never show activity dots.
 Read receipts are read from Rex's local `Workspace.programActivitySeen` preferences,
 so viewing activity in Rex removes the corresponding dot (within a second while
 the panel is open). resh never writes read receipts or marks activity read merely
-because the picker is open. This is a best-effort bridge to a private preference
-format, not an exported Rex unread-notifications API: if the format is unavailable,
-the dot reflects current `done`/`blocked`/`error` records instead. Announced idle
-reports and read receipts are matched at Rex's millisecond precision. The dot is a native
+because the picker is open. This reads a private preference format, not an exported
+Rex unread-notifications API: unavailable or malformed receipts show an explicit error
+and no dots. A missing program-status API or failed activity stream is also reported.
+Announced idle reports and read receipts are matched at Rex's millisecond precision. The dot is a native
 SF Symbol using Rex's theme `info` color, not a copied private Rex UI component.
 
 ## Naming and reuse
@@ -153,6 +105,7 @@ Use `RESH_CONFIG=/path/to/config.toml` or `resh --config FILE` to choose another
 `--config` applies to that invocation; native hotkeys use the resident helper's
 default configuration path. The default can be set when starting the helper.
 No config is required: all existing shortcuts and sources keep working.
+A file explicitly chosen by `RESH_CONFIG` or `--config` must exist; only the default file is optional.
 The resident panel rereads the file on each opening; no restart or Rex config reload
 is needed. Invalid changes show an error and keep the last valid configuration
 for that file; switching files starts from the defaults.
@@ -259,52 +212,39 @@ not the terminal's ANSI blue or text-selection color. Colors and style refresh w
 the panel is open. Glass uses native `NSGlassEffectView` on macOS 26+, with an
 `NSVisualEffectView` fallback on macOS 15. Classic or Reduce Transparency uses
 a solid theme background. This is a matching companion, not a copy of Rex's
-private material renderer. If Rex changes its internal formats, resh falls back
-to a system palette rather than changing Rex's settings.
+private material renderer. Missing or incompatible theme data is an error, not a
+substitute palette. A failed refresh keeps the last successfully read theme and
+shows the error; resh never changes Rex's settings.
 
 ## CLI & development
 
 ```sh
 bash scripts/build.sh
 swift test
-RESH_UI_TESTS=1 swift test --filter nativePanelInputAndReuse
+RESH_UI_TESTS=1 swift test --filter PanelTests
 dist/resh.app/Contents/MacOS/resh --diagnose
-dist/resh.app/Contents/MacOS/resh --name ~/personal/resh
-dist/resh.app/Contents/MacOS/resh --connect ~/personal/resh --client client:…
-dist/resh.app/Contents/MacOS/resh --smoke-test "$PWD/.build/ui-smoke"
-python3 scripts/smoke.py
-python3 scripts/record-demo.py
+dist/resh.app/Contents/MacOS/resh --name "$PWD"
+dist/resh.app/Contents/MacOS/resh --connect "$PWD" --client client:…
 ```
 
-`--diagnose`, `--name`, and the UI smoke test do not create sessions. The smoke
-test saves startup/presentation timings, a `resultsReady` stage and a view snapshot. `scripts/smoke.py`
-checks process reuse, fresh synthetic session snapshots and data clearing on
-dismissal, using an isolated configuration. The opt-in AppKit test checks physical
-shortcuts, native editing, navigation and panel reuse without connecting to Rex.
-`--native-hotkey-smoke PATH` exercises the Carbon callback and full live data path
-while Rex is frontmost; it does not synthesize a physical OS keypress or require
-Accessibility. Real keyboard testing is a separate check.
-
-`scripts/record-demo.py` records the same AppKit test with FFmpeg (no audio),
-using synthetic input and session data. It requires screen-recording permission,
-but not Accessibility or a Rex connection. Only the video and JSON report are
-retained in `~/Movies/resh`; temporary folders are removed.
-`--connect` is deliberately state-changing. `--once --smoke-test PATH` runs an
-isolated, short-lived UI test instead of using the resident helper.
+`--diagnose` and `--name` do not create sessions; `--connect` is deliberately
+state-changing. The opt-in AppKit tests check session-title layout, unread indicators
+and view reuse. Synthetic rendering tests do not connect to Rex or read its preferences.
 
 Override CLI discovery with `RESH_REX_BIN`; override the Rex application bundle
-with `RESH_REX_APP`. Creation is serialized by a file lock and identities are
+with `RESH_REX_APP`. Invalid explicit paths are errors, not hints for discovery.
+Creation is serialized by a file lock and identities are
 saved atomically in `~/Library/Application Support/resh/sessions.json`.
-Only the **local macOS Rex server** is supported in this first version. The
-helper captures the client that invoked the Lua action; it never types into an
+Only the **local macOS Rex server** is supported in this first version.
+The hotkey and Rex action identify the frontmost Rex app; CLI calls may pass an explicit
+`--client`. The helper never types into an
 existing terminal or takes a client ID from another pane's environment.
 
 ### Uninstall
 
-Run `~/Applications/resh.app/Contents/MacOS/resh --quit`. Remove the marked resh `dofile(...)` line from Rex's `init.lua`, remove
-`resh.lua` beside it, and run `rex config reload`. Then remove
-`~/Applications/resh.app`. The backup directory contains previous configuration
-and app versions. Existing Rex sessions remain untouched.
+Run `~/Applications/resh.app/Contents/MacOS/resh --quit`. Remove the resh `dofile(...)` line from Rex's `init.lua`
+and run `rex config reload`. Then remove
+`~/Applications/resh.app`. Existing Rex sessions remain untouched.
 
 ## License
 

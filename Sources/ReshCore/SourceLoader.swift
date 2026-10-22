@@ -43,7 +43,7 @@ public struct SourceLoader: Sendable {
         case .zoxide:
             guard let zoxide = tools.zoxide else { return SourceResult(warnings: ["zoxide not found. Choose a folder-search source, or install zoxide."]) }
             let result = try runner.run(zoxide, ["query", "-l"], timeout: source.timeout, directory: source.cwd)
-            guard result.status == 0 else { return SourceResult(warnings: ["No zoxide history yet. Choose a folder-search source."]) }
+            guard result.status == 0 else { return SourceResult(warnings: [commandError(result, source: source).message]) }
             return SourceResult(entries: try candidates(result.text.split(separator: "\n").prefix(20_000).map(String.init), configuration: configuration))
         case .find:
             guard let fd = tools.fd else { throw ReshError("Find folders needs fd. Install it with brew install fd.") }
@@ -51,7 +51,7 @@ public struct SourceLoader: Sendable {
                 FileManager.default.homeDirectoryForCurrentUser.path], timeout: source.timeout, directory: nil)
             let paths = result.text.split(separator: "\0").prefix(20_000).map(String.init)
             return SourceResult(entries: try candidates(paths, configuration: configuration),
-                warnings: result.status == 0 ? [] : ["Folder search was incomplete. Some directories may be inaccessible."])
+                warnings: result.status == 0 ? [] : [commandError(result, source: source).message])
         case .command:
             let executable = try resolve(source.command[0], cwd: source.cwd)
             return try command(executable, Array(source.command.dropFirst()), source: source, configuration: configuration)
@@ -60,10 +60,7 @@ public struct SourceLoader: Sendable {
     private func command(_ executable: String, _ arguments: [String], source: SourceDefinition,
                          configuration: ReshConfiguration) throws -> SourceResult {
         let result = try runner.run(executable, arguments, timeout: source.timeout, directory: source.cwd)
-        guard result.status == 0 else {
-            let message = String(decoding: result.stderr.prefix(1000), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-            throw ReshError("\(source.title) exited with status \(result.status). \(message)")
-        }
+        guard result.status == 0 else { throw commandError(result, source: source) }
         guard let text = String(data: result.stdout, encoding: .utf8), !text.contains("\0") else {
             throw ReshError("\(source.title) must return UTF-8 paths, one per line.")
         }
@@ -75,6 +72,11 @@ public struct SourceLoader: Sendable {
         guard lines.count <= 20_000 else { throw ReshError("\(source.title) returned more than 20,000 paths.") }
         return SourceResult(entries: try candidates(lines, configuration: configuration))
     }
+    private func commandError(_ result: CommandResult, source: SourceDefinition) -> ReshError {
+        let message = String(decoding: result.stderr.prefix(1000), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+        return ReshError("\(source.title) exited with status \(result.status). \(message)")
+    }
+
     private func candidates(_ paths: [String], configuration: ReshConfiguration) throws -> [Candidate] {
         let projects = Dictionary(uniqueKeysWithValues: configuration.projects.map { ($0.path, $0.candidate) })
         return try PathIdentity.directories(paths).map {

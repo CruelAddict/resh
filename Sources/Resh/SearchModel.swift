@@ -10,50 +10,56 @@ final class SearchModel: ObservableObject {
     @Published var isLoading = true
     @Published var isConnecting = false
     @Published var error: String?
+    @Published private(set) var diagnostic: String?
     @Published var theme: RexTheme
     @Published private(set) var results: [Candidate] = []
     @Published private(set) var attentionSessionIDs = Set<String>()
     @Published private(set) var configuration = ReshConfiguration.defaults
-    private(set) var configurationURL: URL
+    private(set) var configurationURL: URL?
     private var configurationError: String?
     private var search = FuzzyMatcher([])
-    private var sessionSnapshot: [Candidate]?
-    private var warnings: [String] = []
+    private var sessionSnapshot: [Candidate] = []
+    private let snapshotProvider: any RexSnapshotProviding
+    private let readPreferences: @Sendable () -> [String: Any]
+    private let readTheme: @Sendable (String, Bool) throws -> RexTheme
+    private var diagnostics: [String: String] = [:]
     private(set) var service: ReshService
     let tools: Tools
     var loadingTask: Task<Void, Never>?
     private(set) var attentionTask: Task<Void, Never>?
     private var attentionRecords: [RexAttentionRecord] = []
     var onDismiss: ((Bool) -> Void)?
+    var onRetryOpening: (() -> Void)?
+    var onReloadAttention: (() -> Void)?
     var isPresentingConfirmation = false
     private var generation = 0
-    private(set) var receivedLiveSnapshot: Bool
-    private(set) var receivedAttentionSnapshot = false
-    let themeReadMilliseconds: Double
 
-    init(service: ReshService, tools: Tools, sessions: [RexSession]? = nil, configurationURL: URL = ConfigurationFile.url()) {
+    init(service: ReshService, tools: Tools, sessions: [RexSession] = [], configurationURL: URL? = nil,
+         snapshotProvider: (any RexSnapshotProviding)? = nil,
+         readTheme: @escaping @Sendable (String, Bool) throws -> RexTheme = { try RexTheme.read(rexApp: $0, systemIsDark: $1) },
+         readPreferences: @escaping @Sendable () -> [String: Any] = { RexTheme.preferences() }) throws {
         self.service = service; self.tools = tools
         self.configurationURL = configurationURL
-        receivedLiveSnapshot = sessions != nil
-        let themeStarted = ProcessInfo.processInfo.systemUptime
-        theme = RexTheme.read(rexApp: tools.rexApp, systemIsDark: Self.systemIsDark)
-        themeReadMilliseconds = (ProcessInfo.processInfo.systemUptime - themeStarted) * 1000
-        if let sessions {
-            sessionSnapshot = ReshService.candidates(from: sessions)
-            scope = configuration.initialSource
-            showAvailableEntries()
-            isLoading = false
-        }
+        self.snapshotProvider = snapshotProvider ?? RexDataConnection(tools: tools)
+        self.readPreferences = readPreferences
+        self.readTheme = readTheme
+        self.theme = try readTheme(tools.rexApp, Self.systemIsDark)
+        sessionSnapshot = ReshService.candidates(from: sessions)
+        scope = configuration.initialSource
+        showAvailableEntries()
+        isLoading = false
     }
     static var systemIsDark: Bool { UserDefaults.standard.string(forKey: "AppleInterfaceStyle") == "Dark" }
     var selected: Candidate? { results.indices.contains(selection) ? results[selection] : nil }
-    var sessionCount: Int { sessionSnapshot?.count ?? 0 }
-    var folderCount: Int { search.entries.lazy.filter { $0.kind != .session }.count }
-    var panelHeight: CGFloat { PanelLayout.height(resultCount: results.count, hasError: error != nil) }
+    var sessionCount: Int { sessionSnapshot.count }
+    var displayedError: String? {
+        let messages = [error, diagnostic].compactMap { $0 }
+        return messages.isEmpty ? nil : messages.joined(separator: "\n")
+    }
+    var panelHeight: CGFloat { PanelLayout.height(resultCount: results.count, hasError: displayedError != nil) }
     var emptyMessage: String {
         if isLoading { return "Loading…" }
         if !query.isEmpty { return "No matches" }
-        if let warning = warnings.first, configuration.source(scope)?.kind != .sessions { return warning }
         return configuration.source(scope)?.kind == .sessions ? "No sessions" : "No folders or projects"
     }
 
@@ -61,21 +67,18 @@ final class SearchModel: ObservableObject {
         load(reloadConfiguration: true, resetScope: true)
     }
 
-    func prepare(service: ReshService, sessions: [RexSession]?, configurationURL: URL? = nil) {
+    func prepare(service: ReshService, sessions: [RexSession], configurationURL: URL? = nil) {
         clear()
-        if let configurationURL, configurationURL != self.configurationURL {
+        if configurationURL != self.configurationURL {
             self.configurationURL = configurationURL
             configuration = .defaults
             configurationError = nil
         }
         self.service = service
-        receivedLiveSnapshot = sessions != nil
-        if let sessions {
-            sessionSnapshot = ReshService.candidates(from: sessions)
-            scope = configuration.initialSource
-            showAvailableEntries()
-            isLoading = false
-        }
+        sessionSnapshot = ReshService.candidates(from: sessions)
+        scope = configuration.initialSource
+        showAvailableEntries()
+        isLoading = false
     }
 
     func clear() {
@@ -83,14 +86,19 @@ final class SearchModel: ObservableObject {
         loadingTask?.cancel(); loadingTask = nil
         attentionTask?.cancel(); attentionTask = nil
         attentionRecords = []; attentionSessionIDs = []
-        receivedAttentionSnapshot = false
-        sessionSnapshot = nil; search = FuzzyMatcher([]); warnings = []
+        sessionSnapshot = []; search = FuzzyMatcher([])
+        diagnostics = [:]; diagnostic = nil
+        onRetryOpening = nil
         query = ""; scope = .sessions; selection = 0
         isLoading = false; isConnecting = false; error = nil
         updateResults()
     }
 
-    func reload() { load(reloadConfiguration: true, refreshSessions: true) }
+    func reload() {
+        if let onRetryOpening { onRetryOpening(); return }
+        onReloadAttention?()
+        load(reloadConfiguration: true, refreshSessions: true)
+    }
 
     private func updateResults() {
         let updated = search.filter(query: query)
@@ -100,8 +108,8 @@ final class SearchModel: ObservableObject {
 
     private func showAvailableEntries() {
         search = FuzzyMatcher(SourceLoader(tools: tools).availableEntries(scope,
-            configuration: configuration, sessions: sessionSnapshot ?? []))
-        warnings = []
+            configuration: configuration, sessions: sessionSnapshot))
+        reportDiagnostic(nil, source: "source")
         updateResults()
     }
 
@@ -112,7 +120,7 @@ final class SearchModel: ObservableObject {
         error = configurationError
         if !reloadConfiguration {
             showAvailableEntries()
-            if configuration.source(scope)?.kind == .sessions, sessionSnapshot != nil {
+            if configuration.source(scope)?.kind == .sessions {
                 isLoading = false; loadingTask = nil
                 return
             }
@@ -135,13 +143,14 @@ final class SearchModel: ObservableObject {
                 showAvailableEntries()
             }
             do {
-                if (refreshSessions || sessionSnapshot == nil) && configuration.includesSessions(scope) {
-                    let sessions = try await service.sessionCandidates()
+                if refreshSessions {
+                    let provider = snapshotProvider, target = service.target
+                    let snapshot = try await Task.detached { try provider.snapshot(target: target, appPID: nil) }.value
                     guard generation == request else { return }
-                    sessionSnapshot = sessions
+                    sessionSnapshot = ReshService.candidates(from: snapshot.sessions)
                     showAvailableEntries()
                 }
-                let loader = SourceLoader(tools: tools), sessions = sessionSnapshot ?? []
+                let loader = SourceLoader(tools: tools), sessions = sessionSnapshot
                 let source = scope, configuration = configuration
                 let worker = Task.detached {
                     let result = try loader.load(source, configuration: configuration, sessions: sessions)
@@ -150,7 +159,7 @@ final class SearchModel: ObservableObject {
                 let result = try await withTaskCancellationHandler(operation: { try await worker.value }, onCancel: { worker.cancel() })
                 guard generation == request else { return }
                 search = result.0
-                warnings = result.1
+                reportDiagnostic(result.1.isEmpty ? nil : ReshError(result.1.joined(separator: "\n")), source: "source")
                 updateResults()
             } catch {
                 guard generation == request else { return }
@@ -204,35 +213,70 @@ final class SearchModel: ObservableObject {
         isConnecting = true
         Task {
             do {
-                try await service.delete(sessionID: sessionID)
+                let warning = try await service.delete(sessionID: sessionID)
+                sessionSnapshot.removeAll { $0.sessionID == sessionID }
                 isConnecting = false; reload()
+                reportDiagnostic(warning.map { ReshError($0) }, source: "registry")
             } catch { self.error = error.localizedDescription; isConnecting = false }
         }
     }
     func refreshTheme() {
-        let app = tools.rexApp, dark = Self.systemIsDark
+        let app = tools.rexApp, dark = Self.systemIsDark, reader = readTheme, request = generation
         Task {
-            let updated = await Task.detached { RexTheme.read(rexApp: app, systemIsDark: dark) }.value
-            if updated != theme { theme = updated }
+            do {
+                let updated = try await Task.detached { try reader(app, dark) }.value
+                guard generation == request else { return }
+                if updated != theme { theme = updated }
+                reportDiagnostic(nil, source: "theme")
+            } catch {
+                guard generation == request else { return }
+                reportDiagnostic(error, source: "theme")
+            }
+        }
+    }
+
+    func reportDiagnostic(_ error: Error?, source: String) {
+        diagnostics[source] = error?.localizedDescription
+        let messages = diagnostics.keys.sorted().compactMap { diagnostics[$0] }
+        diagnostic = messages.isEmpty ? nil : messages.joined(separator: "\n")
+    }
+
+    func receiveAttention(_ result: Result<[RexAttentionRecord], Error>) {
+        switch result {
+        case let .success(records): updateAttention(records)
+        case let .failure(error):
+            attentionTask?.cancel(); attentionTask = nil
+            attentionRecords = []; attentionSessionIDs = []
+            reportDiagnostic(error, source: "attention")
         }
     }
 
     func updateAttention(_ records: [RexAttentionRecord]) {
-        receivedAttentionSnapshot = true
+        reportDiagnostic(nil, source: "attention")
         attentionRecords = records
         refreshAttention()
     }
 
     func refreshAttention() {
         attentionTask?.cancel()
-        let records = attentionRecords, request = generation
-        guard !records.isEmpty else { attentionSessionIDs = []; attentionTask = nil; return }
+        let records = attentionRecords, request = generation, preferences = readPreferences
+        guard !records.isEmpty else {
+            attentionSessionIDs = []; attentionTask = nil
+            return
+        }
         attentionTask = Task {
-            let unseen = await Task.detached {
-                RexAttention.unseenSessionIDs(in: records, preferences: RexTheme.preferences())
-            }.value
-            guard !Task.isCancelled, generation == request else { return }
-            if attentionSessionIDs != unseen { attentionSessionIDs = unseen }
+            do {
+                let unseen = try await Task.detached {
+                    try RexAttention.unseenSessionIDs(in: records, preferences: preferences())
+                }.value
+                guard !Task.isCancelled, generation == request else { return }
+                if attentionSessionIDs != unseen { attentionSessionIDs = unseen }
+                reportDiagnostic(nil, source: "attention")
+            } catch {
+                guard !Task.isCancelled, generation == request else { return }
+                attentionSessionIDs = []
+                reportDiagnostic(error, source: "attention")
+            }
         }
     }
 }

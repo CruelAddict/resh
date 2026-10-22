@@ -33,10 +33,10 @@ public struct RexTheme: Codable, Equatable, Sendable {
     public var foreground: RGBA
     public var selection: RGBA
     public var accent: RGBA
-    public var surface: RGBA?
-    public var info: RGBA?
-    public var attentionColor: RGBA { info ?? RGBA(hex: "#4a90c9")! }
-    public var panelBackground: RGBA { surface ?? background }
+    public var surface: RGBA
+    public var info: RGBA
+    public var attentionColor: RGBA { info }
+    public var panelBackground: RGBA { surface }
 
     public static func preferences() -> [String: Any] {
         let domain = "com.superlogical.rex" as CFString
@@ -44,42 +44,63 @@ public struct RexTheme: Codable, Equatable, Sendable {
         return CFPreferencesCopyMultiple(nil, domain, kCFPreferencesCurrentUser, kCFPreferencesAnyHost) as? [String: Any] ?? [:]
     }
 
-    public static func read(rexApp: String, systemIsDark: Bool) -> RexTheme {
-        let builtins = try? Data(contentsOf: URL(fileURLWithPath: rexApp).appendingPathComponent(
+    public static func read(rexApp: String, systemIsDark: Bool) throws -> RexTheme {
+        let builtins = try Data(contentsOf: URL(fileURLWithPath: rexApp).appendingPathComponent(
             "Contents/Resources/SuperUI_SuperDesignTokens.bundle/Contents/Resources/themes.json"))
-        return resolve(preferences: preferences(), builtins: builtins, systemIsDark: systemIsDark)
+        return try resolve(preferences: preferences(), builtins: builtins, systemIsDark: systemIsDark)
     }
 
-    public static func resolve(preferences: [String: Any], builtins: Data?, systemIsDark: Bool) -> RexTheme {
+    public static func resolve(preferences: [String: Any], builtins: Data?, systemIsDark: Bool) throws -> RexTheme {
         let appearance = preferences["Workspace.appearance"] as? String ?? "system"
         let dark = appearance == "dark" || (appearance != "light" && systemIsDark)
         let style = preferences["Workspace.interfaceStyle"] as? String ?? "modern"
-        let id = preferences[dark ? "Workspace.darkThemeID" : "Workspace.lightThemeID"] as? String
-        let fallbackBackground = RGBA(hex: dark ? "#18181b" : "#f4f4f5")!
-        let fallbackForeground = RGBA(hex: dark ? "#f4f4f5" : "#18181b")!
-        var theme = RexTheme(name: "System", isDark: dark, usesGlass: ["modern", "blendTheme"].contains(style),
-            usesTint: ["useTheme", "blendTheme"].contains(style), background: fallbackBackground,
-            foreground: fallbackForeground, selection: RGBA(hex: dark ? "#353542" : "#dcdce8")!,
-            accent: RGBA(hex: "#9eaddb")!, surface: nil)
+        guard ["system", "light", "dark"].contains(appearance),
+              ["modern", "classic", "blendTheme", "useTheme"].contains(style) else {
+            throw ReshError("Unsupported Rex appearance or interface style.")
+        }
+        guard let id = preferences[dark ? "Workspace.darkThemeID" : "Workspace.lightThemeID"] as? String else {
+            throw ReshError("Rex's selected theme is unavailable. Select a theme in Rex Settings.")
+        }
+        func entries(_ data: Data?) throws -> [[String: Any]] {
+            guard let data else { return [] }
+            guard let value = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
+                throw ReshError("Unsupported Rex theme data.")
+            }
+            return value
+        }
         let customData = preferences["Workspace.customThemes"] as? Data
-        let custom = customData.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [[String: Any]] } ?? []
-        let bundled = builtins.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [[String: Any]] } ?? []
+        let custom = try entries(customData), bundled = try entries(builtins)
         let customEntry = custom.first { $0["id"] as? String == id }
         let bundledEntry = bundled.first { $0["id"] as? String == id }
         guard let entry = customEntry ?? bundledEntry,
-              let palette = entry[customEntry == nil ? "source" : "palette"] as? [String: Any] else { return theme }
-        theme.name = entry["name"] as? String ?? "Rex"
-        theme.background = RGBA.parse(palette["background"]) ?? theme.background
-        theme.foreground = RGBA.parse(palette["foreground"]) ?? theme.foreground
-        theme.selection = RGBA.parse(palette["selectionBackground"]) ?? theme.selection
-        let ansi = palette["ansi"] as? [Any] ?? []
-        let semantic = entry["semantic"] as? [String: Any] ?? [:]
-        theme.surface = RGBA.parse(semantic["surfaceRaised"])
-        theme.info = RGBA.parse(semantic["infoSolid"]) ?? RGBA.parse(semantic["info"])
-        theme.accent = RGBA.parse(semantic["accentSolid"]) ?? RGBA.parse(palette["cursor"])
-            ?? (ansi.count > 4 ? RGBA.parse(ansi[4]) : nil) ?? theme.accent
-        // UI selection is not the terminal's text-selection background.
-        theme.selection = RGBA.parse(semantic["selection"]) ?? RGBA.parse(palette["cursor"]) ?? theme.selection
-        return theme
+              let palette = entry[customEntry == nil ? "source" : "palette"] as? [String: Any] else {
+            throw ReshError("Cannot read selected Rex theme ‘\(id)’.")
+        }
+        func color(_ value: Any?, _ name: String) throws -> RGBA {
+            guard let color = RGBA.parse(value) else { throw ReshError("Rex theme ‘\(id)’ has no valid \(name) color.") }
+            return color
+        }
+        let background = try color(palette["background"], "background")
+        let foreground = try color(palette["foreground"], "foreground")
+        let selection: RGBA, accent: RGBA, surface: RGBA, info: RGBA
+        if customEntry != nil {
+            // Imported themes supply a terminal palette rather than bundled UI tokens.
+            accent = try color(palette["cursor"], "cursor")
+            selection = try color(palette["selectionBackground"], "selectionBackground")
+            surface = background
+            guard let ansi = palette["ansi"] as? [Any], ansi.count > 4 else {
+                throw ReshError("Rex theme ‘\(id)’ has no ANSI palette.")
+            }
+            info = try color(ansi[4], "ANSI blue")
+        } else {
+            let semantic = entry["semantic"] as? [String: Any] ?? [:]
+            accent = try color(semantic["accentSolid"], "accentSolid")
+            selection = try color(semantic["selection"], "selection")
+            surface = try color(semantic["surfaceRaised"], "surfaceRaised")
+            info = try color(semantic["infoSolid"], "infoSolid")
+        }
+        return RexTheme(name: entry["name"] as? String ?? id, isDark: dark,
+            usesGlass: ["modern", "blendTheme"].contains(style), usesTint: ["useTheme", "blendTheme"].contains(style),
+            background: background, foreground: foreground, selection: selection, accent: accent, surface: surface, info: info)
     }
 }

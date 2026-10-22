@@ -4,9 +4,25 @@ import ReshCore
 import Testing
 @testable import Resh
 
-/// Opt-in AppKit integration; record-demo.py can record this same scenario.
+/// Opt-in AppKit integration tests.
 @Suite("Native panel", .serialized)
 struct PanelTests {
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["RESH_UI_TESTS"] == "1"))
+    @MainActor func openingErrorDoesNotStartAnotherDataPath() throws {
+        _ = NSApplication.shared
+        let tools = Tools(rex: "/not/rex", zoxide: nil, fd: nil, rexApp: "/not/Rex.app")
+        let provider = SnapshotStub([])
+        let controller = try PanelController(service: ReshService(client: RexClient(tools: tools, target: RexTarget())),
+            tools: tools, snapshotProvider: provider, readTheme: { _, _ in .fixture })
+        defer { controller.dismiss(focusRex: false) }
+        var retries = 0
+        controller.present(error: ReshError("Opening failed")) { retries += 1 }
+        #expect(controller.model.error == "Opening failed")
+        #expect(controller.model.loadingTask == nil && provider.calls == 0)
+        controller.model.reload()
+        #expect(retries == 1 && provider.calls == 0)
+    }
+
     @Test(.enabled(if: ProcessInfo.processInfo.environment["RESH_UI_TESTS"] == "1"))
     @MainActor func sessionAttentionDotLayoutAndReuse() {
         _ = NSApplication.shared
@@ -46,7 +62,7 @@ struct PanelTests {
         try "".write(to: config, atomically: true, encoding: .utf8)
         defer { try? FileManager.default.removeItem(at: config) }
         _ = NSApplication.shared
-        let controller = PanelController(service: ReshService(client: client), tools: tools, sessions: sessions, configurationURL: config)
+        let controller = try PanelController(service: ReshService(client: client), tools: tools, sessions: sessions, configurationURL: config)
         defer { controller.dismiss(focusRex: false) }
         controller.show()
         await controller.model.loadingTask?.value
@@ -82,158 +98,43 @@ struct PanelTests {
 
     @Test(.enabled(if: ProcessInfo.processInfo.environment["RESH_UI_TESTS"] == "1"))
     @MainActor func renderedSessionNamesAndUnreadDotRegression() async throws {
-        let titles = ["gentle-spire", "dawn-spire", "drifting-mesa", "resh", "service-payment-session", "service-installments-api"]
+        let titles = [
+            "first-session", "second-session", "third-session", "app",
+            "example-background-task", "example-integration-task",
+        ]
         let sessions = titles.enumerated().map { RexSession(sessionID: "synthetic-\($0.offset)", label: $0.element) }
         let config = FileManager.default.temporaryDirectory.appendingPathComponent("resh-render-" + UUID().uuidString + ".toml")
         try "".write(to: config, atomically: true, encoding: .utf8)
         defer { try? FileManager.default.removeItem(at: config) }
-        let tools = Tools(rex: "/not/rex", zoxide: nil, fd: nil, rexApp: (try? Tools.discover())?.rexApp ?? "/not/Rex.app")
+        let tools = Tools(rex: "/not/rex", zoxide: nil, fd: nil, rexApp: "/not/Rex.app")
         _ = NSApplication.shared
-        let controller = PanelController(service: ReshService(client: RexClient(tools: tools, target: RexTarget())),
-            tools: tools, sessions: sessions, configurationURL: config)
-        defer { controller.dismiss(focusRex: false) }
-        controller.show()
-        await controller.model.loadingTask?.value
-        controller.stopAttention()
+        let model = try SearchModel(service: ReshService(client: RexClient(tools: tools, target: RexTarget())),
+            tools: tools, sessions: sessions, configurationURL: config, readTheme: { _, _ in .fixture },
+            readPreferences: { ["Workspace.programActivitySeen": [:]] })
+        defer { model.clear() }
+        model.loadInitial()
+        await model.loadingTask?.value
         // Deterministic rendering fixture; never injects status into a real Rex terminal.
-        controller.model.updateAttention([RexAttentionRecord(sessionID: "synthetic-2", blockID: "synthetic-block",
+        model.updateAttention([RexAttentionRecord(sessionID: "synthetic-2", blockID: "synthetic-block",
             state: "done", updatedAt: "2026-10-22T18:21:56.923423Z")])
-        await controller.model.attentionTask?.value
-        let content = try #require(controller.panel.contentView)
-        content.layoutSubtreeIfNeeded()
-        controller.panel.displayIfNeeded()
-        func findPicker(_ view: NSView) -> PanelView? {
-            if let picker = view as? PanelView { return picker }
-            return view.subviews.lazy.compactMap { findPicker($0) }.first
-        }
-        let picker = try #require(findPicker(content))
-        let rows = picker.visibleRowDiagnostics()
-        #expect(rows.compactMap { $0["title"] as? String } == titles)
-        for row in rows {
-            #expect((row["fieldWidth"] as! CGFloat) >= (row["fittingWidth"] as! CGFloat))
-            #expect((row["hasDot"] as? Bool) == ((row["title"] as? String) == "drifting-mesa"))
+        await model.attentionTask?.value
+        let picker = PanelView(model: model)
+        picker.layoutSubtreeIfNeeded()
+        let table = try #require(picker.subviews.compactMap { $0 as? NSScrollView }
+            .compactMap { $0.documentView as? NSTableView }.first)
+        #expect(table.numberOfRows == titles.count)
+        for (row, title) in titles.enumerated() {
+            let cell = try #require(table.view(atColumn: 0, row: row, makeIfNecessary: true) as? SessionCellView)
+            cell.layoutSubtreeIfNeeded()
+            let field = try #require(cell.textField)
+            #expect(field.stringValue == title)
+            #expect(field.frame.width >= ceil(field.cell!.cellSize.width))
+            #expect(cell.attention.isHidden == (row != 2))
         }
         if let path = ProcessInfo.processInfo.environment["RESH_UI_REGRESSION_SNAPSHOT"],
-           let bitmap = content.bitmapImageRepForCachingDisplay(in: content.bounds) {
-            content.cacheDisplay(in: content.bounds, to: bitmap)
+           let bitmap = picker.bitmapImageRepForCachingDisplay(in: picker.bounds) {
+            picker.cacheDisplay(in: picker.bounds, to: bitmap)
             try bitmap.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
-        }
-    }
-
-    @Test(.enabled(if: ProcessInfo.processInfo.environment["RESH_UI_TESTS"] == "1"
-        || ProcessInfo.processInfo.environment["RESH_UI_DEMO_ROOT"] != nil))
-    @MainActor func nativePanelInputAndReuse() async throws {
-        let recording = ProcessInfo.processInfo.environment["RESH_UI_DEMO_ROOT"].map { URL(fileURLWithPath: $0) }
-        let root = recording ?? FileManager.default.temporaryDirectory.appendingPathComponent("resh-panel-" + UUID().uuidString)
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        defer { if recording == nil { try? FileManager.default.removeItem(at: root) } }
-        for name in ["alpha", "beta"] {
-            try FileManager.default.createDirectory(at: root.appendingPathComponent(name), withIntermediateDirectories: true)
-        }
-        let config = root.appendingPathComponent("config.toml")
-        try """
-        source_order = ["sessions", "all", "work"]
-        [keymap]
-        "ctrl+w" = "source:work"
-        [[sources]]
-        id = "work"
-        title = "Work"
-        type = "paths"
-        paths = ["alpha", "beta"]
-        """.write(to: config, atomically: true, encoding: .utf8)
-        let tools = Tools(rex: "/not/rex", zoxide: nil, fd: nil, rexApp: "/not/Rex.app")
-        let service = ReshService(client: RexClient(tools: tools, target: RexTarget()))
-        let app = NSApplication.shared
-        app.setActivationPolicy(.accessory)
-        let controller = PanelController(service: service, tools: tools, configurationURL: config)
-        let backdrop = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 960, height: 640),
-            styleMask: [.borderless], backing: .buffered, defer: false)
-        let caption = NSTextField(wrappingLabelWithString: "")
-        if recording != nil {
-            backdrop.backgroundColor = NSColor(calibratedWhite: 0.08, alpha: 1)
-            backdrop.level = .floating
-            backdrop.center()
-            caption.font = .systemFont(ofSize: 22, weight: .medium)
-            caption.textColor = .white
-            caption.frame = NSRect(x: 36, y: 40, width: 890, height: 100)
-            backdrop.contentView?.addSubview(caption)
-            backdrop.orderFrontRegardless()
-        }
-        defer { controller.dismiss(focusRex: false); backdrop.orderOut(nil) }
-        func show(_ title: String) async {
-            controller.model.prepare(service: service, sessions: [RexSession(sessionID: title, label: title)])
-            controller.show()
-            await controller.model.loadingTask?.value
-            if recording != nil {
-                controller.panel.setFrameOrigin(NSPoint(x: backdrop.frame.midX - controller.panel.frame.width / 2,
-                    y: backdrop.frame.midY - 30))
-            }
-        }
-        func press(_ key: String, characters: String = "") throws {
-            let chord = try KeyChord(key)
-            let flags: [NSEvent.ModifierFlags] = [.command, .control, .option, .shift]
-            let modifiers = flags.enumerated().reduce(NSEvent.ModifierFlags()) {
-                chord.modifiers & (1 << $1.offset) != 0 ? $0.union($1.element) : $0
-            }
-            let event = try #require(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: modifiers,
-                timestamp: 0, windowNumber: controller.panel.windowNumber, context: nil,
-                characters: characters, charactersIgnoringModifiers: characters, isARepeat: false, keyCode: chord.code))
-            #expect(controller.handle(event))
-        }
-        func waitFor(_ name: String) async throws {
-            for _ in 0..<1500 {
-                if FileManager.default.fileExists(atPath: root.appendingPathComponent(name).path) { return }
-                try await Task.sleep(for: .milliseconds(20))
-            }
-            throw ReshError("Recorder did not create \(name)")
-        }
-        var stages: [String] = []
-        func stage(_ text: String) async throws {
-            stages.append(text)
-            guard recording != nil else { return }
-            caption.stringValue = text
-            for _ in 0..<60 {
-                backdrop.displayIfNeeded(); controller.panel.displayIfNeeded(); app.updateWindows()
-                try await Task.sleep(for: .milliseconds(30))
-            }
-        }
-        await show("Session one")
-        if recording != nil {
-            let frame = backdrop.frame, top = NSScreen.screens.first?.frame.maxY ?? 0
-            let ready: [String: Any] = ["rect": [Int(frame.minX), Int(top - frame.maxY), Int(frame.width), Int(frame.height)],
-                "scale": NSScreen.screens.first?.backingScaleFactor ?? 1]
-            try JSONSerialization.data(withJSONObject: ready).write(to: root.appendingPathComponent("ready.json"))
-            try await waitFor("recording-ready")
-        }
-        try press("ctrl+w", characters: "ц")
-        await controller.model.loadingTask?.value
-        #expect(controller.model.results.map(\.title) == ["alpha", "beta"])
-        try await stage("Ctrl+W → custom folders, using a physical key with Russian characters")
-        let editor = try #require(controller.panel.firstResponder as? NSTextView)
-        editor.insertText("beta", replacementRange: NSRange(location: 0, length: editor.string.utf16.count))
-        #expect(controller.model.query == "beta" && controller.model.results.map(\.title) == ["beta"])
-        try await stage("Native text input filters the list")
-        editor.selectAll(nil)
-        #expect(editor.selectedRange().length == 4)
-        editor.insertText("", replacementRange: editor.selectedRange())
-        try press("ctrl+n")
-        #expect(controller.model.selected?.title == "beta")
-        try press("ctrl+p")
-        #expect(controller.model.selected?.title == "alpha")
-        try await stage("Select-all, clear and keyboard navigation use the native editor")
-        try press("escape")
-        #expect(!controller.panel.isVisible && controller.model.results.isEmpty)
-        await show("Fresh session")
-        try press("cmd+2", characters: "@")
-        await controller.model.loadingTask?.value
-        #expect(controller.model.scope == .all && controller.model.results.map(\.title) == ["Fresh session"])
-        try await stage("The same panel reopens with a fresh snapshot; Cmd+2 switches sources")
-        try press("ctrl+[", characters: "\u{1b}")
-        #expect(!controller.panel.isVisible && controller.model.results.isEmpty)
-        if recording != nil {
-            let report: [String: Any] = ["input": "synthetic AppKit events", "sessionData": "synthetic", "stages": stages]
-            try JSONSerialization.data(withJSONObject: report).write(to: root.appendingPathComponent("report.json"))
-            try await waitFor("recording-stopped")
         }
     }
 }

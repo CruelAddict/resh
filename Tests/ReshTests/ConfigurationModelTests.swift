@@ -11,8 +11,9 @@ struct ConfigurationModelTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let url = root.appendingPathComponent("config.toml")
         let tools = Tools(rex: "/not/rex", zoxide: nil, fd: nil, rexApp: "/not/Rex.app")
-        let model = SearchModel(service: ReshService(client: RexClient(tools: tools, target: RexTarget())),
-            tools: tools, sessions: [RexSession(sessionID: "s", label: "Live session")], configurationURL: url)
+        let model = try SearchModel(service: ReshService(client: RexClient(tools: tools, target: RexTarget())),
+            tools: tools, sessions: [RexSession(sessionID: "s", label: "Live session")], configurationURL: url,
+            readTheme: { _, _ in .fixture })
         try """
         source_order = ["sessions", "configs"]
         [keymap]
@@ -38,7 +39,7 @@ struct ConfigurationModelTests {
         name = "Project two"
         path = "project"
         """.write(to: url, atomically: true, encoding: .utf8)
-        model.prepare(service: ReshService(client: RexClient(tools: tools, target: RexTarget())), sessions: [])
+        model.prepare(service: ReshService(client: RexClient(tools: tools, target: RexTarget())), sessions: [], configurationURL: url)
         model.loadInitial()
         await model.loadingTask?.value
         #expect(model.scope == .configs)
@@ -80,8 +81,8 @@ struct ConfigurationModelTests {
         timeout = 20
         """.write(to: url, atomically: true, encoding: .utf8)
         let tools = Tools(rex: "/not/rex", zoxide: nil, fd: nil, rexApp: "/not/Rex.app")
-        let model = SearchModel(service: ReshService(client: RexClient(tools: tools, target: RexTarget())), tools: tools,
-            sessions: [RexSession(sessionID: "s", label: "Live")], configurationURL: url)
+        let model = try SearchModel(service: ReshService(client: RexClient(tools: tools, target: RexTarget())), tools: tools,
+            sessions: [RexSession(sessionID: "s", label: "Live")], configurationURL: url, readTheme: { _, _ in .fixture })
         model.loadInitial()
         for _ in 0..<200 {
             if FileManager.default.fileExists(atPath: root.appendingPathComponent("started").path) { break }

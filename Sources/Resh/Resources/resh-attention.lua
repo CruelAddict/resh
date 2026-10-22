@@ -4,6 +4,12 @@ local terminal = "com.superlogical.terminal"
 local sessions = {}
 local previous
 
+local function fail(err)
+  io.stdout:write(assert(rex.json.encode({ error = tostring(err) })), "\n")
+  io.stdout:flush()
+  error(err, 0)
+end
+
 local function publish()
   local records = {}
   for session_id, blocks in pairs(sessions) do
@@ -37,11 +43,7 @@ local function statuses(session_id, block_id)
   local result, err = rex.call(terminal .. ".program_status", {
     session_id = session_id, block_id = block_id, args = {},
   })
-  -- Old servers may not implement program_status. That must not break the picker.
-  if not result then
-    if tostring(err):find("method_not_found", 1, true) or tostring(err):find("not_found", 1, true) then return {} end
-    error(err)
-  end
+  if not result then fail(err) end
   return result.records or {}
 end
 
@@ -49,7 +51,7 @@ local function scan(session_id)
   local listed, err = rex.call("session.list_blocks", { session_id = session_id })
   if not listed then
     if tostring(err):find("session_not_found", 1, true) then sessions[session_id] = nil; return end
-    error(err)
+    fail(err)
   end
   local blocks = {}
   for _, block in ipairs(listed.blocks or {}) do
@@ -93,6 +95,6 @@ end)
 -- script returns. Subscribe BEFORE the initial reads: without it session/block
 -- calls fail with "stream is not attached", not "there are no notifications".
 local listed, err = rex.call("session.attach_all", { event_scope = "all" })
-if not listed then error(err) end
+if not listed then fail(err) end
 for _, session in ipairs(listed.sessions or {}) do scan(session.session_id) end
 publish()

@@ -2,10 +2,9 @@ import Foundation
 
 public struct RexTarget: Codable, Sendable {
     public var clientID: String?
-    public var sessionID: String?
     public var server: String
-    public init(clientID: String? = nil, sessionID: String? = nil, server: String? = nil) {
-        self.clientID = clientID; self.sessionID = sessionID
+    public init(clientID: String? = nil, server: String? = nil) {
+        self.clientID = clientID
         let socket = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/rex/server.sock")
         self.server = server ?? socket.absoluteString.replacingOccurrences(of: "file://", with: "unix://")
     }
@@ -40,8 +39,9 @@ public struct RexClient: Sendable {
         return try command(["api", "call", method, json])
     }
     public func sessions() throws -> [RexSession] {
-        struct Reply: Decodable { let sessions: [RexSession]? }
-        return try JSONDecoder().decode(Reply.self, from: command(["ls", "--json"])).sessions ?? []
+        let reply = try JSONDecoder().decode([String: [RexSession]?].self, from: command(["ls", "--json"]))
+        guard let sessions = reply["sessions"] else { throw ReshError("Rex returned an invalid session list.") }
+        return sessions ?? []
     }
     public func resolveClient() throws -> (id: String, pid: Int32?) {
         let data = try command(["client", "list", "--json"])

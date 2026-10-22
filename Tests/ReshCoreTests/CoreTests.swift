@@ -83,9 +83,10 @@ struct ThemeTests {
     @Test func builtInPalette() throws {
         let data = Data("""
         [{"id":"charcoal","name":"Charcoal","source":{"background":"#121113","foreground":"#f8f8f2",
-        "selectionBackground":"#444444","ansi":["#000000","#000000","#000000","#000000","#aabbcc"]}}]
+        "selectionBackground":"#444444","ansi":["#000000","#000000","#000000","#000000","#aabbcc"]},
+        "semantic":{"accentSolid":"#aabbcc","selection":"#aabbcc","surfaceRaised":"#222222","infoSolid":"#4488cc"}}]
         """.utf8)
-        let theme = RexTheme.resolve(preferences: ["Workspace.appearance": "dark", "Workspace.interfaceStyle": "blendTheme",
+        let theme = try RexTheme.resolve(preferences: ["Workspace.appearance": "dark", "Workspace.interfaceStyle": "blendTheme",
             "Workspace.darkThemeID": "charcoal"], builtins: data, systemIsDark: false)
         #expect(theme.name == "Charcoal")
         #expect(theme.background.hex == "#121113")
@@ -95,27 +96,33 @@ struct ThemeTests {
     }
     @Test func customPaletteAndClassic() throws {
         let custom = Data("""
-        [{"id":"custom-1","name":"Mine","palette":{"background":{"red":0.2,"green":0.4,"blue":0.6,"alpha":1}}}]
+        [{"id":"custom-1","name":"Mine","palette":{"background":{"red":0.2,"green":0.4,"blue":0.6,"alpha":1},
+        "foreground":"#111111","cursor":"#aabbcc","selectionBackground":"#dddddd",
+        "ansi":["#000000","#000000","#000000","#000000","#4488cc"]}}]
         """.utf8)
-        let theme = RexTheme.resolve(preferences: ["Workspace.appearance": "light", "Workspace.interfaceStyle": "useTheme",
+        let theme = try RexTheme.resolve(preferences: ["Workspace.appearance": "light", "Workspace.interfaceStyle": "useTheme",
             "Workspace.lightThemeID": "custom-1", "Workspace.customThemes": custom], builtins: nil, systemIsDark: true)
         #expect(theme.name == "Mine")
         #expect(theme.background.hex == "#336699")
         #expect(!theme.isDark && !theme.usesGlass && theme.usesTint)
     }
-    @Test func malformedDataFallsBack() {
-        let theme = RexTheme.resolve(preferences: ["Workspace.customThemes": Data("bad".utf8)],
-                                    builtins: Data("broken".utf8), systemIsDark: true)
-        #expect(theme.name == "System" && theme.isDark)
+    @Test func malformedOrMissingThemeFailsInsteadOfSubstitutingAPalette() {
+        #expect(throws: (any Error).self) {
+            try RexTheme.resolve(preferences: ["Workspace.darkThemeID": "selected", "Workspace.customThemes": Data("bad".utf8)],
+                builtins: Data("broken".utf8), systemIsDark: true)
+        }
+        #expect(throws: ReshError.self) {
+            try RexTheme.resolve(preferences: ["Workspace.darkThemeID": "missing"], builtins: Data("[]".utf8), systemIsDark: true)
+        }
         #expect(RGBA(hex: "#gggggg") == nil)
     }
-    @Test func usesRexUISemanticsNotTerminalAnsiBlue() {
+    @Test func usesRexUISemanticsNotTerminalAnsiBlue() throws {
         let data = Data("""
-        [{"id":"native","source":{"background":"#161616","selectionBackground":"#3a3835",
+        [{"id":"native","source":{"background":"#161616","foreground":"#eeeeee","selectionBackground":"#3a3835",
         "ansi":["#000000","#000000","#000000","#000000","#8aa0b4"]},
-        "semantic":{"accentSolid":"#e05d3a","selection":"#e05d3a","surfaceRaised":"#262626","info":"#8aa0b4"}}]
+        "semantic":{"accentSolid":"#e05d3a","selection":"#e05d3a","surfaceRaised":"#262626","infoSolid":"#8aa0b4"}}]
         """.utf8)
-        let theme = RexTheme.resolve(preferences: ["Workspace.darkThemeID": "native"], builtins: data, systemIsDark: true)
+        let theme = try RexTheme.resolve(preferences: ["Workspace.darkThemeID": "native"], builtins: data, systemIsDark: true)
         #expect(theme.accent.hex == "#e05d3a")
         #expect(theme.selection.hex == "#e05d3a")
         #expect(theme.panelBackground.hex == "#262626")
@@ -227,13 +234,6 @@ struct ServiceTests {
         let registry = SessionRegistry(directory: temporary.url)
         try Data("not json".utf8).write(to: registry.url)
         #expect(throws: ReshError.self) { try registry.load() }
-    }
-    @Test(arguments: [0, 1, 100]) func listingUsesOneRequest(_ count: Int) async throws {
-        let temporary = try TemporaryDirectory(), runner = FakeRunner()
-        runner.sessions = (0..<count).map { ("session:\($0)", "session-\($0)", "/irrelevant/tab/path") }
-        let sessions = try await service(runner, temporary).sessionCandidates()
-        #expect(sessions.map(\.title) == runner.sessions.map(\.label))
-        #expect(runner.calls.count == 1)
     }
     @Test func projectStartupIsOnlyPartOfNewSessionCreation() async throws {
         let temporary = try TemporaryDirectory(), runner = FakeRunner()

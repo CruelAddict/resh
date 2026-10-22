@@ -65,6 +65,7 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
     private let scroll = NSScrollView()
     private let emptyLabel = NSTextField(labelWithString: "")
     private let errorLabel = NSTextField(wrappingLabelWithString: "")
+    private let errorScroll = NSScrollView()
     private let retry = NSButton(title: "Retry", target: nil, action: nil)
     private var sources: [SourceDefinition] = []
     private var keymap = ReshConfiguration.defaults.keymap
@@ -75,7 +76,6 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
     private var attentionSessionIDs = Set<String>()
     private var theme: RexTheme
     private var activeScope: SearchScope = .sessions
-    private var hasError = false
     private var isSelecting = false
     private var subscriptions = Set<AnyCancellable>()
 
@@ -138,9 +138,15 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
         addSubview(emptyLabel)
         errorLabel.font = .systemFont(ofSize: 11)
         errorLabel.textColor = .systemOrange
-        errorLabel.maximumNumberOfLines = 2
+        errorLabel.maximumNumberOfLines = 0
         errorLabel.isSelectable = true
-        addSubview(errorLabel)
+        errorScroll.drawsBackground = false
+        errorScroll.hasVerticalScroller = true
+        errorScroll.autohidesScrollers = true
+        errorScroll.scrollerStyle = .overlay
+        errorScroll.borderType = .noBorder
+        errorScroll.documentView = errorLabel
+        addSubview(errorScroll)
         retry.isBordered = false
         retry.font = .systemFont(ofSize: 11)
         retry.target = self
@@ -198,12 +204,16 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
         model.$query.sink { [weak self] query in
             if self?.searchField.stringValue != query { self?.searchField.stringValue = query }
         }.store(in: &subscriptions)
-        model.$error.sink { [weak self] error in
-            self?.hasError = error != nil
-            self?.errorLabel.stringValue = error ?? ""
-            self?.errorLabel.isHidden = error == nil
-            self?.retry.isHidden = error == nil
-            self?.needsLayout = true
+        Publishers.CombineLatest(model.$error, model.$diagnostic).map { error, diagnostic in
+            [error, diagnostic].compactMap { $0 }.joined(separator: "\n")
+        }.removeDuplicates().sink { [weak self] message in
+            guard let self else { return }
+            errorLabel.stringValue = message
+            errorScroll.isHidden = message.isEmpty
+            retry.isHidden = message.isEmpty
+            needsLayout = true
+            layoutSubtreeIfNeeded()
+            errorLabel.scrollToVisible(NSRect(x: 0, y: max(0, errorLabel.bounds.maxY - 1), width: 1, height: 1))
         }.store(in: &subscriptions)
         Publishers.CombineLatest(model.$isLoading, model.$isConnecting).sink { [weak self] loading, connecting in
             if loading || connecting { self?.progress.startAnimation(nil) }
@@ -266,8 +276,11 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
         if let index = sources.firstIndex(where: { $0.id == activeScope }) {
             sourceContainer.scrollToVisible(sourceButtons[index].frame)
         }
-        let errorHeight: CGFloat = hasError ? 44 : 0
-        errorLabel.frame = NSRect(x: 14, y: PanelLayout.listTop, width: width - 80, height: errorHeight)
+        let errorHeight: CGFloat = errorScroll.isHidden ? 0 : 44
+        errorScroll.frame = NSRect(x: 14, y: PanelLayout.listTop + 8, width: width - 80, height: 28)
+        let area = NSRect(x: 0, y: 0, width: errorScroll.contentSize.width, height: CGFloat.greatestFiniteMagnitude)
+        errorLabel.frame = NSRect(x: 0, y: 0, width: errorScroll.contentSize.width,
+            height: max(28, ceil(errorLabel.cell?.cellSize(forBounds: area).height ?? 0)))
         retry.frame = NSRect(x: width - 58, y: PanelLayout.listTop + 8, width: 44, height: 24)
         let y = PanelLayout.listTop + errorHeight, listHeight = PanelLayout.listHeight(resultCount: rows.count)
         scroll.frame = NSRect(x: padding, y: y, width: width - padding * 2, height: listHeight)
@@ -289,19 +302,6 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
         let entry = rows[row]
         cell.configure(entry, needsAttention: entry.sessionID.map { attentionSessionIDs.contains($0) } ?? false,
             color: theme.attentionColor.nsColor, textColor: table.selectedRow == row ? .white : theme.foreground.nsColor)
-    }
-
-    func visibleRowDiagnostics() -> [[String: Any]] {
-        let visible = table.rows(in: table.visibleRect)
-        guard visible.location != NSNotFound else { return [] }
-        return (visible.location..<NSMaxRange(visible)).compactMap { row in
-            guard rows.indices.contains(row),
-                  let cell = table.view(atColumn: 0, row: row, makeIfNecessary: true) as? SessionCellView,
-                  let field = cell.textField else { return nil }
-            cell.layoutSubtreeIfNeeded()
-            return ["title": field.stringValue, "fieldWidth": field.frame.width,
-                    "fittingWidth": ceil(field.cell?.cellSize.width ?? 0), "hasDot": !cell.attention.isHidden]
-        }
     }
 
     func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {

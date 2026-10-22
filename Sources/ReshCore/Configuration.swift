@@ -37,10 +37,6 @@ public struct ReshConfiguration: Equatable, Sendable {
         let canonical = PathIdentity.canonical(path)
         return projects.first { $0.path == canonical }
     }
-    public func includesSessions(_ id: SearchScope) -> Bool {
-        guard let source = source(id) else { return false }
-        return source.kind == .sessions || source.members.contains(where: includesSessions)
-    }
 
     public static func parse(_ text: String, directory: URL = FileManager.default.homeDirectoryForCurrentUser) throws -> Self {
         let raw = try TOMLDecoder().decode(Document.self, from: text)
@@ -123,8 +119,14 @@ public enum ConfigurationFile {
             ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".config")
         return root.appendingPathComponent("resh/config.toml")
     }
-    public static func load(_ url: URL = Self.url()) throws -> ReshConfiguration {
-        guard FileManager.default.fileExists(atPath: url.path) else { return .defaults }
+    public static func load(_ requestedURL: URL? = nil) throws -> ReshConfiguration {
+        let url = requestedURL ?? Self.url()
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            guard requestedURL == nil, ProcessInfo.processInfo.environment["RESH_CONFIG"] == nil else {
+                throw ReshError("Config file does not exist: \(url.path)")
+            }
+            return .defaults
+        }
         do { return try .parse(String(contentsOf: url, encoding: .utf8), directory: url.deletingLastPathComponent()) }
         catch {
             let message = (error as? ReshError)?.message ?? String(describing: error)

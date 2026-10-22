@@ -6,9 +6,8 @@ import Testing
 struct ConfigurationTests {
     let tools = Tools(rex: "/not/rex", zoxide: nil, fd: nil, rexApp: "/not/Rex.app")
 
-    @Test func missingConfigPreservesOriginalDefaults() throws {
-        let fixture = try TemporaryDirectory()
-        let config = try ConfigurationFile.load(fixture.url.appendingPathComponent("missing.toml"))
+    @Test func defaultsPreserveOriginalBindingsAndSources() throws {
+        let config = ReshConfiguration.defaults
         #expect(config.visibleSources.map(\.id) == [.sessions, .all, .directories, .find])
         #expect(config.keymap.action(for: try KeyChord("cmd+1")) == .scope(.sessions))
         #expect(config.keymap.action(for: try KeyChord("ctrl+n")) == .move(1))

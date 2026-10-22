@@ -6,12 +6,8 @@ import ReshCore
 struct LauncherRequest: Codable {
     var operation = "show"
     var client: String?
-    var session: String?
     var server: String?
-    var sessions: [RexSession]?
-    var smokeTest: String?
     var config: String?
-    var sentAt = ProcessInfo.processInfo.systemUptime
 }
 
 /// A small Foundation-only sender talks to the already-running native panel.

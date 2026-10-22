@@ -9,10 +9,6 @@ public actor ReshService {
 
     public nonisolated var target: RexTarget { client.target }
 
-    public func sessionCandidates() throws -> [Candidate] {
-        Self.candidates(from: try client.sessions())
-    }
-
     public nonisolated static func candidates(from sessions: [RexSession]) -> [Candidate] {
         // A Rex session has no global working directory. Do not inspect its tabs.
         sessions.map { Candidate(id: $0.sessionID, kind: .session, title: $0.label, sessionID: $0.sessionID) }
@@ -74,10 +70,27 @@ public actor ReshService {
         return sessionID
     }
 
-    public func delete(sessionID: String) throws {
-        _ = try client.command(["kill", sessionID])
+    /// Ensures the session is absent; returns a warning only if registry cleanup fails afterwards.
+    public func delete(sessionID: String) throws -> String? {
         let lock = try FileLock(url: registry.directory.appendingPathComponent("create.lock"))
         defer { withExtendedLifetime(lock) {} }
-        try registry.save(registry.load().filter { $0.server != client.target.server || $0.sessionID != sessionID })
+        let records = try registry.load()
+        do {
+            _ = try client.command(["kill", sessionID])
+        } catch {
+            let deletionError = error
+            let sessions: [RexSession]
+            do { sessions = try client.sessions() }
+            catch {
+                throw ReshError("Could not confirm whether the session was closed.\n\(deletionError.localizedDescription)\n\(error.localizedDescription)")
+            }
+            if sessions.contains(where: { $0.sessionID == sessionID }) { throw deletionError }
+        }
+        do {
+            try registry.save(records.filter { $0.server != client.target.server || $0.sessionID != sessionID })
+            return nil
+        } catch {
+            return "The session is closed, but its registry entry could not be removed.\n\(error.localizedDescription)"
+        }
     }
 }

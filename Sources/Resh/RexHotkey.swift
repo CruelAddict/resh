@@ -32,19 +32,6 @@ final class RexHotkey {
         updateRegistration()
     }
 
-    /// Exercise the native callback without posting global keyboard input or asking for Accessibility.
-    func exerciseHandler() -> OSStatus {
-        guard isRegistered else { return OSStatus(eventNotHandledErr) }
-        var event: EventRef?
-        var id = EventHotKeyID(signature: 0x72657368, id: 1)
-        let status = CreateEvent(nil, OSType(kEventClassKeyboard), UInt32(kEventHotKeyPressed), 0, 0, &event)
-        guard status == noErr, let event else { return status }
-        defer { ReleaseEvent(event) }
-        SetEventParameter(event, EventParamName(kEventParamDirectObject), EventParamType(typeEventHotKeyID),
-            MemoryLayout<EventHotKeyID>.size, &id)
-        return SendEventToEventTarget(event, GetApplicationEventTarget())
-    }
-
     private func updateRegistration() {
         let active = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
         let shouldRegister = PanelShortcut.launcherIsEnabled(frontmostBundleID: active)

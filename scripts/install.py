@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
-"""Install resh locally, preserving Rex config and rolling back invalid Lua changes."""
+"""Install resh and connect its bundled action to Rex."""
 import argparse
-import datetime
 import json
 import os
 from pathlib import Path
@@ -12,7 +11,6 @@ import sys
 import time
 
 ROOT = Path(__file__).resolve().parent.parent
-MARKER = '-- resh: native project picker (managed by resh)'
 
 
 def main():
@@ -23,7 +21,7 @@ def main():
     source = ROOT / 'dist/resh.app'
     destination = home / 'Applications/resh.app'
     config = Path(os.environ.get('REX_CONFIG', Path(os.environ.get('XDG_CONFIG_HOME', home / '.config')) / 'rex/init.lua'))
-    module = config.parent / 'resh.lua'
+    bundled_module = destination / 'Contents/Resources/resh.lua'
     rex = Path(os.environ.get('RESH_REX_BIN', home / 'Library/Application Support/com.superlogical.rex/RexServer/Versions/Current/Rex Server.app/Contents/MacOS/rex'))
     if not rex.is_file():
         raise RuntimeError('Rex CLI not found. Open Rex first or set RESH_REX_BIN.')
@@ -31,19 +29,17 @@ def main():
         subprocess.run(['/bin/bash', str(ROOT / 'scripts/build.sh')], check=True)
     if not source.is_dir():
         raise RuntimeError('Build the app first: bash scripts/build.sh')
+    if not (source / 'Contents/Resources/resh.lua').is_file():
+        raise RuntimeError('The app is missing its bundled Rex integration; rebuild it.')
     if destination.exists():
         with (destination / 'Contents/Info.plist').open('rb') as file:
             if plistlib.load(file).get('CFBundleIdentifier') != 'io.github.CruelAddict.resh':
                 raise RuntimeError(f'Refusing to replace an unrelated app: {destination}')
-    backup = home / 'Library/Application Support/resh/backups' / datetime.datetime.now().strftime('%Y%m%d-%H%M%S-%f')
-    backup.mkdir(parents=True)
-    original = {path: path.read_bytes() if path.exists() else None for path in (config, module)}
-    for path, data in original.items():
-        if data is not None:
-            shutil.copy2(path, backup / path.name)
-    # Keep the previous app too, so upgrades are reversible.
-    if destination.exists():
-        shutil.copytree(destination, backup / 'resh.app')
+    clients = json.loads(subprocess.check_output([str(rex), '--autostart=false', 'client', 'list', '--json']))
+    apps = [client for client in clients.get('clients', [])
+            if client.get('info', {}).get('kind') == 'app' and client.get('info', {}).get('platform') == 'macos']
+    if not apps:
+        raise RuntimeError('Open the Rex app before installing; its keymap must be refreshed too.')
     executable = source / 'Contents/MacOS/resh'
     subprocess.run([str(executable), '--quit'], check=True, stdout=subprocess.DEVNULL, timeout=5)
     for _ in range(100):
@@ -52,31 +48,34 @@ def main():
             break
         time.sleep(0.02)
     else:
-        raise RuntimeError('The previous resh helper is still running; its app was not replaced.')
+        raise RuntimeError('The resh helper did not stop; installation cancelled.')
     destination.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(source, destination, dirs_exist_ok=True)
-    config.parent.mkdir(parents=True, exist_ok=True)
+    if destination.exists():
+        shutil.rmtree(destination)
+    shutil.copytree(source, destination)
+    original = config.read_bytes() if config.exists() else None
+    text = (original or b'').decode('utf-8')
+    escaped = str(bundled_module).replace('\\', '\\\\').replace('"', '\\"')
+    integration = f'dofile("{escaped}")'
+    changed = integration not in text.splitlines()
+    if changed:
+        config.parent.mkdir(parents=True, exist_ok=True)
+        text = text.rstrip() + '\n\n' + integration + '\n' if text else integration + '\n'
+        config.write_text(text)
     try:
-        module.write_bytes((ROOT / 'integration/resh.lua').read_bytes())
-        text = (original[config] or b'').decode('utf-8')
-        if MARKER not in text:
-            # dofile is absolute and also works when REX_CONFIG is outside ~/.config/rex.
-            escaped = str(module).replace('\\', '\\\\').replace('"', '\\"')
-            text = text.rstrip() + f'\n\n{MARKER}\ndofile("{escaped}")\n'
-            config.write_text(text.lstrip('\n'))
         subprocess.run([str(rex), '--autostart=false', 'config', 'check', str(config)], check=True)
-        subprocess.run([str(rex), '--autostart=false', 'config', 'reload'], check=True)
-        subprocess.run([str(destination / 'Contents/MacOS/resh'), '--warmup'], check=True, timeout=10)
     except Exception:
-        for path, data in original.items():
-            if data is None:
-                path.unlink(missing_ok=True)
+        if changed:
+            if original is None:
+                config.unlink()
             else:
-                path.write_bytes(data)
+                config.write_bytes(original)
         raise
+    for client in apps:
+        subprocess.run([str(rex), '--autostart=false', '-C', client['client_id'], 'do', 'client.config.reload'], check=True)
+    subprocess.run([str(destination / 'Contents/MacOS/resh'), '--warmup'], check=True, timeout=10)
     print(f'Installed: {destination}')
-    print(f'Rex binding: Cmd+S → resh ({config})')
-    print(f'Backup: {backup}')
+    print(f'Rex integration: {bundled_module} ({config})')
     print('Rex Server → Remote Control must be enabled for session switching.')
 
 

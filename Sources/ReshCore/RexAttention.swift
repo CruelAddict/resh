@@ -25,28 +25,33 @@ public enum RexAttention {
     }
 
     /// Rex's read receipts are client-side, not part of the server API. Like theme
-    /// preferences, this is a read-only compatibility bridge, never our own unread ledger.
-    public static func unseenSessionIDs(in records: [RexAttentionRecord], preferences: [String: Any]) -> Set<String> {
-        let ledger = preferences["Workspace.programActivitySeen"] as? [String: Any]
-        func dates(_ key: String) -> [Identity: Set<Int64>] {
+    /// preferences, this is a read-only integration, never our own unread ledger.
+    public static func unseenSessionIDs(in records: [RexAttentionRecord], preferences: [String: Any]) throws -> Set<String> {
+        guard !records.isEmpty else { return [] }
+        guard let ledger = preferences["Workspace.programActivitySeen"] as? [String: Any] else {
+            throw ReshError("Rex read receipts are unavailable; unread indicators cannot be determined.")
+        }
+        func dates(_ key: String) throws -> [Identity: Set<Int64>] {
             var result: [Identity: Set<Int64>] = [:]
-            for receipt in ledger?[key] as? [[String: Any]] ?? [] {
+            guard let value = ledger[key] else { return result }
+            guard let receipts = value as? [[String: Any]] else { throw ReshError("Unsupported Rex read-receipt format.") }
+            for receipt in receipts {
                 guard let block = receipt["block"] as? String, let record = receipt["record"] as? String,
-                      let date = receipt["date"] as? Date else { continue }
+                      let date = receipt["date"] as? Date else { throw ReshError("Invalid Rex read receipt.") }
                 result[Identity(block: block, record: record), default: []].insert(milliseconds(date))
             }
             return result
         }
-        let seen = dates("receipts"), alerted = dates("alerted")
-        return Set(records.compactMap { record in
+        let seen = try dates("receipts"), alerted = try dates("alerted")
+        return try Set(records.compactMap { record in
             let identity = Identity(block: record.blockID, record: record.recordID ?? "")
-            let date = timestamp(record.updatedAt).map(milliseconds)
+            let date = try milliseconds(timestamp(record.updatedAt))
             // Rex also announces completion when an agent returns to idle. Only
             // accept idle when Rex actually recorded an alert for that report;
             // a shell/agent simply resting is not a notification.
-            let announcedIdle = record.state == "idle" && date.map { alerted[identity]?.contains($0) == true } == true
+            let announcedIdle = record.state == "idle" && alerted[identity]?.contains(date) == true
             guard ["done", "blocked", "error"].contains(record.state) || announcedIdle else { return nil }
-            if let date, seen[identity]?.contains(date) == true { return nil }
+            if seen[identity]?.contains(date) == true { return nil }
             return record.sessionID
         })
     }
@@ -58,11 +63,12 @@ public enum RexAttention {
         Int64((date.timeIntervalSince1970 * 1000).rounded())
     }
 
-    private static func timestamp(_ value: String) -> Date? {
+    private static func timestamp(_ value: String) throws -> Date {
         // ISO8601DateFormatter is deliberately millisecond-based, like Rex's
         // ledger. Parse before rounding so .923999 does not become .924.
         let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return formatter.date(from: value) ?? (try? Date.ISO8601FormatStyle().parse(value))
+        formatter.formatOptions = value.contains(".") ? [.withInternetDateTime, .withFractionalSeconds] : [.withInternetDateTime]
+        guard let date = formatter.date(from: value) else { throw ReshError("Invalid Rex activity timestamp: \(value)") }
+        return date
     }
 }

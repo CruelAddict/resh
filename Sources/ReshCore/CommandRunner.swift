@@ -126,15 +126,36 @@ public struct Tools: Sendable {
         func executable(_ paths: [String]) -> String? {
             paths.first { FileManager.default.isExecutableFile(atPath: $0) }
         }
-        let app = [environment["RESH_REX_APP"], "/Applications/Rex Beta.app", "/Applications/Rex.app",
-                   home + "/Applications/Rex Beta.app", home + "/Applications/Rex.app"]
-            .compactMap { $0 }.first { FileManager.default.fileExists(atPath: $0) } ?? "/Applications/Rex Beta.app"
+        func isDirectory(_ path: String) -> Bool {
+            var directory: ObjCBool = false
+            return FileManager.default.fileExists(atPath: path, isDirectory: &directory) && directory.boolValue
+        }
+        let app: String
+        if let override = environment["RESH_REX_APP"] {
+            guard isDirectory(override) else { throw ReshError("RESH_REX_APP is not an application directory: \(override)") }
+            app = override
+        } else {
+            guard let discovered = ["/Applications/Rex Beta.app", "/Applications/Rex.app",
+                home + "/Applications/Rex Beta.app", home + "/Applications/Rex.app"].first(where: isDirectory) else {
+                throw ReshError("Rex app not found. Set RESH_REX_APP to its application bundle.")
+            }
+            app = discovered
+        }
         let paths = (environment["PATH"] ?? "").split(separator: ":").map(String.init)
-        let rexPaths = [environment["RESH_REX_BIN"], environment["REX_BIN_DIR"].map { $0 + "/rex" },
-            home + "/Library/Application Support/com.superlogical.rex/RexServer/Versions/Current/Rex Server.app/Contents/MacOS/rex"]
-            .compactMap { $0 } + paths.map { $0 + "/rex" }
-        guard let rex = executable(rexPaths) else {
-            throw ReshError("Rex CLI not found. Open Rex once, or set RESH_REX_BIN.")
+        let rex: String
+        if let override = environment["RESH_REX_BIN"] {
+            guard FileManager.default.isExecutableFile(atPath: override) else {
+                throw ReshError("RESH_REX_BIN is not executable: \(override)")
+            }
+            rex = override
+        } else {
+            let rexPaths = [environment["REX_BIN_DIR"].map { $0 + "/rex" },
+                home + "/Library/Application Support/com.superlogical.rex/RexServer/Versions/Current/Rex Server.app/Contents/MacOS/rex"]
+                .compactMap { $0 } + paths.map { $0 + "/rex" }
+            guard let discovered = executable(rexPaths) else {
+                throw ReshError("Rex CLI not found. Open Rex once, or set RESH_REX_BIN.")
+            }
+            rex = discovered
         }
         func brewTool(_ name: String) -> String? {
             executable(["/opt/homebrew/bin/" + name, "/usr/local/bin/" + name] + paths.map { $0 + "/" + name })
