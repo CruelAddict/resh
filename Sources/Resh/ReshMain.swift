@@ -126,6 +126,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         host?.stop()
         hotkey?.stop()
         dataConnection?.stop()
+        controller?.stopAttention()
     }
     private func openFromNativeHotkey() {
         guard !hotkeyInFlight, let controller else { return }

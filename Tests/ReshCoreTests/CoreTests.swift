@@ -113,12 +113,13 @@ struct ThemeTests {
         let data = Data("""
         [{"id":"native","source":{"background":"#161616","selectionBackground":"#3a3835",
         "ansi":["#000000","#000000","#000000","#000000","#8aa0b4"]},
-        "semantic":{"accentSolid":"#e05d3a","selection":"#e05d3a","surfaceRaised":"#262626"}}]
+        "semantic":{"accentSolid":"#e05d3a","selection":"#e05d3a","surfaceRaised":"#262626","info":"#8aa0b4"}}]
         """.utf8)
         let theme = RexTheme.resolve(preferences: ["Workspace.darkThemeID": "native"], builtins: data, systemIsDark: true)
         #expect(theme.accent.hex == "#e05d3a")
         #expect(theme.selection.hex == "#e05d3a")
         #expect(theme.panelBackground.hex == "#262626")
+        #expect(theme.attentionColor.hex == "#8aa0b4")
     }
 }
 

@@ -7,6 +7,8 @@ public actor ReshService {
         self.client = client; self.registry = registry
     }
 
+    public nonisolated var target: RexTarget { client.target }
+
     public func sessionCandidates() throws -> [Candidate] {
         Self.candidates(from: try client.sessions())
     }

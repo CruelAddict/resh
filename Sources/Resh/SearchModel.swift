@@ -12,6 +12,7 @@ final class SearchModel: ObservableObject {
     @Published var error: String?
     @Published var theme: RexTheme
     @Published private(set) var results: [Candidate] = []
+    @Published private(set) var attentionSessionIDs = Set<String>()
     @Published private(set) var configuration = ReshConfiguration.defaults
     private(set) var configurationURL: URL
     private var configurationError: String?
@@ -21,10 +22,13 @@ final class SearchModel: ObservableObject {
     private(set) var service: ReshService
     let tools: Tools
     var loadingTask: Task<Void, Never>?
+    private(set) var attentionTask: Task<Void, Never>?
+    private var attentionRecords: [RexAttentionRecord] = []
     var onDismiss: ((Bool) -> Void)?
     var isPresentingConfirmation = false
     private var generation = 0
     private(set) var receivedLiveSnapshot: Bool
+    private(set) var receivedAttentionSnapshot = false
     let themeReadMilliseconds: Double
 
     init(service: ReshService, tools: Tools, sessions: [RexSession]? = nil, configurationURL: URL = ConfigurationFile.url()) {
@@ -77,6 +81,9 @@ final class SearchModel: ObservableObject {
     func clear() {
         generation += 1
         loadingTask?.cancel(); loadingTask = nil
+        attentionTask?.cancel(); attentionTask = nil
+        attentionRecords = []; attentionSessionIDs = []
+        receivedAttentionSnapshot = false
         sessionSnapshot = nil; search = FuzzyMatcher([]); warnings = []
         query = ""; scope = .sessions; selection = 0
         isLoading = false; isConnecting = false; error = nil
@@ -207,6 +214,25 @@ final class SearchModel: ObservableObject {
         Task {
             let updated = await Task.detached { RexTheme.read(rexApp: app, systemIsDark: dark) }.value
             if updated != theme { theme = updated }
+        }
+    }
+
+    func updateAttention(_ records: [RexAttentionRecord]) {
+        receivedAttentionSnapshot = true
+        attentionRecords = records
+        refreshAttention()
+    }
+
+    func refreshAttention() {
+        attentionTask?.cancel()
+        let records = attentionRecords, request = generation
+        guard !records.isEmpty else { attentionSessionIDs = []; attentionTask = nil; return }
+        attentionTask = Task {
+            let unseen = await Task.detached {
+                RexAttention.unseenSessionIDs(in: records, preferences: RexTheme.preferences())
+            }.value
+            guard !Task.isCancelled, generation == request else { return }
+            if attentionSessionIDs != unseen { attentionSessionIDs = unseen }
         }
     }
 }

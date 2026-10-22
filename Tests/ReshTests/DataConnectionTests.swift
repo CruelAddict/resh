@@ -17,8 +17,95 @@ private final class StubRex {
     deinit { try? FileManager.default.removeItem(at: directory) }
 }
 
+private final class AttentionUpdates: @unchecked Sendable {
+    private let lock = NSLock()
+    private var updates: [[RexAttentionRecord]] = []
+    var values: [[RexAttentionRecord]] { lock.lock(); defer { lock.unlock() }; return updates }
+    func append(_ records: [RexAttentionRecord]) { lock.lock(); defer { lock.unlock() }; updates.append(records) }
+    func waitForCount(_ count: Int) async throws {
+        for _ in 0..<300 {
+            if values.count >= count { return }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        throw ReshError("Timed out waiting for attention updates")
+    }
+}
+
 @Suite("Resident data connection")
 struct DataConnectionTests {
+    @Test func attentionStreamHandlesFragmentsEmptySnapshotsAndExplicitTarget() async throws {
+        let stub = try StubRex(body: """
+        import os
+        assert not any(k in os.environ for k in ['REX_SESSION','REX_BLOCK','REX_CLIENT','REX_SERVER'])
+        server=sys.argv[sys.argv.index('--server')+1]
+        assert '--all' in sys.argv
+        data=json.dumps({'records':[{'session_id':server,'block_id':'b','state':'done','updated_at':'2026-10-22T17:59:59Z'}]})
+        sys.stdout.write(data[:12]);sys.stdout.flush();time.sleep(.02)
+        print(data[12:],flush=True)
+        print('{}',flush=True)
+        time.sleep(30)
+        """)
+        let connection = RexAttentionConnection(tools: stub.tools), updates = AttentionUpdates()
+        defer { connection.stop() }
+        connection.start(target: RexTarget(server: "explicit-server")) { updates.append($0) }
+        try await updates.waitForCount(2)
+        #expect(updates.values.first?.first?.sessionID == "explicit-server")
+        #expect(updates.values.last?.isEmpty == true)
+        connection.stop()
+        let count = updates.values.count
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(updates.values.count == count)
+        connection.start(target: RexTarget(server: "new-server")) { updates.append($0) }
+        try await updates.waitForCount(count + 2)
+        #expect(updates.values[count].first?.sessionID == "new-server")
+    }
+
+    @Test func attentionStreamClearsDotsOnMalformedDataOrEOF() async throws {
+        for ending in ["print('not json',flush=True);time.sleep(30)", "sys.exit(0)"] {
+            let stub = try StubRex(body: """
+            print('{"records":[{"session_id":"s","block_id":"b","state":"done","updated_at":"2026-10-22T17:59:59Z"}]}',flush=True)
+            time.sleep(.03)
+            \(ending)
+            """)
+            let connection = RexAttentionConnection(tools: stub.tools), updates = AttentionUpdates()
+            connection.start(target: RexTarget()) { updates.append($0) }
+            defer { connection.stop() }
+            try await updates.waitForCount(2)
+            #expect(updates.values.first?.first?.state == "done")
+            #expect(updates.values.last?.isEmpty == true)
+        }
+    }
+
+    @Test func unavailableAttentionConnectionDoesNotBreakSessions() async throws {
+        let tools = Tools(rex: "/not/rex", zoxide: nil, fd: nil, rexApp: "/not/Rex.app")
+        let connection = RexAttentionConnection(tools: tools), updates = AttentionUpdates()
+        defer { connection.stop() }
+        connection.start(target: RexTarget()) { updates.append($0) }
+        try await updates.waitForCount(1)
+        #expect(updates.values == [[]])
+    }
+
+    @Test @MainActor func attentionUpdatesDoNotChangeSearchOrSelectionAndAreClearedOnHide() async throws {
+        let tools = Tools(rex: "/not/rex", zoxide: nil, fd: nil, rexApp: "/not/Rex.app")
+        let service = ReshService(client: RexClient(tools: tools, target: RexTarget()))
+        let sessions = [RexSession(sessionID: "first", label: "Session one"), RexSession(sessionID: "second", label: "Session two")]
+        let model = SearchModel(service: service, tools: tools, sessions: sessions)
+        model.query = "session"; model.selection = 1
+        let results = model.results
+        let record = RexAttentionRecord(sessionID: "first", blockID: "synthetic", state: "done", updatedAt: "2026-10-22T17:59:59Z")
+        model.updateAttention([record])
+        await model.attentionTask?.value
+        #expect(model.attentionSessionIDs == ["first"])
+        #expect(model.results == results && model.query == "session" && model.selection == 1)
+        model.updateAttention([record])
+        let pending = model.attentionTask
+        model.clear()
+        await pending?.value
+        #expect(model.attentionSessionIDs.isEmpty)
+        model.prepare(service: service, sessions: sessions)
+        #expect(model.attentionSessionIDs.isEmpty)
+    }
+
     @Test func returnsNewLinesWithoutWaitingForPipeEOF() throws {
         let stub = try StubRex(body: """
         print('{"ready":true}',flush=True)

@@ -10,6 +10,50 @@ private final class SelectionRow: NSTableRowView {
     }
 }
 
+@MainActor
+final class SessionCellView: NSTableCellView {
+    let attention = NSImageView()
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        let label = NSTextField(labelWithString: "")
+        label.font = .systemFont(ofSize: 13)
+        label.lineBreakMode = .byTruncatingMiddle
+        textField = label
+        addSubview(label)
+        attention.image = NSImage(systemSymbolName: "circle.fill", accessibilityDescription: nil)
+        attention.imageScaling = .scaleProportionallyUpOrDown
+        attention.setAccessibilityElement(false)
+        attention.isHidden = true
+        addSubview(attention)
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    func configure(_ candidate: Candidate, needsAttention: Bool, color: NSColor, textColor: NSColor) {
+        textField?.stringValue = candidate.displayTitle
+        textField?.textColor = textColor
+        attention.isHidden = candidate.kind != .session || !needsAttention
+        attention.contentTintColor = color
+        toolTip = attention.isHidden ? nil : "Unread result or action required in this session"
+        setAccessibilityLabel("\(candidate.kind == .session ? "Session" : "Folder"), \(candidate.displayTitle)"
+            + (attention.isHidden ? "" : ", unread activity"))
+        needsLayout = true
+    }
+
+    override func layout() {
+        super.layout()
+        guard let textField else { return }
+        let available = max(0, bounds.width - 16 - (attention.isHidden ? 0 : 14))
+        // NSTextField's intrinsic width omits NSTextFieldCell's horizontal
+        // drawing insets. Using it clips even "resh" despite ample row space.
+        let fitting = ceil(textField.cell?.cellSize.width ?? available)
+        let width = attention.isHidden ? available : min(available, fitting)
+        textField.frame = NSRect(x: 8, y: 5, width: width, height: 17)
+        attention.frame = NSRect(x: textField.frame.maxX + 6, y: 10, width: 7, height: 7)
+    }
+}
+
 /// AppKit controls keep the picker compact and avoid cold-start SwiftUI layout work.
 @MainActor
 final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTextFieldDelegate {
@@ -28,6 +72,7 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
     private let sourceContainer = NSView()
     private var sourceButtons: [NSButton] = []
     private var rows: [Candidate] = []
+    private var attentionSessionIDs = Set<String>()
     private var theme: RexTheme
     private var activeScope: SearchScope = .sessions
     private var hasError = false
@@ -134,6 +179,18 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
             needsLayout = true
         }.store(in: &subscriptions)
         model.$selection.sink { [weak self] in self?.selectRow($0) }.store(in: &subscriptions)
+        model.$attentionSessionIDs.sink { [weak self] sessionIDs in
+            guard let self else { return }
+            attentionSessionIDs = sessionIDs
+            // Status updates must not reload search results or move the selection.
+            let visible = table.rows(in: table.visibleRect)
+            guard visible.location != NSNotFound else { return }
+            for row in visible.location..<NSMaxRange(visible) where rows.indices.contains(row) {
+                if let cell = table.view(atColumn: 0, row: row, makeIfNecessary: false) as? SessionCellView {
+                    configure(cell, row: row)
+                }
+            }
+        }.store(in: &subscriptions)
         model.$scope.sink { [weak self] scope in
             self?.activeScope = scope
             self?.updateSources()
@@ -222,21 +279,29 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         let identifier = NSUserInterfaceItemIdentifier("entry.cell")
-        let cell = tableView.makeView(withIdentifier: identifier, owner: self) as? NSTableCellView ?? NSTableCellView()
+        let cell = tableView.makeView(withIdentifier: identifier, owner: self) as? SessionCellView ?? SessionCellView()
         cell.identifier = identifier
-        if cell.textField == nil {
-            let label = NSTextField(labelWithString: "")
-            label.font = .systemFont(ofSize: 13)
-            label.lineBreakMode = .byTruncatingMiddle
-            label.autoresizingMask = [.width]
-            cell.textField = label
-            cell.addSubview(label)
-        }
-        cell.textField?.frame = NSRect(x: 8, y: 5, width: max(0, tableView.bounds.width - 16), height: 17)
-        cell.textField?.stringValue = rows[row].displayTitle
-        cell.textField?.textColor = tableView.selectedRow == row ? .white : theme.foreground.nsColor
-        cell.setAccessibilityLabel("\(rows[row].kind == .session ? "Session" : "Folder"), \(rows[row].displayTitle)")
+        configure(cell, row: row)
         return cell
+    }
+
+    private func configure(_ cell: SessionCellView, row: Int) {
+        let entry = rows[row]
+        cell.configure(entry, needsAttention: entry.sessionID.map { attentionSessionIDs.contains($0) } ?? false,
+            color: theme.attentionColor.nsColor, textColor: table.selectedRow == row ? .white : theme.foreground.nsColor)
+    }
+
+    func visibleRowDiagnostics() -> [[String: Any]] {
+        let visible = table.rows(in: table.visibleRect)
+        guard visible.location != NSNotFound else { return [] }
+        return (visible.location..<NSMaxRange(visible)).compactMap { row in
+            guard rows.indices.contains(row),
+                  let cell = table.view(atColumn: 0, row: row, makeIfNecessary: true) as? SessionCellView,
+                  let field = cell.textField else { return nil }
+            cell.layoutSubtreeIfNeeded()
+            return ["title": field.stringValue, "fieldWidth": field.frame.width,
+                    "fittingWidth": ceil(field.cell?.cellSize.width ?? 0), "hasDot": !cell.attention.isHidden]
+        }
     }
 
     func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {

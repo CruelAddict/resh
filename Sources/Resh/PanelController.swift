@@ -15,6 +15,8 @@ final class PanelController: NSObject, NSWindowDelegate {
     let model: SearchModel
     private var monitor: Any?
     private var themeTimer: Timer?
+    private let attentionConnection: RexAttentionConnection
+    private var attentionGeneration = 0
     private var subscriptions = Set<AnyCancellable>()
     private var picker: PanelView?
     private var rexPID: Int32?
@@ -33,6 +35,7 @@ final class PanelController: NSObject, NSWindowDelegate {
 
     init(service: ReshService, tools: Tools, sessions: [RexSession]? = nil, smokeTest: String? = nil, configurationURL: URL = ConfigurationFile.url()) {
         self.model = SearchModel(service: service, tools: tools, sessions: sessions, configurationURL: configurationURL)
+        self.attentionConnection = RexAttentionConnection(tools: tools)
         self.defaultConfigurationURL = configurationURL
         LaunchMetrics.mark("model")
         self.smokeTest = smokeTest
@@ -119,7 +122,18 @@ final class PanelController: NSObject, NSWindowDelegate {
             return self.handle(event) ? nil : event
         }
         themeTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.model.refreshTheme() }
+            MainActor.assumeIsolated {
+                self?.model.refreshTheme()
+                self?.model.refreshAttention()
+            }
+        }
+        attentionGeneration += 1
+        let attentionRequest = attentionGeneration
+        attentionConnection.start(target: model.service.target) { [weak self] records in
+            Task { @MainActor [weak self] in
+                guard let self, attentionGeneration == attentionRequest, panel.isVisible else { return }
+                model.updateAttention(records)
+            }
         }
         model.loadInitial()
         model.refreshTheme()
@@ -230,6 +244,7 @@ final class PanelController: NSObject, NSWindowDelegate {
         isDismissing = true
         if let monitor { NSEvent.removeMonitor(monitor); self.monitor = nil }
         themeTimer?.invalidate()
+        stopAttention()
         panel.orderOut(nil)
         if focusRex, NSApp.isActive, let rexPID, NSWorkspace.shared.frontmostApplication?.processIdentifier != rexPID {
             NSRunningApplication(processIdentifier: rexPID)?.activate(options: [])
@@ -238,15 +253,31 @@ final class PanelController: NSObject, NSWindowDelegate {
         if terminateOnDismiss { NSApp.terminate(nil) }
     }
 
+    func stopAttention() {
+        attentionGeneration += 1
+        attentionConnection.stop()
+    }
+
     private func runSmokeTest(output: String) async {
         await model.loadingTask?.value
         markPresentation("resultsReady")
+        // First paint deliberately doesn't await activity. A smoke screenshot
+        // must, or it can falsely "verify" an empty list of notification dots.
+        for _ in 0..<200 {
+            if model.receivedAttentionSnapshot { break }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        await model.attentionTask?.value
+        markPresentation("attentionReady")
         panel.contentView?.layoutSubtreeIfNeeded()
         panel.displayIfNeeded()
         var report: [String: Any] = ["visible": panel.isVisible, "keyWindow": panel.isKeyWindow,
             "searchFocused": panel.firstResponder is NSTextView,
             "sessionCount": model.sessionCount, "initialSessionTitles": model.results.map(\.title),
             "liveSessionSnapshot": model.receivedLiveSnapshot,
+            "attentionSnapshotReceived": model.receivedAttentionSnapshot,
+            "attentionSessionIDs": model.attentionSessionIDs.sorted(),
+            "renderedRows": picker?.visibleRowDiagnostics() ?? [],
             "panelReadyMs": panelReadyMilliseconds,
             "requestToPanelMs": requestToPanelMilliseconds, "pid": getpid(), "presentationCount": presentationCount,
             "nativeHotkeyToPanelMs": nativeHotkeyToPanelMilliseconds as Any? ?? NSNull(),
@@ -265,7 +296,7 @@ final class PanelController: NSObject, NSWindowDelegate {
             dismiss(focusRex: false)
             report["hidden"] = !panel.isVisible
             report["sessionDataClearedOnHide"] = model.sessionCount == 0 && model.folderCount == 0
-                && model.query.isEmpty && model.results.isEmpty
+                && model.query.isEmpty && model.results.isEmpty && model.attentionSessionIDs.isEmpty
         }
         if let data = try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]) {
             try? data.write(to: URL(fileURLWithPath: output + ".json"), options: .atomic)

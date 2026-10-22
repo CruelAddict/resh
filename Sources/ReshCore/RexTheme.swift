@@ -34,6 +34,8 @@ public struct RexTheme: Codable, Equatable, Sendable {
     public var selection: RGBA
     public var accent: RGBA
     public var surface: RGBA?
+    public var info: RGBA?
+    public var attentionColor: RGBA { info ?? RGBA(hex: "#4a90c9")! }
     public var panelBackground: RGBA { surface ?? background }
 
     public static func preferences() -> [String: Any] {
@@ -73,6 +75,7 @@ public struct RexTheme: Codable, Equatable, Sendable {
         let ansi = palette["ansi"] as? [Any] ?? []
         let semantic = entry["semantic"] as? [String: Any] ?? [:]
         theme.surface = RGBA.parse(semantic["surfaceRaised"])
+        theme.info = RGBA.parse(semantic["infoSolid"]) ?? RGBA.parse(semantic["info"])
         theme.accent = RGBA.parse(semantic["accentSolid"]) ?? RGBA.parse(palette["cursor"])
             ?? (ansi.count > 4 ? RGBA.parse(ansi[4]) : nil) ?? theme.accent
         // UI selection is not the terminal's text-selection background.

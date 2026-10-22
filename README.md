@@ -116,6 +116,22 @@ then reuses it for keystrokes until the source changes or the panel closes.
 it. `resh --status` reports its state and native hotkey registration. Smoke
 reports separate `requestToPanelMs` from one-time application startup.
 
+Sessions with an unseen result, a request for user action, or an error show a small
+dot beside their name. Running agents and plain idle agents have no indicator;
+an idle agent whose completion Rex has announced keeps its unread dot. Activity arrives
+through Rex's program-status API and events, asynchronously after the panel opens;
+there is no terminal polling. The event connection closes and its data is cleared
+when the panel hides. Folder and project rows never show activity dots.
+
+Read receipts are read from Rex's local `Workspace.programActivitySeen` preferences,
+so viewing activity in Rex removes the corresponding dot (within a second while
+the panel is open). resh never writes read receipts or marks activity read merely
+because the picker is open. This is a best-effort bridge to a private preference
+format, not an exported Rex unread-notifications API: if the format is unavailable,
+the dot reflects current `done`/`blocked`/`error` records instead. Announced idle
+reports and read receipts are matched at Rex's millisecond precision. The dot is a native
+SF Symbol using Rex's theme `info` color, not a copied private Rex UI component.
+
 ## Naming and reuse
 
 - Plain directory → its basename.
