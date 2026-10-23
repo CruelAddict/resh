@@ -14,9 +14,9 @@ swift test
 python3 scripts/install.py
 ```
 
-Installs `~/Applications/resh.app` and one `dofile(...)` line in Rex's config.
+Installs `~/Applications/resh.app`, a `dofile(...)` line and a `--start` command in Rex's config.
 The action implementation and Lua resources stay inside the app, not in dotfiles.
-The installer adds this line without rewriting personal Rex settings.
+The installer preserves personal Rex settings and existing custom startup arguments.
 No server restart is necessary.
 Enable **Rex Settings → Rex Server → Remote Control** so the helper can ask Rex
 to show the selected session. This is a Rex permission, not macOS Accessibility.
@@ -54,8 +54,8 @@ sized to its results (up to 12 rows). It opens on the pointer's display and
 accepts keyboard input without deactivating Rex.
 
 The resident helper reuses its AppKit controls and a persistent `rex do`
-connection (`resh-data.lua`). Each opening reads a fresh client/session snapshot,
-without spawning CLI processes or inspecting individual tabs. The native hotkey,
+connection (`resh-data.lua`) while Rex is running. Each warm opening reads a fresh
+client/session snapshot, without spawning CLI processes or inspecting individual tabs. The native hotkey,
 Rex action and CLI all use this same opening path; explicit reloads use the same connection.
 Hiding clears session and folder data and the query.
 Errors wrap and scroll in one compact, selectable field without expanding the panel.
@@ -65,8 +65,39 @@ background. Combined sources show available sessions/projects while providers
 load; returning to Sessions is immediate. Search normalizes each list once,
 then reuses it for keystrokes until the source changes or the panel closes.
 
-`resh --quit` stops the helper; `resh --warmup` or reloading Rex's config starts
-it. `resh --status` reports its state and native hotkey registration.
+### Lifecycle and background work
+
+- The native AppKit host and controls stay resident for fast opening; the glass
+  renderer is unchanged. Switching to another app does not make the connection cold.
+- Closing the last Rex app, or putting the Mac to sleep, closes the CLI bridges
+  and hides the panel. Launch/wake notifications attempt one preliminary data
+  connection; failed connections recover on the next opening, not in a background
+  retry loop. There is no hidden polling timer.
+- A temporary `launchd` job supervises the host for the current GUI login session.
+  Failures restart it; successful `resh --quit` stays stopped until an explicit
+  show/start or Rex config reload. Nothing is installed in `~/Library/LaunchAgents`.
+  The definition is cached at `~/Library/Caches/resh/launcher.plist`, with only an
+  allowlist of launch environment variables, not the caller's full environment.
+- Normal bridge shutdown sends SIGTERM, then SIGKILL after 200 ms if necessary,
+  without blocking the UI. After a host crash, launchd signals its old process
+  group; the data script also exits on stdin EOF. The visible-only activity
+  stream writes a tiny heartbeat every 10 seconds to detect a closed reader.
+  This is not a Rex API poll.
+- Broken snapshot connections (including server EOF returned through Lua) are
+  recreated automatically within one five-second deadline. Slow openings show
+  `Loading sessions…` in the normal panel; only a failed recovery shows
+  `Can’t connect to Rex.` and Retry. Esc cancels the opening. The visible activity
+  stream also reconnects without clearing the query, selection or existing dots.
+  Each recovered stream starts with a fresh retry deadline for its next disconnect.
+  Other API errors, malformed responses and session-changing operations are not retried.
+
+The startup command in Rex's config runs on every Rex launch, including after a
+Mac restart. `--start` closes an existing resh host and starts a new one with the
+supplied arguments, without opening the panel. Normal hotkeys/openings reuse it.
+There is no separate warmup step or persistent custom-config selection in resh.
+
+`resh --status` reports the host PID, connection state, data CLI PID, shutdown state
+and native hotkey registration. It does not start a stopped host.
 
 Sessions with an unseen result, a request for user action, or an error show a small
 dot beside their name. Running agents and plain idle agents have no indicator;
@@ -101,14 +132,29 @@ SF Symbol using Rex's theme `info` color, not a copied private Rex UI component.
 ## Configuration
 
 Create `~/.config/resh/config.toml` (or `$XDG_CONFIG_HOME/resh/config.toml`).
-Use `RESH_CONFIG=/path/to/config.toml` or `resh --config FILE` to choose another file.
-`--config` applies to that invocation; native hotkeys use the resident helper's
-default configuration path. The default can be set when starting the helper.
+For a custom path, edit the startup command in Rex's `init.lua`:
+
+```lua
+local resh = os.getenv("HOME") .. "/Applications/resh.app"
+dofile(resh .. "/Contents/Resources/resh.lua")
+rex.exec.start({ resh .. "/Contents/MacOS/resh", "--start", "--config", "/path/to/config.toml" },
+  { detach = true, stdout = false, stderr = false })
+```
+
+Replace the existing resh startup command; do not add a second one. Reload Rex's
+config to restart resh with the new path. After reboot, Rex runs that same command.
+`resh.lua` only registers the palette action; it does not start the host itself.
+`--config FILE` without `--start` still applies only to that opening; native hotkeys
+use the host's startup path. `RESH_CONFIG` remains an environment override.
 No config is required: all existing shortcuts and sources keep working.
 A file explicitly chosen by `RESH_CONFIG` or `--config` must exist; only the default file is optional.
 The resident panel rereads the file on each opening; no restart or Rex config reload
-is needed. Invalid changes show an error and keep the last valid configuration
-for that file; switching files starts from the defaults.
+is needed for edits to its contents. A missing/invalid chosen file does not kill
+the host or silently use old/default settings. Cmd+S opens the same glass panel
+with a selectable error and full file path instead of results. Search and source
+actions are disabled; there is no Retry button for configuration errors.
+For a wrong path, correct `--config` in Rex's `init.lua` and reload Rex's config.
+For invalid contents, fix the file and reopen the panel. No config copy is saved.
 
 ```toml
 # Optional: order of visible sources. Omitted sources are hidden from the source bar.
@@ -214,7 +260,9 @@ the panel is open. Glass uses native `NSGlassEffectView` on macOS 26+, with an
 a solid theme background. This is a matching companion, not a copy of Rex's
 private material renderer. Missing or incompatible theme data is an error, not a
 substitute palette. A failed refresh keeps the last successfully read theme and
-shows the error; resh never changes Rex's settings.
+shows the error; resh never changes Rex's settings. Unchanged refreshes reuse the
+selected palette instead of rereading and parsing the full theme catalog. Cache
+inputs include Rex preferences and theme-file metadata; refresh tasks do not pile up.
 
 ## CLI & development
 
@@ -236,15 +284,22 @@ with `RESH_REX_APP`. Invalid explicit paths are errors, not hints for discovery.
 Creation is serialized by a file lock and identities are
 saved atomically in `~/Library/Application Support/resh/sessions.json`.
 Only the **local macOS Rex server** is supported in this first version.
-The hotkey and Rex action identify the frontmost Rex app; CLI calls may pass an explicit
-`--client`. The helper never types into an
-existing terminal or takes a client ID from another pane's environment.
+Multiple local Rex apps share one picker, config and theme. The hotkey identifies
+the calling app by `rex_app_pid`; the palette action **Open resh Session Manager**
+passes its `client_id` explicitly. CLI calls may pass `--client`. Selecting or
+creating a session targets that app; session lists and deletions are shared server
+state. The helper never types into an existing terminal or takes a client ID from
+another pane's environment. It does not yet follow the app's active remote host.
 
 ### Uninstall
 
-Run `~/Applications/resh.app/Contents/MacOS/resh --quit`. Remove the resh `dofile(...)` line from Rex's `init.lua`
+Run `~/Applications/resh.app/Contents/MacOS/resh --quit`. Remove the resh `dofile(...)` and `rex.exec.start(...)` lines from Rex's `init.lua`
 and run `rex config reload`. Then remove
 `~/Applications/resh.app`. Existing Rex sessions remain untouched.
+To also unload the stopped session job, run
+`launchctl bootout "gui/$(id -u)/io.github.CruelAddict.resh.panel"`
+("not found" is harmless), then remove `~/Library/Caches/resh/launcher.plist`.
+Logout also unloads the job; the cached plist does not enable automatic login startup.
 
 ## License
 

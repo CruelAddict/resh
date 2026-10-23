@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import plistlib
+import re
 import shutil
 import subprocess
 import sys
@@ -41,26 +42,31 @@ def main():
     if not apps:
         raise RuntimeError('Open the Rex app before installing; its keymap must be refreshed too.')
     executable = source / 'Contents/MacOS/resh'
-    subprocess.run([str(executable), '--quit'], check=True, stdout=subprocess.DEVNULL, timeout=5)
-    for _ in range(100):
-        status = json.loads(subprocess.check_output([str(executable), '--status'], timeout=5))
-        if not status.get('running'):
-            break
-        time.sleep(0.02)
-    else:
-        raise RuntimeError('The resh helper did not stop; installation cancelled.')
+    subprocess.run([str(executable), '--quit'], check=True, stdout=subprocess.DEVNULL, timeout=10)
     destination.parent.mkdir(parents=True, exist_ok=True)
     if destination.exists():
         shutil.rmtree(destination)
     shutil.copytree(source, destination)
     original = config.read_bytes() if config.exists() else None
     text = (original or b'').decode('utf-8')
-    escaped = str(bundled_module).replace('\\', '\\\\').replace('"', '\\"')
-    integration = f'dofile("{escaped}")'
-    changed = integration not in text.splitlines()
+    def lua_string(value):
+        return '"' + str(value).replace('\\', '\\\\').replace('"', '\\"') + '"'
+
+    integration = f'dofile({lua_string(bundled_module)})'
+    loads = re.findall(r'\bdofile\s*\(([^)\n]*)\)', text)
+    if not any('Contents/Resources/resh.lua' in argument for argument in loads):
+        text = text.rstrip() + '\n\n' + integration + '\n' if text else integration + '\n'
+    # Keep the user's startup arguments in Rex's config, not in resh settings.
+    # In particular, never append a default start beside an existing custom one.
+    starts = re.findall(r'^[ \t]*rex\.exec\.start\s*\(\s*\{([^}]*)\}', text, re.DOTALL | re.MULTILINE)
+    if not any('resh' in arguments and re.search(r'''["']--start["']''', arguments)
+               for arguments in starts):
+        text = text.rstrip() + '\n' + (
+            f'rex.exec.start({{ {lua_string(destination / "Contents/MacOS/resh")}, "--start" }},\n'
+            '  { detach = true, stdout = false, stderr = false })\n')
+    changed = text != (original or b'').decode('utf-8')
     if changed:
         config.parent.mkdir(parents=True, exist_ok=True)
-        text = text.rstrip() + '\n\n' + integration + '\n' if text else integration + '\n'
         config.write_text(text)
     try:
         subprocess.run([str(rex), '--autostart=false', 'config', 'check', str(config)], check=True)
@@ -73,7 +79,16 @@ def main():
         raise
     for client in apps:
         subprocess.run([str(rex), '--autostart=false', '-C', client['client_id'], 'do', 'client.config.reload'], check=True)
-    subprocess.run([str(destination / 'Contents/MacOS/resh'), '--warmup'], check=True, timeout=10)
+    # Reload above executes the startup command with the user's own arguments.
+    # Do not start again here with defaults and overwrite a custom --config.
+    installed_executable = destination / 'Contents/MacOS/resh'
+    for _ in range(150):
+        status = json.loads(subprocess.check_output([str(installed_executable), '--status'], timeout=5))
+        if status.get('running') and not status.get('stopping'):
+            break
+        time.sleep(0.02)
+    else:
+        raise RuntimeError("The startup command in Rex's init.lua did not start resh. Check that command.")
     print(f'Installed: {destination}')
     print(f'Rex integration: {bundled_module} ({config})')
     print('Rex Server → Remote Control must be enabled for session switching.')

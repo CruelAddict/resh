@@ -25,6 +25,7 @@ public struct RGBA: Codable, Equatable, Sendable {
 }
 
 public struct RexTheme: Codable, Equatable, Sendable {
+    private static let cache = RexThemeCache()
     public var name: String
     public var isDark: Bool
     public var usesGlass: Bool
@@ -38,16 +39,18 @@ public struct RexTheme: Codable, Equatable, Sendable {
     public var attentionColor: RGBA { info }
     public var panelBackground: RGBA { surface }
 
-    public static func preferences() -> [String: Any] {
+    public static func preferences(keys: [String]? = nil) -> [String: Any] {
         let domain = "com.superlogical.rex" as CFString
         CFPreferencesAppSynchronize(domain)
-        return CFPreferencesCopyMultiple(nil, domain, kCFPreferencesCurrentUser, kCFPreferencesAnyHost) as? [String: Any] ?? [:]
+        return CFPreferencesCopyMultiple(keys.map { $0 as CFArray }, domain,
+            kCFPreferencesCurrentUser, kCFPreferencesAnyHost) as? [String: Any] ?? [:]
     }
 
     public static func read(rexApp: String, systemIsDark: Bool) throws -> RexTheme {
-        let builtins = try Data(contentsOf: URL(fileURLWithPath: rexApp).appendingPathComponent(
-            "Contents/Resources/SuperUI_SuperDesignTokens.bundle/Contents/Resources/themes.json"))
-        return try resolve(preferences: preferences(), builtins: builtins, systemIsDark: systemIsDark)
+        let url = URL(fileURLWithPath: rexApp).appendingPathComponent(
+            "Contents/Resources/SuperUI_SuperDesignTokens.bundle/Contents/Resources/themes.json")
+        return try cache.read(url: url, preferences: preferences(keys: ["Workspace.appearance", "Workspace.interfaceStyle",
+            "Workspace.darkThemeID", "Workspace.lightThemeID", "Workspace.customThemes"]), systemIsDark: systemIsDark)
     }
 
     public static func resolve(preferences: [String: Any], builtins: Data?, systemIsDark: Bool) throws -> RexTheme {
@@ -102,5 +105,27 @@ public struct RexTheme: Codable, Equatable, Sendable {
         return RexTheme(name: entry["name"] as? String ?? id, isDark: dark,
             usesGlass: ["modern", "blendTheme"].contains(style), usesTint: ["useTheme", "blendTheme"].contains(style),
             background: background, foreground: foreground, selection: selection, accent: accent, surface: surface, info: info)
+    }
+}
+
+/// Retain only the selected palette and its inputs, not the full parsed theme
+/// catalog. Unchanged refreshes stat the file but do not read or parse it again.
+final class RexThemeCache: @unchecked Sendable {
+    private let lock = NSLock()
+    private var url: URL?
+    private var attributes: NSDictionary?
+    private var preferences: NSDictionary?
+    private var dark = false
+    private var theme: RexTheme?
+
+    func read(url: URL, preferences: [String: Any], systemIsDark: Bool) throws -> RexTheme {
+        let metadata = try FileManager.default.attributesOfItem(atPath: url.path)
+        let relevant = metadata.filter { [.modificationDate, .size, .systemFileNumber].contains($0.key) } as NSDictionary
+        let selection = preferences as NSDictionary
+        lock.lock(); defer { lock.unlock() }
+        if self.url == url, attributes == relevant, self.preferences == selection, dark == systemIsDark, let theme { return theme }
+        let updated = try RexTheme.resolve(preferences: preferences, builtins: Data(contentsOf: url), systemIsDark: systemIsDark)
+        self.url = url; attributes = relevant; self.preferences = selection; dark = systemIsDark; theme = updated
+        return updated
     }
 }

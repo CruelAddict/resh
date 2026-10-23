@@ -41,6 +41,25 @@ private final class AttentionUpdates: @unchecked Sendable {
 
 @Suite("Resident data connection")
 struct DataConnectionTests {
+    @Test func snapshotRecoversAfterDisconnect() throws {
+        let stub = try StubRex(body: """
+        import pathlib
+        marker=pathlib.Path(__file__+'.started')
+        first=not marker.exists()
+        marker.touch()
+        print('{"ready":true}',flush=True)
+        for line in sys.stdin:
+            if first:
+                print('{"error":"reading API control: EOF"}',flush=True)
+            else:
+                print('{"client":"client:test","rex_app_pid":1,"sessions":[{"session_id":"s","label":"Session"}]}',flush=True)
+        """)
+        let connection = RexDataConnection(tools: stub.tools)
+        defer { connection.stop() }
+        let snapshot = try connection.snapshot(target: RexTarget(clientID: "client:test"))
+        #expect(snapshot.sessions.map(\.label) == ["Session"])
+    }
+
     @Test func attentionStreamHandlesFragmentsEmptySnapshotsAndExplicitTarget() async throws {
         let stub = try StubRex(body: """
         import os
@@ -50,6 +69,7 @@ struct DataConnectionTests {
         data=json.dumps({'records':[{'session_id':server,'block_id':'b','state':'done','updated_at':'2026-10-22T17:59:59Z'}]})
         sys.stdout.write(data[:12]);sys.stdout.flush();time.sleep(.02)
         print(data[12:],flush=True)
+        print('{"heartbeat":true}',flush=True)
         print('{}',flush=True)
         time.sleep(30)
         """)
@@ -59,6 +79,7 @@ struct DataConnectionTests {
         try await updates.waitForCount(2)
         #expect(updates.values.first?.first?.sessionID == "explicit-server")
         #expect(updates.values.last?.isEmpty == true)
+        #expect(updates.values.count == 2) // Heartbeat must not clear an unread dot.
         connection.stop()
         let count = updates.values.count
         try await Task.sleep(for: .milliseconds(50))
@@ -68,7 +89,7 @@ struct DataConnectionTests {
         #expect(updates.values[count].first?.sessionID == "new-server")
     }
 
-    @Test func attentionStreamReportsMalformedDataOrEOF() async throws {
+    @Test func attentionStreamReportsMalformedDataAndRecoversFromEOF() async throws {
         for ending in ["print('not json',flush=True);time.sleep(30)", "sys.exit(0)"] {
             let stub = try StubRex(body: """
             print('{"records":[{"session_id":"s","block_id":"b","state":"done","updated_at":"2026-10-22T17:59:59Z"}]}',flush=True)
@@ -78,10 +99,15 @@ struct DataConnectionTests {
             let connection = RexAttentionConnection(tools: stub.tools), updates = AttentionUpdates()
             connection.start(target: RexTarget()) { updates.append($0) }
             defer { connection.stop() }
-            try await updates.waitForCount(2)
+            try await updates.waitForCount(ending == "sys.exit(0)" ? 3 : 2)
             #expect(updates.values.first?.first?.state == "done")
-            #expect(updates.values.last?.isEmpty == true)
-            #expect(updates.errors.count == 1)
+            if ending == "sys.exit(0)" {
+                #expect(updates.values.last?.first?.state == "done")
+                #expect(updates.errors.isEmpty)
+            } else {
+                #expect(updates.values.last?.isEmpty == true)
+                #expect(updates.errors.count == 1)
+            }
         }
     }
 
@@ -151,14 +177,14 @@ struct DataConnectionTests {
         n=0
         for line in sys.stdin:
             n+=1
-            print(json.dumps({'client':'client:test','pid':1,'sessions':[{'session_id':'session:test','label':str(n)}]}),flush=True)
+            print(json.dumps({'client':'client:test','rex_app_pid':1,'sessions':[{'session_id':'session:test','label':str(n)}]}),flush=True)
         """)
         let connection = RexDataConnection(tools: stub.tools, timeout: 1)
         defer { connection.stop() }
         try connection.warmup()
         let start = ProcessInfo.processInfo.systemUptime
-        #expect(try connection.snapshot(target: RexTarget(), appPID: 1).sessions.first?.label == "1")
-        #expect(try connection.snapshot(target: RexTarget(), appPID: 1).sessions.first?.label == "2")
+        #expect(try connection.snapshot(target: RexTarget(), rexAppPID: 1).sessions.first?.label == "1")
+        #expect(try connection.snapshot(target: RexTarget(), rexAppPID: 1).sessions.first?.label == "2")
         #expect(ProcessInfo.processInfo.systemUptime - start < 0.5)
     }
 
@@ -172,7 +198,7 @@ struct DataConnectionTests {
         defer { connection.stop() }
         try connection.warmup()
         let start = ProcessInfo.processInfo.systemUptime
-        #expect(throws: ReshError.self) { try connection.snapshot(target: RexTarget(), appPID: 1) }
+        #expect(throws: ReshError.self) { try connection.snapshot(target: RexTarget(), rexAppPID: 1) }
         connection.stop()
         #expect(ProcessInfo.processInfo.systemUptime - start < 2)
     }
@@ -193,7 +219,7 @@ struct DataConnectionTests {
     @Test @MainActor func reloadUsesTheSnapshotProviderAndReportsFailureWithoutAnotherTransport() async throws {
         let tools = Tools(rex: "/not/rex", zoxide: nil, fd: nil, rexApp: "/not/Rex.app")
         let provider = SnapshotStub([
-            .success(RexSnapshot(client: "client:test", pid: 1, sessions: [RexSession(sessionID: "new", label: "Fresh")])),
+            .success(RexSnapshot(client: "client:test", rexAppPID: 1, sessions: [RexSession(sessionID: "new", label: "Fresh")])),
             .failure(ReshError("Snapshot connection failed")),
         ])
         let model = try SearchModel(service: ReshService(client: RexClient(tools: tools, target: RexTarget(clientID: "client:test"))),
@@ -209,22 +235,22 @@ struct DataConnectionTests {
         #expect(provider.calls == 2 && model.error == "Snapshot connection failed")
     }
 
-    @Test func explicitClientAndPIDUseTheSameConnectionAndBundledScript() throws {
+    @Test func explicitClientAndAppPIDUseTheSameConnectionAndBundledScript() throws {
         let stub = try StubRex(body: """
         import os
         assert os.path.isfile(sys.argv[sys.argv.index('do')+1])
         print('{"ready":true}',flush=True)
         for line in sys.stdin:
             request=json.loads(line)
-            assert ('client' in request) != ('pid' in request)
-            print(json.dumps({'client':request.get('client','client:pid'),'pid':os.getpid()}),flush=True)
+            assert ('client' in request) != ('rex_app_pid' in request)
+            print(json.dumps({'client':request.get('client','client:app'),'rex_app_pid':os.getpid()}),flush=True)
         """)
         let connection = RexDataConnection(tools: stub.tools)
         defer { connection.stop() }
-        let native = try connection.snapshot(target: RexTarget(), appPID: 42)
+        let native = try connection.snapshot(target: RexTarget(), rexAppPID: 42)
         let action = try connection.snapshot(target: RexTarget(clientID: "client:explicit"))
-        #expect(native.client == "client:pid" && action.client == "client:explicit")
-        #expect(native.pid == action.pid && native.sessions.isEmpty && action.sessions.isEmpty)
+        #expect(native.client == "client:app" && action.client == "client:explicit")
+        #expect(native.rexAppPID == action.rexAppPID && native.sessions.isEmpty && action.sessions.isEmpty)
     }
 
     @Test @MainActor func unreadFailuresAreVisibleWithoutPretendingStatusesAreUnread() async throws {

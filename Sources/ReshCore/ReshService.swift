@@ -14,7 +14,7 @@ public actor ReshService {
         sessions.map { Candidate(id: $0.sessionID, kind: .session, title: $0.label, sessionID: $0.sessionID) }
     }
 
-    public func resolveClient() throws -> (id: String, pid: Int32?) { try client.resolveClient() }
+    public func resolveClient() throws -> (id: String, rexAppPID: Int32?) { try client.resolveClient() }
 
     /// Paths are sent as JSON arguments, never interpolated into a shell command.
     @discardableResult

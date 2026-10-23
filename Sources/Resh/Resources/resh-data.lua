@@ -17,7 +17,7 @@ for line in io.lines() do
       if client.info and client.info.platform == "macos" and client.principal then
         if request.client then
           if client.client_id == request.client then selected = client end
-        elseif client.principal.pid == request.pid then
+        elseif client.principal.pid == request.rex_app_pid then
           selected = client
         end
       end
@@ -25,7 +25,7 @@ for line in io.lines() do
     if not selected then error("Cannot find the requested Rex app. Open resh from the active Rex window.", 0) end
     local listed, list_err = rex.call("session.list", {})
     if not listed then error(list_err, 0) end
-    local response = { client = selected.client_id, pid = selected.principal.pid }
+    local response = { client = selected.client_id, rex_app_pid = selected.principal.pid }
     -- Lua's empty table encodes as an object, so omit an empty optional array.
     if listed.sessions and #listed.sessions > 0 then response.sessions = listed.sessions end
     return response

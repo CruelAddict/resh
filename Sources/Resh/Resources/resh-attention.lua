@@ -98,3 +98,14 @@ local listed, err = rex.call("session.attach_all", { event_scope = "all" })
 if not listed then fail(err) end
 for _, session in ipairs(listed.sessions or {}) do scan(session.session_id) end
 publish()
+
+-- launchd sends SIGTERM to the old process group when the UI crashes, but
+-- does not promise escalation for a child ignoring it. A quiet event stream
+-- must also notice its stdout reader disappeared. No RPC/terminal polling;
+-- this timer exists only for the lifetime of the visible panel's stream.
+rex.every(10, function()
+  local written = io.stdout:write('{"heartbeat":true}\n')
+  if not written then rex.stop(0) end
+  local flushed = io.stdout:flush()
+  if not flushed then rex.stop(0) end
+end)

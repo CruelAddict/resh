@@ -3,14 +3,14 @@ local executable = os.getenv("HOME") .. "/Applications/resh.app/Contents/MacOS/r
 
 rex.action{
   name = "resh",
-  title = "resh: Sessions & Folders",
+  title = "Open resh Session Manager",
   description = "Find a folder or switch to a named Rex session.",
   category = "Session",
-  run = function()
-    local handle, err = rex.exec.start({ executable },
+  run = function(ctx)
+    local handle, err = rex.exec.start({ executable, "--client", ctx.client_id },
       { detach = true, stdout = false, stderr = false })
     if not handle then error(tostring(err)) end
   end,
 }
 
-rex.exec.start({ executable, "--warmup" }, { detach = true, stdout = false, stderr = false })
+-- Startup belongs to Rex's init.lua, alongside any --config argument.

@@ -43,7 +43,7 @@ public struct RexClient: Sendable {
         guard let sessions = reply["sessions"] else { throw ReshError("Rex returned an invalid session list.") }
         return sessions ?? []
     }
-    public func resolveClient() throws -> (id: String, pid: Int32?) {
+    public func resolveClient() throws -> (id: String, rexAppPID: Int32?) {
         let data = try command(["client", "list", "--json"])
         let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
         let clients = (json?["clients"] as? [[String: Any]] ?? []).filter {

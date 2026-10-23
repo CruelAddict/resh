@@ -48,15 +48,14 @@ struct ConfigurationModelTests {
         try "bad = [".write(to: url, atomically: true, encoding: .utf8)
         model.loadInitial()
         await model.loadingTask?.value
-        #expect(model.configuration.projects.first?.name == "Project two")
+        #expect(model.results.isEmpty && !model.isConfigurationReady && !model.canRetry)
         #expect(model.error?.contains(url.path) == true)
         let other = root.appendingPathComponent("other.toml")
-        try "invalid = [".write(to: other, atomically: true, encoding: .utf8)
         model.prepare(service: ReshService(client: RexClient(tools: tools, target: RexTarget())),
             sessions: [], configurationURL: other)
         model.loadInitial()
         await model.loadingTask?.value
-        #expect(model.configuration == .defaults)
+        #expect(model.results.isEmpty && !model.isConfigurationReady && !model.canRetry)
         #expect(model.error?.contains(other.path) == true)
     }
     @Test @MainActor func compositeSourcesKeepFreshSessionsAvailableWhileProvidersRun() async throws {

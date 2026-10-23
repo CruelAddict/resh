@@ -28,14 +28,9 @@ enum LauncherIPC {
         return response
     }
 
-    static func launchHost() throws {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: CommandLine.arguments[0])
-        process.arguments = ["--standby"]
-        process.standardInput = FileHandle.nullDevice
-        process.standardOutput = FileHandle.nullDevice
-        process.standardError = FileHandle.nullDevice
-        try process.run()
+    static func launchHost(configurationPath: String?, restart: Bool = false) throws {
+        try ResidentLauncher().start(executable: URL(fileURLWithPath: CommandLine.arguments[0]).standardizedFileURL.path,
+            configurationPath: configurationPath, restart: restart)
     }
 }
 

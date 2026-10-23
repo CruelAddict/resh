@@ -19,7 +19,7 @@ final class PanelController: NSObject, NSWindowDelegate {
     private var attentionGeneration = 0
     private var subscriptions = Set<AnyCancellable>()
     private var picker: PanelView?
-    private var rexPID: Int32?
+    private var rexAppPID: Int32?
     private var isDismissing = false
     private let defaultConfigurationURL: URL?
 
@@ -47,7 +47,11 @@ final class PanelController: NSObject, NSWindowDelegate {
         panel.hidesOnDeactivate = false
         panel.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
         model.onDismiss = { [weak self] focusRex in self?.dismiss(focusRex: focusRex) }
-        model.onReloadAttention = { [weak self] in self?.startAttention() }
+        model.$isConfigurationReady.dropFirst().removeDuplicates().sink { [weak self] ready in
+            guard let self, self.panel.isVisible else { return }
+            if ready { self.startAttention() }
+            else { self.stopAttention() }
+        }.store(in: &subscriptions)
         model.$theme.dropFirst().sink { [weak self] theme in self?.apply(theme: theme) }.store(in: &subscriptions)
         Publishers.CombineLatest3(model.$results, model.$error, model.$diagnostic).dropFirst().sink { [weak self] entries, error, diagnostic in
             self?.resize(resultCount: entries.count, hasError: error != nil || diagnostic != nil)
@@ -57,23 +61,33 @@ final class PanelController: NSObject, NSWindowDelegate {
     }
 
     func prepare(service: ReshService, snapshot: RexSnapshot, configurationURL: URL? = nil) {
-        rexPID = snapshot.pid
+        let pendingQuery = model.isOpening ? model.query : nil
+        rexAppPID = snapshot.rexAppPID
         model.prepare(service: service, sessions: snapshot.sessions,
-            configurationURL: configurationURL ?? defaultConfigurationURL)
+            configurationURL: configurationURL ?? defaultConfigurationURL, rexAppPID: snapshot.rexAppPID)
+        if let pendingQuery { model.query = pendingQuery }
+    }
+
+    func presentLoading() {
+        stopAttention()
+        model.beginOpening()
+        rexAppPID = nil
+        display()
     }
 
     func present(error: Error, retry: @escaping () -> Void) {
+        let pendingQuery = model.isOpening ? model.query : nil
         stopAttention()
         model.clear()
-        rexPID = nil
+        rexAppPID = nil
         model.error = error.localizedDescription
         model.onRetryOpening = retry
+        if let pendingQuery { model.query = pendingQuery }
         display()
     }
 
     func show() {
         display()
-        startAttention()
         model.loadInitial()
         model.refreshTheme()
     }
@@ -155,7 +169,8 @@ final class PanelController: NSObject, NSWindowDelegate {
 
     func handle(_ event: NSEvent) -> Bool {
         let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-        guard let shortcut = model.configuration.keymap.action(for: KeyChord(code: event.keyCode,
+        let keymap = model.isConfigurationReady ? model.configuration.keymap : ReshConfiguration.defaults.keymap
+        guard let shortcut = keymap.action(for: KeyChord(code: event.keyCode,
             command: modifiers.contains(.command), control: modifiers.contains(.control),
             option: modifiers.contains(.option), shift: modifiers.contains(.shift))) else { return false }
         switch shortcut {
@@ -208,14 +223,16 @@ final class PanelController: NSObject, NSWindowDelegate {
         themeTimer?.invalidate()
         stopAttention()
         panel.orderOut(nil)
-        if focusRex, NSApp.isActive, let rexPID, NSWorkspace.shared.frontmostApplication?.processIdentifier != rexPID {
-            NSRunningApplication(processIdentifier: rexPID)?.activate(options: [])
+        if focusRex, NSApp.isActive, let rexAppPID, NSWorkspace.shared.frontmostApplication?.processIdentifier != rexAppPID {
+            NSRunningApplication(processIdentifier: rexAppPID)?.activate(options: [])
         }
         model.clear()
     }
 
-    func stopAttention() {
+    @discardableResult
+    func stopAttention() -> RexAttentionConnection {
         attentionGeneration += 1
         attentionConnection.stop()
+        return attentionConnection
     }
 }

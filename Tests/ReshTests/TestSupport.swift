@@ -19,7 +19,7 @@ final class SnapshotStub: RexSnapshotProviding, @unchecked Sendable {
 
     init(_ responses: [Result<RexSnapshot, Error>]) { self.responses = responses }
 
-    func snapshot(target: RexTarget, appPID: Int32?) throws -> RexSnapshot {
+    func snapshot(target: RexTarget, rexAppPID: Int32?) throws -> RexSnapshot {
         lock.lock(); defer { lock.unlock() }
         count += 1
         guard !responses.isEmpty else { throw ReshError("Unexpected snapshot request") }

@@ -13,7 +13,7 @@ private struct Options {
     var standby = false
     var quit = false
     var status = false
-    var warmup = false
+    var start = false
     var config: String?
     var checkConfig = false
 
@@ -35,7 +35,7 @@ private struct Options {
             case "--standby": standby = true
             case "--quit": quit = true
             case "--status": status = true
-            case "--warmup": warmup = true
+            case "--start": start = true
             case "--config": config = URL(fileURLWithPath: (try value() as NSString).expandingTildeInPath).standardizedFileURL.path
             case "--check-config": checkConfig = true
             case "--help", "-h": help = true
@@ -57,6 +57,9 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
     private var hotkey: RexHotkey?
     private var openingID: UUID?
     private let dataConnection: RexDataConnection
+    private var warmupTask: Task<Void, Never>?
+    private var rexMonitor: RexAppMonitor?
+    private var isStopping = false
 
     init(service: ReshService, tools: Tools, options: Options) {
         self.service = service; self.tools = tools; self.options = options
@@ -76,21 +79,60 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
             controller = try PanelController(service: service, tools: tools,
                 configurationURL: options.config.map { URL(fileURLWithPath: $0) },
                 snapshotProvider: dataConnection)
-            controller?.onDismiss = { [weak self] in self?.openingID = nil }
+            controller?.onDismiss = { [weak self] in
+                guard let self else { return }
+                if self.openingID != nil { self.dataConnection.stop() }
+                self.openingID = nil
+            }
             host = try LauncherHost()
             host?.onRequest = { [weak self] request in self?.handle(request) ?? ["error": "Host is stopping."] }
         } catch { fail(error); return }
         installMenu()
         hotkey = RexHotkey()
         hotkey?.onPress = { [weak self] in _ = self?.open(LauncherRequest()) }
-        let connection = dataConnection
-        Task {
-            do { try await Task.detached { try connection.warmup() }.value }
-            catch { controller?.model.reportDiagnostic(error, source: "connection") }
+        rexMonitor = RexAppMonitor()
+        rexMonitor?.onChange = { [weak self] available in
+            guard let self, !self.isStopping else { return }
+            if available {
+                let connection = self.dataConnection
+                self.warmupTask = Task.detached { try? connection.warmup() }
+            } else {
+                self.warmupTask?.cancel(); self.warmupTask = nil
+                self.dataConnection.stop()
+                self.openingID = nil
+                self.controller?.dismiss(focusRex: false)
+            }
         }
+        rexMonitor?.refresh()
     }
     // Hiding the accessory panel must not terminate its resident native controls.
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard controller != nil else { return .terminateNow }
+        guard !isStopping else { return .terminateLater }
+        isStopping = true
+        openingID = nil
+        rexMonitor?.stop()
+        hotkey?.stop()
+        warmupTask?.cancel(); warmupTask = nil
+        dataConnection.stop()
+        controller?.dismiss(focusRex: false)
+        let attention = controller?.stopAttention(), connection = dataConnection
+        DispatchQueue.global(qos: .userInitiated).async {
+            connection.waitUntilStopped()
+            attention?.waitUntilStopped()
+            let children = RexProcess.stopAll()
+            let deadline = ProcessInfo.processInfo.systemUptime + 1
+            for child in children { _ = child.waitForExit(timeout: max(0, deadline - ProcessInfo.processInfo.systemUptime)) }
+            // AppKit waits in a nested run loop, possibly inside a main-queue
+            // block. Reply through that run loop, not the non-reentrant queue.
+            CFRunLoopPerformBlock(CFRunLoopGetMain(), CFRunLoopMode.commonModes.rawValue) {
+                NSApp.reply(toApplicationShouldTerminate: true)
+            }
+            CFRunLoopWakeUp(CFRunLoopGetMain())
+        }
+        return .terminateLater
+    }
     func applicationWillTerminate(_ notification: Notification) {
         openingID = nil
         if lockDescriptor >= 0 { flock(lockDescriptor, LOCK_UN); close(lockDescriptor) }
@@ -100,7 +142,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         controller?.stopAttention()
     }
     private func open(_ request: LauncherRequest) -> Bool {
-        guard openingID == nil, let controller,
+        guard !isStopping, openingID == nil, let controller,
               !controller.model.isConnecting, !controller.model.isPresentingConfirmation else { return false }
         if controller.panel.isVisible, controller.model.displayedError == nil,
            request.client == nil, request.server == nil, request.config == nil {
@@ -111,13 +153,21 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         openingID = id
         let target = RexTarget(clientID: request.client, server: request.server)
         let frontmost = NSWorkspace.shared.frontmostApplication
-        let appPID = target.clientID == nil && PanelShortcut.launcherIsEnabled(frontmostBundleID: frontmost?.bundleIdentifier)
+        let rexAppPID = target.clientID == nil && PanelShortcut.launcherIsEnabled(frontmostBundleID: frontmost?.bundleIdentifier)
             ? frontmost?.processIdentifier : nil
         let connection = dataConnection
+        let presentation = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(150))
+            guard !Task.isCancelled, self?.openingID == id else { return }
+            controller.presentLoading()
+        }
         Task { [self] in
-            defer { if openingID == id { openingID = nil } }
+            defer {
+                presentation.cancel()
+                if openingID == id { openingID = nil }
+            }
             do {
-                let snapshot = try await Task.detached { try connection.snapshot(target: target, appPID: appPID) }.value
+                let snapshot = try await Task.detached { try connection.snapshot(target: target, rexAppPID: rexAppPID) }.value
                 guard openingID == id, !controller.model.isConnecting, !controller.model.isPresentingConfirmation else { return }
                 let selected = RexTarget(clientID: snapshot.client, server: target.server)
                 controller.prepare(service: ReshService(client: RexClient(tools: tools, target: selected)), snapshot: snapshot,
@@ -140,7 +190,13 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         if request.operation == "show", !open(request) {
             return ["error": "A session operation is still in progress."]
         }
+        let connectionState: String
+        if isStopping { connectionState = "stopping" }
+        else if dataConnection.isReady { connectionState = "ready" }
+        else { connectionState = rexMonitor?.isAvailable == true ? "unavailable" : "waitingForRex" }
         return ["running": true, "pid": getpid(), "visible": controller.panel.isVisible,
+                 "stopping": isStopping, "connectionState": connectionState,
+                 "dataProcessID": dataConnection.processID as Any? ?? NSNull(),
                 "configPath": (controller.model.configurationURL ?? ConfigurationFile.url()).path,
                 "panelError": controller.model.displayedError as Any? ?? NSNull(),
                 "nativeHotkeyRegistered": hotkey?.isRegistered ?? false,
@@ -181,6 +237,7 @@ struct ReshMain {
                 resh --name DIRECTORY
                 resh --diagnose
                 resh --status | --quit
+                resh --start [--config FILE]
                 resh --check-config [--config FILE]
 
                 Config: ~/.config/resh/config.toml (or $RESH_CONFIG / --config FILE)
@@ -193,9 +250,6 @@ struct ReshMain {
             }
             let configURL = (options.config ?? ProcessInfo.processInfo.environment["RESH_CONFIG"])
                 .map { URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath).standardizedFileURL }
-            if let configURL, !FileManager.default.fileExists(atPath: configURL.path) {
-                throw ReshError("Config file does not exist: \(configURL.path)")
-            }
             if options.checkConfig {
                 let config = try ConfigurationFile.load(configURL)
                 print("Config: \((configURL ?? ConfigurationFile.url()).path)\nSources: \(config.visibleSources.map(\.id.rawValue).joined(separator: ", "))\nProjects: \(config.projects.count)\nValid")
@@ -203,12 +257,19 @@ struct ReshMain {
             }
             if !options.standby, options.connect == nil, !options.diagnose, options.name == nil {
                 var request = LauncherRequest(client: options.client, server: options.server, config: configURL?.path)
-                if options.quit { request.operation = "quit" }
+                if options.quit {
+                    try ResidentLauncher().stop()
+                    print("{\"running\":false}")
+                    return
+                }
                 if options.status { request.operation = "status" }
-                if options.warmup { request.operation = "status" }
+                if options.start {
+                    try LauncherIPC.launchHost(configurationPath: configURL?.path, restart: true)
+                    request.operation = "status"
+                }
                 var response = try LauncherIPC.send(request)
-                if response == nil, request.operation == "show" || options.warmup {
-                    try LauncherIPC.launchHost()
+                if response == nil, request.operation == "show" || options.start {
+                    if !options.start { try LauncherIPC.launchHost(configurationPath: configURL?.path) }
                     for _ in 0..<200 {
                         usleep(10_000)
                         response = try LauncherIPC.send(request)
@@ -216,7 +277,7 @@ struct ReshMain {
                     }
                     guard response != nil else { throw ReshError("The resh background panel did not start.") }
                 }
-                if options.status || options.quit {
+                if options.status {
                     let data = try JSONSerialization.data(withJSONObject: response ?? ["running": false])
                     FileHandle.standardOutput.write(data); print("")
                 }

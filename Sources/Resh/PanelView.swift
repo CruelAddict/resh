@@ -181,7 +181,7 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
             rows = entries
             table.reloadData()
             selectRow(model.selection)
-            emptyLabel.isHidden = !entries.isEmpty
+            emptyLabel.isHidden = !entries.isEmpty || model.configurationError != nil
             needsLayout = true
         }.store(in: &subscriptions)
         model.$selection.sink { [weak self] in self?.selectRow($0) }.store(in: &subscriptions)
@@ -210,7 +210,9 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
             guard let self else { return }
             errorLabel.stringValue = message
             errorScroll.isHidden = message.isEmpty
-            retry.isHidden = message.isEmpty
+            retry.isHidden = message.isEmpty || !model.canRetry
+            emptyLabel.isHidden = !rows.isEmpty || model.configurationError != nil
+            scroll.isHidden = model.configurationError != nil
             needsLayout = true
             layoutSubtreeIfNeeded()
             errorLabel.scrollToVisible(NSRect(x: 0, y: max(0, errorLabel.bounds.maxY - 1), width: 1, height: 1))
@@ -218,6 +220,13 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
         Publishers.CombineLatest(model.$isLoading, model.$isConnecting).sink { [weak self] loading, connecting in
             if loading || connecting { self?.progress.startAnimation(nil) }
             else { self?.progress.stopAnimation(nil) }
+        }.store(in: &subscriptions)
+        Publishers.CombineLatest(model.$isConfigurationReady, model.$isOpening).sink { [weak self] ready, opening in
+            guard let self else { return }
+            searchField.isEnabled = ready || opening
+            table.isEnabled = ready
+            for button in sourceButtons { button.isEnabled = ready }
+            if ready || opening, window?.isKeyWindow == true { window?.makeFirstResponder(searchField) }
         }.store(in: &subscriptions)
         model.objectWillChange.sink { [weak self] in
             DispatchQueue.main.async { [weak self] in
