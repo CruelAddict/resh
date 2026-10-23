@@ -10,6 +10,19 @@ local function fail(err)
   error(err, 0)
 end
 
+local function publish_sessions(listed)
+  if not listed then
+    local err
+    listed, err = rex.call("session.list", {})
+    if not listed then fail(err) end
+  end
+  local value = { type = "sessions" }
+  -- An omitted array represents an empty snapshot, not an unchanged list.
+  if listed.sessions and #listed.sessions > 0 then value.sessions = listed.sessions end
+  io.stdout:write(assert(rex.json.encode(value)), "\n")
+  io.stdout:flush()
+end
+
 local function publish()
   local records = {}
   for session_id, blocks in pairs(sessions) do
@@ -83,19 +96,23 @@ rex.on("block_closed", function(ctx, ev)
   publish()
 end)
 rex.on("session_created", function(_, ev)
+  publish_sessions()
   scan(ev.session.session_id)
   publish()
 end)
 rex.on("session_destroyed", function(_, ev)
   sessions[ev.session_id] = nil
+  publish_sessions()
   publish()
 end)
+rex.on("session_label_changed", function() publish_sessions() end)
 
 -- rex do establishes its automatic --all event scope only after this top-level
 -- script returns. Subscribe BEFORE the initial reads: without it session/block
 -- calls fail with "stream is not attached", not "there are no notifications".
 local listed, err = rex.call("session.attach_all", { event_scope = "all" })
 if not listed then fail(err) end
+publish_sessions(listed)
 for _, session in ipairs(listed.sessions or {}) do scan(session.session_id) end
 publish()
 

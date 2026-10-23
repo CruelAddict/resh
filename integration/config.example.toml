@@ -1,5 +1,6 @@
 # Copy to ~/.config/resh/config.toml. Changes apply the next time resh opens.
-source_order = ["sessions", "all", "configs", "directories", "find"]
+# Optional: override source visibility and order. Otherwise use the app defaults.
+# source_order = ["sessions", "all", "configs", "directories", "find"]
 
 [keymap]
 "ctrl+t" = "source:sessions"
@@ -22,7 +23,7 @@ source_order = ["sessions", "all", "configs", "directories", "find"]
 # path = "~/work/backend"
 # startup_command = "nvim"
 
-# To display a custom source, also add its ID to source_order above.
+# Custom sources appear automatically unless source_order is specified.
 # [[sources]]
 # id = "work"
 # title = "Work"

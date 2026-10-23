@@ -57,6 +57,9 @@ The resident helper reuses its AppKit controls and a persistent `rex do`
 connection (`resh-data.lua`) while Rex is running. Each warm opening reads a fresh
 client/session snapshot, without spawning CLI processes or inspecting individual tabs. The native hotkey,
 Rex action and CLI all use this same opening path; explicit reloads use the same connection.
+While the panel is open, the existing activity stream also updates the session list
+on creation, removal and renaming. Combined sources keep their loaded folder rows;
+session changes do not rerun filesystem providers or change the selected row's identity.
 Hiding clears session and folder data and the query.
 Errors wrap and scroll in one compact, selectable field without expanding the panel.
 
@@ -64,6 +67,8 @@ Configuration, filesystem providers and search-index preparation run in the
 background. Combined sources show available sessions/projects while providers
 load; returning to Sessions is immediate. Search normalizes each list once,
 then reuses it for keystrokes until the source changes or the panel closes.
+Folder sources are snapshots: leaving and returning to a source reloads it.
+Typing only filters the snapshot; there are no folder watchers or periodic scans.
 
 ### Lifecycle and background work
 

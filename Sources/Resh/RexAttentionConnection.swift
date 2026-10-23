@@ -2,10 +2,21 @@ import Darwin
 import Foundation
 import ReshCore
 
+enum RexAttentionUpdate: Sendable {
+    case records([RexAttentionRecord])
+    case sessions([RexSession])
+}
+
 /// A separate supported CLI event stream never delays the session-list fast path.
 /// All process and pipe state belongs to the serial queue, including teardown.
 final class RexAttentionConnection: @unchecked Sendable {
-    private struct Update: Decodable { let records: [RexAttentionRecord]?; let error: String?; let heartbeat: Bool? }
+    private struct Update: Decodable {
+        let type: String?
+        let sessions: [RexSession]?
+        let records: [RexAttentionRecord]?
+        let error: String?
+        let heartbeat: Bool?
+    }
     private let tools: Tools
     private let queue = DispatchQueue(label: "resh.attention", qos: .utility)
     private let state = NSLock()
@@ -17,7 +28,7 @@ final class RexAttentionConnection: @unchecked Sendable {
     private var target: RexTarget?
     private var recoveryDeadline: TimeInterval?
     private var retryDelay: TimeInterval = 0.1
-    private var onUpdate: (@Sendable (Result<[RexAttentionRecord], Error>) -> Void)?
+    private var onUpdate: (@Sendable (Result<RexAttentionUpdate, Error>) -> Void)?
 
     init(tools: Tools) { self.tools = tools }
 
@@ -27,7 +38,7 @@ final class RexAttentionConnection: @unchecked Sendable {
         process?.stop()
     }
 
-    func start(target: RexTarget, onUpdate: @escaping @Sendable (Result<[RexAttentionRecord], Error>) -> Void) {
+    func start(target: RexTarget, onUpdate: @escaping @Sendable (Result<RexAttentionUpdate, Error>) -> Void) {
         let request = nextGeneration()
         queue.async { [self] in
             closeConnection()
@@ -121,7 +132,9 @@ final class RexAttentionConnection: @unchecked Sendable {
                 }
                 recoveryDeadline = nil; retryDelay = 0.1
                 if update.heartbeat == true { continue }
-                if isCurrent(request) { onUpdate?(.success(update.records ?? [])) }
+                if isCurrent(request) {
+                    onUpdate?(.success(update.type == "sessions" ? .sessions(update.sessions ?? []) : .records(update.records ?? [])))
+                }
             } catch {
                 finish(request: request, error: error); return
             }

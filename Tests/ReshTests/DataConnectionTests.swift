@@ -20,13 +20,16 @@ private final class StubRex {
 private final class AttentionUpdates: @unchecked Sendable {
     private let lock = NSLock()
     private var updates: [[RexAttentionRecord]] = []
+    private var sessionUpdates: [[RexSession]] = []
     private var failures: [String] = []
     var values: [[RexAttentionRecord]] { lock.lock(); defer { lock.unlock() }; return updates }
+    var sessions: [[RexSession]] { lock.lock(); defer { lock.unlock() }; return sessionUpdates }
     var errors: [String] { lock.lock(); defer { lock.unlock() }; return failures }
-    func append(_ result: Result<[RexAttentionRecord], Error>) {
+    func append(_ result: Result<RexAttentionUpdate, Error>) {
         lock.lock(); defer { lock.unlock() }
         switch result {
-        case let .success(records): updates.append(records)
+        case let .success(.records(records)): updates.append(records)
+        case let .success(.sessions(sessions)): sessionUpdates.append(sessions)
         case let .failure(error): updates.append([]); failures.append(error.localizedDescription)
         }
     }
@@ -66,10 +69,12 @@ struct DataConnectionTests {
         assert not any(k in os.environ for k in ['REX_SESSION','REX_BLOCK','REX_CLIENT','REX_SERVER'])
         server=sys.argv[sys.argv.index('--server')+1]
         assert '--all' in sys.argv
+        print(json.dumps({'type':'sessions','sessions':[{'session_id':server,'label':'Session'}]}),flush=True)
         data=json.dumps({'records':[{'session_id':server,'block_id':'b','state':'done','updated_at':'2026-10-22T17:59:59Z'}]})
         sys.stdout.write(data[:12]);sys.stdout.flush();time.sleep(.02)
         print(data[12:],flush=True)
         print('{"heartbeat":true}',flush=True)
+        print('{"type":"sessions"}',flush=True)
         print('{}',flush=True)
         time.sleep(30)
         """)
@@ -80,6 +85,8 @@ struct DataConnectionTests {
         #expect(updates.values.first?.first?.sessionID == "explicit-server")
         #expect(updates.values.last?.isEmpty == true)
         #expect(updates.values.count == 2) // Heartbeat must not clear an unread dot.
+        #expect(updates.sessions.first?.first?.sessionID == "explicit-server")
+        #expect(updates.sessions.count == 2 && updates.sessions.last?.isEmpty == true)
         connection.stop()
         let count = updates.values.count
         try await Task.sleep(for: .milliseconds(50))
@@ -149,7 +156,7 @@ struct DataConnectionTests {
         }
     }
 
-    @Test @MainActor func attentionUpdatesDoNotChangeSearchOrSelectionAndAreClearedOnHide() async throws {
+    @Test @MainActor func liveUpdatesPreserveSearchAndSelectionAndAreClearedOnHide() async throws {
         let tools = Tools(rex: "/not/rex", zoxide: nil, fd: nil, rexApp: "/not/Rex.app")
         let service = ReshService(client: RexClient(tools: tools, target: RexTarget()))
         let sessions = [RexSession(sessionID: "first", label: "Session one"), RexSession(sessionID: "second", label: "Session two")]
@@ -162,6 +169,15 @@ struct DataConnectionTests {
         await model.attentionTask?.value
         #expect(model.attentionSessionIDs == ["first"])
         #expect(model.results == results && model.query == "session" && model.selection == 1)
+        model.receiveAttention(.success(.sessions([
+            RexSession(sessionID: "new", label: "Session new"), sessions[0],
+            RexSession(sessionID: "second", label: "Session renamed"),
+        ])))
+        #expect(model.sessionCount == 3 && model.results.count == 3)
+        #expect(model.selected?.id == "second" && model.selected?.title == "Session renamed")
+        #expect(model.query == "session")
+        model.receiveAttention(.success(.sessions([])))
+        #expect(model.results.isEmpty && model.sessionCount == 0 && model.selection == 0)
         model.updateAttention([record])
         let pending = model.attentionTask
         model.clear()
@@ -263,7 +279,7 @@ struct DataConnectionTests {
         #expect(model.displayedError?.contains("read receipts are unavailable") == true)
         model.receiveAttention(.failure(ReshError("program_status is unavailable")))
         #expect(model.displayedError == "program_status is unavailable")
-        model.receiveAttention(.success([]))
+        model.receiveAttention(.success(.records([])))
         #expect(model.displayedError == nil)
     }
 }

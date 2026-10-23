@@ -3,6 +3,7 @@ import Foundation
 public struct SourceResult: Sendable {
     public var entries: [Candidate] = []
     public var warnings: [String] = []
+    public var snapshots: [SearchScope: [Candidate]] = [:]
 }
 
 /// Providers run off the main actor. Their output is data, never shell input.
@@ -13,19 +14,25 @@ public struct SourceLoader: Sendable {
         self.tools = tools; self.runner = runner
     }
     /// Already available rows can be displayed while filesystem providers run.
-    public func availableEntries(_ id: SearchScope, configuration: ReshConfiguration, sessions: [Candidate]) -> [Candidate] {
+    public func availableEntries(_ id: SearchScope, configuration: ReshConfiguration, sessions: [Candidate],
+                                 snapshots: [SearchScope: [Candidate]] = [:]) -> [Candidate] {
         guard let source = configuration.source(id) else { return [] }
         switch source.kind {
         case .sessions: return sessions
         case .projects: return configuration.projects.map(\.candidate)
         case .union:
             var seen = Set<String>()
-            return source.members.flatMap { availableEntries($0, configuration: configuration, sessions: sessions) }
+            return source.members.flatMap { availableEntries($0, configuration: configuration, sessions: sessions, snapshots: snapshots) }
                 .filter { seen.insert($0.path.map { "path:" + $0 } ?? $0.id).inserted }
-        default: return []
+        default: return snapshots[id] ?? []
         }
     }
     public func load(_ id: SearchScope, configuration: ReshConfiguration, sessions: [Candidate]) throws -> SourceResult {
+        var result = try loadSource(id, configuration: configuration, sessions: sessions)
+        if configuration.source(id)?.kind != .union { result.snapshots[id] = result.entries }
+        return result
+    }
+    private func loadSource(_ id: SearchScope, configuration: ReshConfiguration, sessions: [Candidate]) throws -> SourceResult {
         try Task.checkCancellation()
         guard let source = configuration.source(id) else { throw ReshError("Unknown source: \(id.rawValue)") }
         switch source.kind {
@@ -36,6 +43,7 @@ public struct SourceLoader: Sendable {
             for member in source.members {
                 let part = try load(member, configuration: configuration, sessions: sessions)
                 result.warnings += part.warnings
+                result.snapshots.merge(part.snapshots) { _, latest in latest }
                 result.entries += part.entries.filter { seen.insert($0.path.map { "path:" + $0 } ?? $0.id).inserted }
             }
             return result

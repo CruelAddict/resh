@@ -5,9 +5,10 @@ public struct FuzzyMatcher: Sendable {
     private let keys: [(text: [Character], title: [Character])]
 
     /// Normalize once per source snapshot, not once per row on every keystroke.
-    public init(_ entries: [Candidate]) {
+    public init(_ entries: [Candidate], reusing previous: Self? = nil) {
         self.entries = entries
-        keys = entries.map { (Array(Self.normalized($0.searchText)), Array(Self.normalized($0.title))) }
+        let cached = previous.map { Dictionary(zip($0.entries, $0.keys), uniquingKeysWith: { first, _ in first }) } ?? [:]
+        keys = entries.map { cached[$0] ?? (Array(Self.normalized($0.searchText)), Array(Self.normalized($0.title))) }
     }
 
     /// A subsequence matcher with bonuses for contiguous, boundary, and title matches.

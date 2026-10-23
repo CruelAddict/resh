@@ -21,6 +21,7 @@ final class SearchModel: ObservableObject {
     private(set) var configurationError: String?
     private var search = FuzzyMatcher([])
     private var sessionSnapshot: [Candidate] = []
+    private var sourceSnapshots: [SearchScope: [Candidate]] = [:]
     private var rexAppPID: Int32?
     private let snapshotProvider: any RexSnapshotProviding
     private let readPreferences: @Sendable () -> [String: Any]
@@ -101,6 +102,7 @@ final class SearchModel: ObservableObject {
         themeTask?.cancel(); themeTask = nil; themeTaskID = nil
         attentionRecords = []; attentionSessionIDs = []
         sessionSnapshot = []; search = FuzzyMatcher([])
+        sourceSnapshots = [:]
         rexAppPID = nil
         diagnostics = [:]; diagnostic = nil
         configurationError = nil
@@ -124,15 +126,31 @@ final class SearchModel: ObservableObject {
     }
 
     private func showAvailableEntries() {
-        search = FuzzyMatcher(SourceLoader(tools: tools).availableEntries(scope,
-            configuration: configuration, sessions: sessionSnapshot))
+        refreshEntries()
         reportDiagnostic(nil, source: "source")
+    }
+
+    private func refreshEntries() {
+        let selectedID = selected?.id, previousSelection = selection
+        let entries = SourceLoader(tools: tools).availableEntries(scope,
+            configuration: configuration, sessions: sessionSnapshot, snapshots: sourceSnapshots)
+        if entries != search.entries { search = FuzzyMatcher(entries, reusing: search) }
         updateResults()
+        selection = selectedID.flatMap { id in results.firstIndex { $0.id == id } }
+            ?? min(previousSelection, max(0, results.count - 1))
+    }
+
+    private func updateSessions(_ sessions: [RexSession]) {
+        let updated = ReshService.candidates(from: sessions)
+        guard updated != sessionSnapshot else { return }
+        sessionSnapshot = updated
+        if isConfigurationReady { refreshEntries() }
     }
 
     private func load(reloadConfiguration: Bool = false, resetScope: Bool = false, refreshSessions: Bool = false) {
         generation += 1
         loadingTask?.cancel()
+        sourceSnapshots = [:]
         let request = generation, url = configurationURL
         error = configurationError
         if reloadConfiguration { isConfigurationReady = false }
@@ -186,18 +204,19 @@ final class SearchModel: ObservableObject {
                 let source = scope, configuration = configuration
                 let worker = Task.detached {
                     let result = try loader.load(source, configuration: configuration, sessions: sessions)
-                    return (FuzzyMatcher(result.entries), result.warnings)
+                    return (FuzzyMatcher(result.entries), result)
                 }
                 let result = try await withTaskCancellationHandler(operation: { try await worker.value }, onCancel: { worker.cancel() })
                 guard generation == request else { return }
                 search = result.0
-                reportDiagnostic(result.1.isEmpty ? nil : ReshError(result.1.joined(separator: "\n")), source: "source")
-                updateResults()
+                sourceSnapshots = result.1.snapshots
+                reportDiagnostic(result.1.warnings.isEmpty ? nil : ReshError(result.1.warnings.joined(separator: "\n")), source: "source")
+                refreshEntries()
             } catch {
                 guard generation == request else { return }
                 if !(error is CancellationError) { self.error = error.localizedDescription }
             }
-            isLoading = false; selection = 0
+            isLoading = false
         }
     }
     func changeScope(_ scope: SearchScope) {
@@ -247,7 +266,8 @@ final class SearchModel: ObservableObject {
             do {
                 let warning = try await service.delete(sessionID: sessionID)
                 sessionSnapshot.removeAll { $0.sessionID == sessionID }
-                isConnecting = false; reload()
+                refreshEntries()
+                isConnecting = false
                 reportDiagnostic(warning.map { ReshError($0) }, source: "registry")
             } catch { self.error = error.localizedDescription; isConnecting = false }
         }
@@ -277,9 +297,10 @@ final class SearchModel: ObservableObject {
         diagnostic = messages.isEmpty ? nil : messages.joined(separator: "\n")
     }
 
-    func receiveAttention(_ result: Result<[RexAttentionRecord], Error>) {
+    func receiveAttention(_ result: Result<RexAttentionUpdate, Error>) {
         switch result {
-        case let .success(records): updateAttention(records)
+        case let .success(.records(records)): updateAttention(records)
+        case let .success(.sessions(sessions)): updateSessions(sessions)
         case let .failure(error):
             attentionTask?.cancel(); attentionTask = nil
             attentionRecords = []; attentionSessionIDs = []

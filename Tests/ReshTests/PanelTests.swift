@@ -136,5 +136,10 @@ struct PanelTests {
             picker.cacheDisplay(in: picker.bounds, to: bitmap)
             try bitmap.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
         }
+        model.selection = 2
+        model.receiveAttention(.success(.sessions([RexSession(sessionID: "new", label: "new-session")] + sessions)))
+        #expect(table.numberOfRows == titles.count + 1)
+        #expect(model.selected?.id == "synthetic-2")
+        #expect(table.selectedRow == model.selection && model.selection == 3)
     }
 }
