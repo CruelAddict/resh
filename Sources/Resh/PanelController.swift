@@ -16,6 +16,7 @@ final class PanelController: NSObject, NSWindowDelegate {
     private var monitor: Any?
     private var themeTimer: Timer?
     private let attentionConnection: RexAttentionConnection
+    private var remoteConnections: [String: (RexHost, RexAttentionConnection)] = [:]
     private var attentionGeneration = 0
     private var subscriptions = Set<AnyCancellable>()
     private var picker: PanelView?
@@ -51,6 +52,10 @@ final class PanelController: NSObject, NSWindowDelegate {
             guard let self, self.panel.isVisible else { return }
             if ready { self.startAttention() }
             else { self.stopAttention() }
+        }.store(in: &subscriptions)
+        model.$hosts.dropFirst().sink { [weak self] hosts in
+            guard let self, self.panel.isVisible, self.model.isConfigurationReady else { return }
+            self.updateRemoteConnections(hosts)
         }.store(in: &subscriptions)
         model.$theme.dropFirst().sink { [weak self] theme in self?.apply(theme: theme) }.store(in: &subscriptions)
         Publishers.CombineLatest3(model.$results, model.$error, model.$diagnostic).dropFirst().sink { [weak self] entries, error, diagnostic in
@@ -99,6 +104,27 @@ final class PanelController: NSObject, NSWindowDelegate {
             Task { @MainActor [weak self] in
                 guard let self, attentionGeneration == attentionRequest, panel.isVisible else { return }
                 model.receiveAttention(result)
+            }
+        }
+        updateRemoteConnections(model.hosts)
+    }
+
+    private func updateRemoteConnections(_ hosts: [RexHost]) {
+        let ids = Set(hosts.map(\.id))
+        for id in Array(remoteConnections.keys) where !ids.contains(id) {
+            remoteConnections.removeValue(forKey: id)?.1.stop()
+        }
+        for host in hosts {
+            if remoteConnections[host.id]?.0 == host { continue }
+            remoteConnections.removeValue(forKey: host.id)?.1.stop()
+            let connection = RexAttentionConnection(tools: model.tools), request = attentionGeneration
+            remoteConnections[host.id] = (host, connection)
+            connection.start(target: RexTarget(server: host.server)) { [weak self] result in
+                Task { @MainActor [weak self] in
+                    guard let self, attentionGeneration == request, panel.isVisible,
+                          remoteConnections[host.id]?.0 == host else { return }
+                    model.receiveAttention(result, host: host)
+                }
             }
         }
     }
@@ -230,9 +256,11 @@ final class PanelController: NSObject, NSWindowDelegate {
     }
 
     @discardableResult
-    func stopAttention() -> RexAttentionConnection {
+    func stopAttention() -> [RexAttentionConnection] {
         attentionGeneration += 1
-        attentionConnection.stop()
-        return attentionConnection
+        let connections = [attentionConnection] + remoteConnections.values.map { $0.1 }
+        remoteConnections = [:]
+        for connection in connections { connection.stop() }
+        return connections
     }
 }

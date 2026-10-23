@@ -18,14 +18,24 @@ public struct Candidate: Identifiable, Hashable, Codable, Sendable {
     public let path: String?
     public let sessionID: String?
     public let startupCommand: String?
+    public let host: RexHost?
 
-    public init(id: String, kind: Kind, title: String, path: String? = nil, sessionID: String? = nil, startupCommand: String? = nil) {
+    public init(id: String, kind: Kind, title: String, path: String? = nil, sessionID: String? = nil, startupCommand: String? = nil, host: RexHost? = nil) {
         self.id = id; self.kind = kind; self.title = title; self.path = path; self.sessionID = sessionID
         self.startupCommand = startupCommand
+        self.host = host
     }
-    public var displayTitle: String { kind == .directory ? path.map(PathIdentity.shortenHome) ?? title : title }
+    public var hostLabel: String { host?.label ?? "This Mac" }
+    public var displayTitle: String {
+        kind == .directory ? path.map { host == nil ? PathIdentity.shortenHome($0) : $0 } ?? title : title
+    }
+    public var deduplicationID: String { path.map { Self.identity("path:" + $0, host: host) } ?? id }
+    public static func identity(_ id: String, host: RexHost?) -> String { host.map { $0.id + "/" + id } ?? id }
     // Never match the common /Users/<name> prefix of every project.
-    public var searchText: String { kind == .session ? title : kind == .project ? title + " " + (path.map(PathIdentity.shortenHome) ?? "") : path.map(PathIdentity.shortenHome) ?? title }
+    public var searchText: String {
+        let path = path.map { host == nil ? PathIdentity.shortenHome($0) : $0 } ?? ""
+        return (kind == .session ? title : kind == .project ? title + " " + path : displayTitle) + " " + hostLabel
+    }
 }
 
 public enum PathIdentity {

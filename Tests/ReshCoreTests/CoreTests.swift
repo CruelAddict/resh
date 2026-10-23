@@ -74,7 +74,18 @@ struct FuzzyTests {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         let entry = Candidate(id: "one", kind: .directory, title: "api", path: home + "/work/api")
         #expect(entry.displayTitle == "~/work/api")
-        #expect(entry.searchText == "~/work/api")
+        #expect(entry.searchText == "~/work/api This Mac")
+    }
+    @Test func hostNamesDisambiguateSessionsAndRemotePathsStayRemote() {
+        let host = RexHost(id: "host:build", label: "Build", endpoints: ["https://build.example"])
+        let local = Candidate(id: "local", kind: .session, title: "api", sessionID: "local")
+        let remote = Candidate(id: "remote", kind: .session, title: "api", sessionID: "remote", host: host)
+        let search = FuzzyMatcher([local, remote])
+        #expect(search.filter(query: "api build").map(\.id) == ["remote"])
+        #expect(search.filter(query: "api this mac").map(\.id) == ["local"])
+        let path = FileManager.default.homeDirectoryForCurrentUser.path + "/work/api"
+        let folder = Candidate(id: "folder", kind: .directory, title: "api", path: path, host: host)
+        #expect(folder.displayTitle == path)
     }
 }
 
@@ -131,11 +142,19 @@ struct ThemeTests {
 }
 
 private final class FakeRunner: CommandRunning, @unchecked Sendable {
+    typealias Session = (id: String, label: String, path: String)
     private let lock = NSLock()
-    var sessions: [(id: String, label: String, path: String)] = []
+    var sessions: [Session] = []
+    var serverSessions: [String: [Session]] = [:]
+    var adapterFunctions: [String]?
+    var adapterVersion = 1
+    var sourcePaths: [String] = []
+    var catalogHosts: [RexHost] = []
+    var catalogWarnings: [String] = []
     var creations = 0
     var startupInputs: [String] = []
     var selections: [String] = []
+    var selectionServers: [String] = []
     var rejectSelection = false
     var calls: [(String, [String])] = []
     func run(_ executable: String, _ arguments: [String], timeout: TimeInterval, directory: String?) throws -> CommandResult {
@@ -145,8 +164,30 @@ private final class FakeRunner: CommandRunning, @unchecked Sendable {
             CommandResult(stdout: try JSONSerialization.data(withJSONObject: value))
         }
         if executable == "/usr/bin/git" { return CommandResult(status: 128) }
+        let server = arguments[arguments.firstIndex(of: "--server")! + 1]
+        if arguments.contains("hosts") {
+            return try json(["hosts": catalogHosts.map { ["host": ["id": $0.id, "label": $0.label, "endpoints": $0.endpoints]] },
+                             "warnings": catalogWarnings])
+        }
+        if arguments.contains("actions") {
+            return try json(["actions": adapterFunctions == nil ? [] : [
+                ["name": "resh_info", "kind": "lua"], ["name": "resh_query", "kind": "lua"],
+            ]])
+        }
+        if arguments.contains("resh_info") { return try json(["version": adapterVersion, "functions": adapterFunctions ?? []]) }
+        if arguments.contains("resh_query") {
+            let args = try JSONSerialization.jsonObject(with: Data(arguments[arguments.firstIndex(of: "--args")! + 1].utf8)) as! [String: String]
+            if args["fn"] == "resolve" { return try json(["results": ["path": args["path"]!]]) }
+            return try json(["results": sourcePaths])
+        }
         if arguments.contains("ls") {
-            return try json(["sessions": sessions.map { ["session_id": $0.id, "label": $0.label] }])
+            return try json(["sessions": (serverSessions[server] ?? sessions).map { ["session_id": $0.id, "label": $0.label] }])
+        }
+        if let index = arguments.firstIndex(of: "kill") {
+            let id = arguments[index + 1]
+            if serverSessions[server] != nil { serverSessions[server]?.removeAll { $0.id == id } }
+            else { sessions.removeAll { $0.id == id } }
+            return try json([:])
         }
         if arguments.contains("client") && arguments.contains("list") {
             return try json(["clients": [["client_id": "client:test", "info": ["kind": "app", "platform": "macos"]]]])
@@ -160,13 +201,15 @@ private final class FakeRunner: CommandRunning, @unchecked Sendable {
             if let input = options["initial_input"] as? String { startupInputs.append(input) }
             creations += 1
             let id = "session:\(creations)"
-            sessions.append((id, object["label"] as! String, path))
+            if serverSessions[server] != nil { serverSessions[server]?.append((id, object["label"] as! String, path)) }
+            else { sessions.append((id, object["label"] as! String, path)) }
             return try json(["session_id": id])
         }
         if arguments.contains("session.select") {
             if rejectSelection { return CommandResult(status: 1, stderr: Data("Enable Remote Control".utf8)) }
             let args = try JSONSerialization.jsonObject(with: Data(arguments[arguments.firstIndex(of: "--args")! + 1].utf8)) as! [String: String]
             selections.append(args["session_id"]!)
+            selectionServers.append(server)
             return try json([:])
         }
         return CommandResult(stdout: Data())
@@ -245,5 +288,62 @@ struct ServiceTests {
         #expect(first == second && runner.creations == 1)
         #expect(runner.sessions.first?.label == "My project")
         #expect(runner.startupInputs == ["printf '%s' '" + folder.replacingOccurrences(of: "'", with: "'\\''") + "'\n"])
+    }
+    @Test func remoteDirectoriesUseTheirServerButSelectTheCallingApp() async throws {
+        let temporary = try TemporaryDirectory(), runner = FakeRunner()
+        let host = RexHost(id: "host:build", label: "build", endpoints: ["https://build.example"])
+        runner.serverSessions[host.server] = []
+        let service = service(runner, temporary)
+        let path = "/srv/project; 'quoted'"
+        runner.sessions = [("session:local", "project", path)]
+        let candidate = Candidate(id: "remote", kind: .directory, title: "project", path: path, host: host)
+        let first = try await service.connect(candidate)
+        #expect(try await service.connect(candidate) == first)
+        #expect(runner.sessions.map(\.id) == ["session:local"])
+        #expect(runner.serverSessions[host.server]?.map(\.path) == [path])
+        #expect(runner.creations == 1 && runner.selectionServers == ["test", "test"])
+        #expect(runner.startupInputs.isEmpty)
+        _ = try await service.delete(sessionID: first, host: host)
+        #expect(runner.serverSessions[host.server]?.isEmpty == true)
+        #expect(runner.sessions.map(\.id) == ["session:local"])
+    }
+}
+
+@Suite("Optional remote sources")
+struct RemoteSourceTests {
+    private func remote(_ runner: FakeRunner) -> RexRemote {
+        RexRemote(client: RexClient(tools: Tools(rex: "/fake/rex", zoxide: nil, fd: nil, rexApp: "/fake/Rex.app"),
+            target: RexTarget(server: "build"), runner: runner))
+    }
+    @Test func anUnconfiguredHostNeedsNoSourceCommands() throws {
+        let runner = FakeRunner()
+        #expect(try remote(runner).functions().isEmpty)
+        #expect(!runner.calls.contains { $0.1.contains("do") })
+    }
+    @Test func hostAliasesKeepUsableCatalogEntriesAndWarnings() throws {
+        let runner = FakeRunner()
+        let first = RexHost(id: "host:first", label: "build", endpoints: ["https://build.example"])
+        runner.catalogHosts = [first, RexHost(id: "host:alias", label: "alias", endpoints: first.endpoints)]
+        runner.catalogWarnings = ["Home is unavailable; using saved hosts"]
+        let catalog = try RexHostCatalog(client: remote(runner).client).read()
+        #expect(catalog.hosts == [first])
+        #expect(catalog.warnings == runner.catalogWarnings)
+    }
+    @Test func capabilityVersions() throws {
+        let runner = FakeRunner()
+        runner.adapterFunctions = ["zoxide", "resolve", "future"]
+        #expect(try remote(runner).functions() == ["zoxide", "resolve", "future"])
+        runner.adapterVersion = 2
+        #expect(throws: ReshError.self) { try remote(runner).functions() }
+    }
+    @Test func remotePathsAreNotCheckedAgainstTheClientFilesystem() throws {
+        let runner = FakeRunner(), host = RexHost(id: "host:build", label: "build", endpoints: ["https://build.example"])
+        runner.sourcePaths = ["/srv/api", "/srv/api/"]
+        let entries = try remote(runner).paths(function: "zoxide", host: host)
+        #expect(entries.count == 1 && entries[0].path == "/srv/api" && entries[0].host == host)
+        runner.sourcePaths = []
+        #expect(try remote(runner).paths(function: "zoxide", host: host).isEmpty)
+        runner.sourcePaths = ["~/api"]
+        #expect(throws: ReshError.self) { try remote(runner).paths(function: "zoxide", host: host) }
     }
 }

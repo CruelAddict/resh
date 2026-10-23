@@ -11,7 +11,8 @@ Requires macOS 15+, Xcode 26+ (Swift 6 and the macOS 26 SDK), and Rex with its l
 
 ```sh
 swift test
-python3 scripts/install.py
+bash scripts/build.sh
+bash install.sh local
 ```
 
 Installs the native helper and its Lua resources in `~/Library/Application Support/resh`,
@@ -22,6 +23,53 @@ The installer preserves personal Rex settings and existing custom startup argume
 No server restart is necessary.
 Enable **Rex Settings → Rex Server → Remote Control** so the helper can ask Rex
 to show the selected session. This is a Rex permission, not macOS Accessibility.
+
+### Installer
+
+`install.sh` is the only installer, for both modes. The local command above uses
+the checkout's `dist/resh` build; `--source DIRECTORY` selects another unpacked
+distribution. Build and release packaging remain separate developer commands.
+
+On a remote host with this checkout or the unpacked remote distribution:
+
+```sh
+bash install.sh remote
+```
+
+The installer needs Bash and Rex, not Python or a compiler. It installs resh and
+updates the Rex config; it does not install system packages, require a connected
+GUI client or run an application health check. Inline Lua uses Rex's interpreter
+to update its config; no separate setup script is installed.
+
+Setup must run as the OS account of a **running local Rex server**, using Rex's
+default local Unix socket. A process started with `--config` requires passing the
+same file with `--config FILE`; setup does not guess a file. Changes are checked before
+reload; config and remote-adapter changes are rolled back on failure without
+overwriting concurrent edits. Existing config gets a backup; repeat runs do not
+duplicate integration lines.
+
+For publishing, `sh scripts/package.sh` creates `dist/releases/resh-remote.tar.gz`,
+an archive for the currently built macOS architecture (if available), and
+`checksums.txt`. A piped bootstrap can fetch these with
+`bash -s -- remote --repository OWNER/REPO --version TAG` (or `local`). It verifies
+the checksum and rejects archive traversal/links before extraction. **This checkout
+has no configured public repository/release URL yet**; no working curl endpoint is
+claimed. Published native archives do not require Xcode to install.
+
+### Optional dependencies
+
+Install these on each host where you want folder sources, before installing resh:
+
+```sh
+# macOS
+brew install zoxide fd
+
+# Debian / Ubuntu
+sudo apt install zoxide fd-find
+```
+
+Sessions work without either tool. Debian's `fdfind` name is supported. Git is
+optional and only affects repository-based session naming.
 
 ## Keyboard
 
@@ -36,6 +84,13 @@ to show the selected session. This is a Rex permission, not macOS Accessibility.
 | Return / click | Switch or create |
 | Esc / Ctrl+[ / click outside | Dismiss without creating a session |
 | ⌘⇧Backspace | Close a selected session, **after confirmation** |
+
+Recent folders and Find folders are hidden when their provider is unavailable on
+every host, including This Mac. All is hidden when its sources add nothing beyond
+Sessions; configured projects keep it available. Pending or failed capability
+checks do not count as confirmed absence, and empty results do not hide an available
+source. Cycling skips hidden tabs without renumbering shortcuts. If the selected
+source becomes unavailable, the picker returns to Sessions.
 
 The shortcut is scoped to Rex; it intentionally shadows Save inside programs
 running in Rex. Native copy, paste, and select-all work in the search field.
@@ -57,12 +112,14 @@ accepts keyboard input without deactivating Rex.
 
 The resident helper reuses its AppKit controls and a persistent `rex do`
 connection (`resh-data.lua`) while Rex is running. Each warm opening reads a fresh
-client/session snapshot, without spawning CLI processes or inspecting individual tabs. The native hotkey,
+local client/session snapshot, without spawning CLI processes or inspecting individual tabs. The native hotkey,
 Rex action and CLI all use this same opening path; explicit reloads use the same connection.
 While the panel is open, the existing activity stream also updates the session list
 on creation, removal and renaming. Combined sources keep their loaded folder rows;
 session changes do not rerun filesystem providers or change the selected row's identity.
 Hiding clears session and folder data and the query.
+The normal panel opens immediately, with an inline spinner while data arrives;
+there is no delayed loading presentation. Remote hosts never hold back local rows.
 Errors wrap and scroll in one compact, selectable field without expanding the panel.
 
 Configuration, filesystem providers and search-index preparation run in the
@@ -256,6 +313,98 @@ Validate without running sources or creating sessions:
 See [`integration/config.example.toml`](integration/config.example.toml) for a
 sesh/fzf-style Ctrl preset. It is opt-in and is never installed over your config.
 
+## Remote hosts
+
+Sessions from the local server and the hosts in `rex hosts --json` appear in one
+flat list. With more than one host, each row shows its host on the right (`This Mac`
+for local entries). Labels stay visible when a search matches only one host, and
+host names participate in search. Identical labels or paths on different hosts
+remain independent. Hosts with an identical saved endpoint are listed only once.
+
+Add/connect the remote host in **Rex.app → Add Remote Host…** first. Saving an
+address with the CLI alone does not currently ensure that the app connects to it.
+resh does not silently add hosts or change your home server. Session selection is
+sent to the calling app's **local** client; Rex itself routes the remote session ID.
+It does not guess a remote client from a device label or reuse a local client ID on
+another server. An unavailable host or failed source produces a host-specific
+diagnostic, not a replacement error screen. Local results remain usable.
+
+Each host has an independent visible-only activity/session stream. Removing a
+host updates the list; remote disconnects do not clear other hosts' activity.
+Search text and selected row identity survive arriving snapshots.
+
+### Optional remote folder sources
+
+No server-side resh installation is needed for **sessions**. For remote recent
+folders and folder search, use `bash install.sh remote` on that machine. It installs:
+
+```text
+~/.local/share/resh/rex-actions.lua   # our code (XDG_DATA_HOME is respected)
+```
+
+The file is [`integration/rex-actions.lua`](integration/rex-actions.lua). At config
+load, the adapter discovers tools in the server's PATH and standard directories
+(`/opt/homebrew/bin`, `/usr/local/bin`, `/usr/bin`, `/bin`). No tools config is
+needed for a normal installation.
+
+#### Nonstandard paths and disabled tools
+
+Optionally create `~/.config/resh/tools.lua` (`XDG_CONFIG_HOME` is respected):
+
+```lua
+return {
+  fd = "/custom/bin/fd",
+  zoxide = false,
+}
+```
+
+Missing fields use automatic discovery; `false` disables a tool. Explicit paths
+are never silently replaced by another executable. The installer neither creates
+nor modifies this optional file.
+The installer adds one stable entry to the selected Rex config, passing the tools
+file explicitly so the server's environment cannot accidentally select another:
+
+```lua
+assert(loadfile("/home/user/.local/share/resh/rex-actions.lua"))("/home/user/.config/resh/tools.lua")
+```
+
+After manual edits, run `rex config reload` **on that host**, against its local socket. This loads only
+two server-side actions; there is no resh binary, extra daemon, terminal tab or
+additional network listener.
+
+- `resh_info` returns `version: 1` and the available functions. `resolve` is always
+  present; `zoxide` and `find` are included only if their detected/overridden binaries pass
+  a bounded check **in the server process's account/environment at config load**.
+- `resh_query fn=zoxide` runs that server account's `zoxide query -l`.
+- `resh_query fn=find` runs its `fd`, searching its home to depth two.
+- `resh_query fn=resolve path=/absolute/path` validates/canonicalizes a selected
+  directory there and returns optional Git-root data for client-side session naming.
+
+Queries return `results`. For folder functions this is an array of absolute path
+strings; `resolve` returns an object. An omitted results array means empty (Rex
+encodes an empty Lua table as an object). The client owns titles and presentation.
+Source queries have a five-second client deadline, a three-second command timeout,
+and limits of 2 MiB / 20,000 paths. Only fixed functions are accepted, not arbitrary
+commands sent from the Mac. Source results are data, never input to an existing terminal.
+
+Discovery and executable checks happen once per config load, in the server's
+environment, not an interactive shell's. `resh_info` itself starts no processes.
+Manual loading without the installer can use `dofile(...)` and the default tools
+path (or `RESH_TOOLS`). History belongs to the server's OS account; a
+shared server running as `rex` does not read another user's zoxide database.
+
+resh discovers actions before probing capabilities. An unconfigured host is
+silently sessions-only; it does not wait for a missing action to time out. Detection
+has one two-second budget and runs separately from session loading. A malformed or
+incompatible adapter is reported without disabling sessions. Capabilities are cached
+for the visible connection and invalidated on reconnect/config changes.
+
+Remote zoxide/find entries augment the corresponding sources, including unions
+such as `All`. Selecting one creates/reuses a session on its own host, using a
+host-scoped creation registry. Remote paths are never checked or expanded using
+the Mac's filesystem. Local named projects, explicit paths, custom commands and
+startup commands remain local; their config is not copied to remote machines.
+
 ## Theme
 
 Each launch reads Rex's selected light/dark theme and interface style.
@@ -290,13 +439,15 @@ Override CLI discovery with `RESH_REX_BIN`; override the Rex application bundle
 with `RESH_REX_APP`. Invalid explicit paths are errors, not hints for discovery.
 Creation is serialized by a file lock and identities are
 saved atomically in `~/Library/Application Support/resh/sessions.json`.
-Only the **local macOS Rex server** is supported in this first version.
+The picker runs on macOS and uses its local Rex server to identify the calling app;
+remote Rex servers can supply sessions and optional folder sources as above.
 Multiple local Rex apps share one picker, config and theme. The hotkey identifies
 the calling app by `rex_app_pid`; the palette action **Open resh Session Manager**
 passes its `client_id` explicitly. CLI calls may pass `--client`. Selecting or
 creating a session targets that app; session lists and deletions are shared server
-state. The helper never types into an existing terminal or takes a client ID from
-another pane's environment. It does not yet follow the app's active remote host.
+state, scoped to the selected row's host. The helper never types into an existing
+terminal or takes a client ID from another pane's environment. Folder targets are
+explicitly attached to a host, not inferred from the app's active remote host.
 
 ### Uninstall
 

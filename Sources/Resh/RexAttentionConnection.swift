@@ -5,6 +5,8 @@ import ReshCore
 enum RexAttentionUpdate: Sendable {
     case records([RexAttentionRecord])
     case sessions([RexSession])
+    case hostsChanged
+    case capabilitiesChanged
 }
 
 /// A separate supported CLI event stream never delays the session-list fast path.
@@ -130,10 +132,18 @@ final class RexAttentionConnection: @unchecked Sendable {
                     if isRexTransportFailure(error) { recover(request: request); return }
                     throw ReshError(error)
                 }
+                let recovered = recoveryDeadline != nil
                 recoveryDeadline = nil; retryDelay = 0.1
                 if update.heartbeat == true { continue }
                 if isCurrent(request) {
-                    onUpdate?(.success(update.type == "sessions" ? .sessions(update.sessions ?? []) : .records(update.records ?? [])))
+                    if recovered { onUpdate?(.success(.capabilitiesChanged)) }
+                    switch update.type {
+                    case "sessions": onUpdate?(.success(.sessions(update.sessions ?? [])))
+                    case "hosts": onUpdate?(.success(.hostsChanged))
+                    case "capabilities": onUpdate?(.success(.capabilitiesChanged))
+                    case nil: onUpdate?(.success(.records(update.records ?? [])))
+                    default: break
+                    }
                 }
             } catch {
                 finish(request: request, error: error); return

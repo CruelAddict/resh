@@ -160,6 +160,6 @@ public struct Tools: Sendable {
         func brewTool(_ name: String) -> String? {
             executable(["/opt/homebrew/bin/" + name, "/usr/local/bin/" + name] + paths.map { $0 + "/" + name })
         }
-        return Tools(rex: rex, zoxide: brewTool("zoxide"), fd: brewTool("fd"), rexApp: app)
+        return Tools(rex: rex, zoxide: brewTool("zoxide"), fd: brewTool("fd") ?? brewTool("fdfind"), rexApp: app)
     }
 }

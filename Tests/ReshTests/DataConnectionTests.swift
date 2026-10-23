@@ -30,6 +30,7 @@ private final class AttentionUpdates: @unchecked Sendable {
         switch result {
         case let .success(.records(records)): updates.append(records)
         case let .success(.sessions(sessions)): sessionUpdates.append(sessions)
+        case .success(.hostsChanged), .success(.capabilitiesChanged): break
         case let .failure(error): updates.append([]); failures.append(error.localizedDescription)
         }
     }
@@ -176,6 +177,10 @@ struct DataConnectionTests {
         #expect(model.sessionCount == 3 && model.results.count == 3)
         #expect(model.selected?.id == "second" && model.selected?.title == "Session renamed")
         #expect(model.query == "session")
+        let updatedResults = model.results
+        model.receiveAttention(.failure(ReshError("Unavailable")))
+        #expect(model.results == updatedResults && model.selected?.id == "second" && model.query == "session")
+        #expect(model.attentionSessionIDs == ["first"] && model.displayedError == nil)
         model.receiveAttention(.success(.sessions([])))
         #expect(model.results.isEmpty && model.sessionCount == 0 && model.selection == 0)
         model.updateAttention([record])
@@ -277,9 +282,126 @@ struct DataConnectionTests {
         await model.attentionTask?.value
         #expect(model.attentionSessionIDs.isEmpty)
         #expect(model.displayedError?.contains("read receipts are unavailable") == true)
+        let diagnostic = model.displayedError
         model.receiveAttention(.failure(ReshError("program_status is unavailable")))
-        #expect(model.displayedError == "program_status is unavailable")
+        #expect(model.displayedError == diagnostic)
         model.receiveAttention(.success(.records([])))
         #expect(model.displayedError == nil)
+    }
+
+    @Test func optionalIntegrationChecksHaveOneBoundedDeadline() throws {
+        let stub = try StubRex(body: """
+        if 'actions' in sys.argv:
+            print(json.dumps({'actions':[{'name':'resh_info','kind':'lua'},{'name':'resh_query','kind':'lua'}]}))
+        else:
+            time.sleep(30)
+        """)
+        let remote = RexRemote(client: RexClient(tools: stub.tools, target: RexTarget(server: "build")))
+        let start = ProcessInfo.processInfo.systemUptime
+        #expect(throws: ReshError.self) { try remote.functions(timeout: 0.2) }
+        #expect(ProcessInfo.processInfo.systemUptime - start < 1)
+    }
+
+    @Test @MainActor func hostUpdatesPreserveSelectionAndFailuresStayIsolated() async throws {
+        let stub = try StubRex(body: """
+        if 'hosts' in sys.argv:
+            print(json.dumps({'hosts':[{'host':{'id':'host:build','label':'build','endpoints':['https://build.example']}}]}))
+        elif 'actions' in sys.argv:
+            print('{"actions":[]}')
+        else:
+            raise Exception('Unexpected command')
+        """)
+        let service = ReshService(client: RexClient(tools: stub.tools, target: RexTarget()))
+        let local = RexSession(sessionID: "local", label: "api")
+        let model = try SearchModel(service: service, tools: stub.tools, sessions: [local],
+            readTheme: { _, _ in .fixture }, readPreferences: { ["Workspace.programActivitySeen": [:]] })
+        defer { model.clear() }
+        model.loadInitial()
+        await model.loadingTask?.value
+        await model.hostsTask?.value
+        let host = try #require(model.hosts.first)
+        model.receiveAttention(.success(.sessions([RexSession(sessionID: "remote", label: "api")])), host: host)
+        #expect(model.results.count == 2 && model.showsHosts)
+        model.query = "api build"
+        #expect(model.results.count == 1 && model.selected?.host == host && model.showsHosts)
+        let selectedID = model.selected?.id
+        model.receiveAttention(.success(.sessions([RexSession(sessionID: "another", label: "api"), local])))
+        #expect(model.selected?.id == selectedID && model.query == "api build")
+        model.receiveAttention(.success(.records([RexAttentionRecord(sessionID: "remote", blockID: "b", state: "done", updatedAt: "2026-10-23T12:00:00Z")])), host: host)
+        await model.attentionTask?.value
+        #expect(model.attentionSessionIDs == [Candidate.identity("remote", host: host)])
+        let results = model.results, sources = model.visibleSources.map(\.id)
+        let loading = model.isRemoteLoading, diagnostic = model.displayedError
+        model.receiveAttention(.failure(ReshError("Host unavailable")), host: host)
+        #expect(model.results == results && model.query == "api build" && model.selected?.id == selectedID)
+        #expect(model.sessionCount == 3 && model.attentionSessionIDs == [Candidate.identity("remote", host: host)])
+        #expect(model.displayedError == diagnostic && model.isRemoteLoading == loading)
+        #expect(model.visibleSources.map(\.id) == sources)
+        #expect(model.showsHosts)
+        model.receiveAttention(.success(.sessions([RexSession(sessionID: "new", label: "api")])), host: host)
+        #expect(model.sessionCount == 3)
+        for _ in 0..<200 where model.visibleSources.map(\.id) != [.sessions] { try await Task.sleep(for: .milliseconds(10)) }
+        #expect(model.visibleSources.map(\.id) == [.sessions])
+    }
+
+    @Test(arguments: ["none", "local", "remote", "projects", "unknown", "custom"])
+    @MainActor func sourceAvailability(_ scenario: String) async throws {
+        let stub = try StubRex(body: """
+        import pathlib
+        if 'hosts' in sys.argv:
+            print(json.dumps({'hosts':[{'host':{'id':name,'label':name,'endpoints':['https://'+name]}} for name in ['first','second']]}))
+        elif 'actions' in sys.argv:
+            print(json.dumps({'actions':[] if sys.argv[sys.argv.index('--server')+1]=='first' else [{'name':'resh_info','kind':'lua'},{'name':'resh_query','kind':'lua'}]}))
+        elif 'resh_info' in sys.argv:
+            if '\(scenario)'=='unknown':
+                sys.stderr.write('Unavailable');sys.exit(1)
+            enabled='\(scenario)'=='remote' and not pathlib.Path(__file__+'.disabled').exists()
+            print(json.dumps({'version':1,'functions':['resolve','zoxide'] if enabled else []}))
+        else:
+            print('{}')
+        """)
+        let config = stub.directory.appendingPathComponent("config.toml")
+        let text = scenario == "projects" ? "[[session]]\nname = 'Project'\npath = '.'\n"
+            : scenario == "custom" ? "source_order = ['find']\ninitial_source = 'find'\n" : ""
+        try text.write(to: config, atomically: true, encoding: .utf8)
+        let tools = Tools(rex: stub.tools.rex, zoxide: nil, fd: scenario == "local" ? "/usr/bin/true" : nil, rexApp: stub.tools.rexApp)
+        let model = try SearchModel(service: ReshService(client: RexClient(tools: tools, target: RexTarget())),
+            tools: tools, configurationURL: config, readTheme: { _, _ in .fixture })
+        defer { model.clear() }
+        let expected: [SearchScope]
+        switch scenario {
+        case "local": expected = [.sessions, .find]
+        case "remote": expected = [.sessions, .all, .directories]
+        case "projects": expected = [.sessions, .all, .configs]
+        case "unknown": expected = [.sessions, .all, .directories, .find]
+        default: expected = [.sessions]
+        }
+        func waitForSources(_ sources: [SearchScope]) async throws {
+            for _ in 0..<200 {
+                if model.visibleSources.map(\.id) == sources,
+                   scenario != "unknown" || model.diagnostic?.contains("Unavailable") == true { return }
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            Issue.record("Source availability did not update")
+        }
+        model.loadInitial()
+        await model.loadingTask?.value
+        await model.hostsTask?.value
+        try await waitForSources(expected)
+        for host in model.hosts { model.receiveAttention(.success(.sessions([])), host: host) }
+        if scenario == "remote" {
+            model.changeScope(.directories)
+            await model.loadingTask?.value
+            for _ in 0..<200 where model.isRemoteLoading { try await Task.sleep(for: .milliseconds(10)) }
+            #expect(model.results.isEmpty && model.visibleSources.map(\.id) == expected && model.displayedError == nil)
+            try "".write(to: stub.directory.appendingPathComponent("rex.disabled"), atomically: true, encoding: .utf8)
+            let host = try #require(model.hosts.first { $0.label == "second" })
+            model.receiveAttention(.success(.capabilitiesChanged), host: host)
+            try await waitForSources([.sessions])
+            #expect(model.scope == .sessions)
+            model.changeScope(.directories)
+            model.cycleSource(1)
+            #expect(model.scope == .sessions)
+        }
     }
 }

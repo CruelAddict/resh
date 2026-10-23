@@ -13,6 +13,7 @@ private final class SelectionRow: NSTableRowView {
 @MainActor
 final class SessionCellView: NSTableCellView {
     let attention = NSImageView()
+    let hostLabel = NSTextField(labelWithString: "")
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -26,17 +27,26 @@ final class SessionCellView: NSTableCellView {
         attention.setAccessibilityElement(false)
         attention.isHidden = true
         addSubview(attention)
+        hostLabel.font = .systemFont(ofSize: 11)
+        hostLabel.lineBreakMode = .byTruncatingMiddle
+        hostLabel.alignment = .right
+        hostLabel.isHidden = true
+        addSubview(hostLabel)
     }
 
     required init?(coder: NSCoder) { nil }
 
-    func configure(_ candidate: Candidate, needsAttention: Bool, color: NSColor, textColor: NSColor) {
+    func configure(_ candidate: Candidate, needsAttention: Bool, color: NSColor, textColor: NSColor, showHost: Bool = false) {
         textField?.stringValue = candidate.displayTitle
         textField?.textColor = textColor
         attention.isHidden = candidate.kind != .session || !needsAttention
         attention.contentTintColor = color
+        hostLabel.stringValue = candidate.hostLabel
+        hostLabel.textColor = textColor.withAlphaComponent(0.55)
+        hostLabel.isHidden = !showHost
         toolTip = attention.isHidden ? nil : "Unread result or action required in this session"
         setAccessibilityLabel("\(candidate.kind == .session ? "Session" : "Folder"), \(candidate.displayTitle)"
+            + (showHost ? ", \(candidate.hostLabel)" : "")
             + (attention.isHidden ? "" : ", unread activity"))
         needsLayout = true
     }
@@ -44,7 +54,9 @@ final class SessionCellView: NSTableCellView {
     override func layout() {
         super.layout()
         guard let textField else { return }
-        let available = max(0, bounds.width - 16 - (attention.isHidden ? 0 : 14))
+        let hostWidth = hostLabel.isHidden ? 0 : min(bounds.width * 0.3, ceil(hostLabel.cell?.cellSize.width ?? 0))
+        hostLabel.frame = NSRect(x: bounds.width - 8 - hostWidth, y: 5, width: hostWidth, height: 17)
+        let available = max(0, bounds.width - 16 - (attention.isHidden ? 0 : 14) - (hostLabel.isHidden ? 0 : hostWidth + 14))
         // NSTextField's intrinsic width omits NSTextFieldCell's horizontal
         // drawing insets. Using it clips even "resh" despite ample row space.
         let fitting = ceil(textField.cell?.cellSize.width ?? available)
@@ -74,6 +86,7 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
     private var sourceButtons: [NSButton] = []
     private var rows: [Candidate] = []
     private var attentionSessionIDs = Set<String>()
+    private var showsHosts = false
     private var theme: RexTheme
     private var activeScope: SearchScope = .sessions
     private var isSelecting = false
@@ -163,12 +176,17 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
     private func bindModel() {
         model.$configuration.sink { [weak self] configuration in
             guard let self else { return }
-            sources = configuration.visibleSources
             keymap = configuration.keymap
+            updateSources()
+        }.store(in: &subscriptions)
+        model.$visibleSources.sink { [weak self] sources in
+            guard let self else { return }
+            self.sources = sources
             for button in sourceButtons { button.removeFromSuperview() }
             sourceButtons = sources.enumerated().map { index, source in
                 let button = NSButton(title: "", target: self, action: #selector(self.sourceClicked(_:)))
                 button.tag = index; button.isBordered = false; button.focusRingType = .none
+                button.isEnabled = self.model.isConfigurationReady
                 button.wantsLayer = true; button.layer?.cornerRadius = 5
                 button.setAccessibilityIdentifier("resh.scope.\(source.id.rawValue)")
                 self.sourceContainer.addSubview(button)
@@ -185,6 +203,12 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
             needsLayout = true
         }.store(in: &subscriptions)
         model.$selection.sink { [weak self] in self?.selectRow($0) }.store(in: &subscriptions)
+        model.$hosts.sink { [weak self] hosts in
+            guard let self else { return }
+            showsHosts = !hosts.isEmpty
+            table.reloadData()
+            selectRow(model.selection)
+        }.store(in: &subscriptions)
         model.$attentionSessionIDs.sink { [weak self] sessionIDs in
             guard let self else { return }
             attentionSessionIDs = sessionIDs
@@ -217,8 +241,8 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
             layoutSubtreeIfNeeded()
             errorLabel.scrollToVisible(NSRect(x: 0, y: max(0, errorLabel.bounds.maxY - 1), width: 1, height: 1))
         }.store(in: &subscriptions)
-        Publishers.CombineLatest(model.$isLoading, model.$isConnecting).sink { [weak self] loading, connecting in
-            if loading || connecting { self?.progress.startAnimation(nil) }
+        Publishers.CombineLatest3(model.$isLoading, model.$isConnecting, model.$isRemoteLoading).sink { [weak self] loading, connecting, remote in
+            if loading || connecting || remote { self?.progress.startAnimation(nil) }
             else { self?.progress.stopAnimation(nil) }
         }.store(in: &subscriptions)
         Publishers.CombineLatest(model.$isConfigurationReady, model.$isOpening).sink { [weak self] ready, opening in
@@ -309,8 +333,9 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
 
     private func configure(_ cell: SessionCellView, row: Int) {
         let entry = rows[row]
-        cell.configure(entry, needsAttention: entry.sessionID.map { attentionSessionIDs.contains($0) } ?? false,
-            color: theme.attentionColor.nsColor, textColor: table.selectedRow == row ? .white : theme.foreground.nsColor)
+        cell.configure(entry, needsAttention: attentionSessionIDs.contains(entry.id),
+            color: theme.attentionColor.nsColor, textColor: table.selectedRow == row ? .white : theme.foreground.nsColor,
+            showHost: showsHosts)
     }
 
     func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
@@ -322,8 +347,9 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
     func tableViewSelectionDidChange(_ notification: Notification) {
         if !isSelecting, table.selectedRow >= 0 { model.selection = table.selectedRow }
         for row in table.rows(in: table.visibleRect).location..<NSMaxRange(table.rows(in: table.visibleRect)) {
-            (table.view(atColumn: 0, row: row, makeIfNecessary: false) as? NSTableCellView)?.textField?.textColor =
-                row == table.selectedRow ? .white : theme.foreground.nsColor
+            if rows.indices.contains(row), let cell = table.view(atColumn: 0, row: row, makeIfNecessary: false) as? SessionCellView {
+                configure(cell, row: row)
+            }
         }
     }
 

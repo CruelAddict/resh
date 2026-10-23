@@ -106,6 +106,12 @@ rex.on("session_destroyed", function(_, ev)
   publish()
 end)
 rex.on("session_label_changed", function() publish_sessions() end)
+rex.on("hosts_changed", function()
+  io.stdout:write('{"type":"hosts"}\n'); io.stdout:flush()
+end)
+rex.on("keymap_changed", function()
+  io.stdout:write('{"type":"capabilities"}\n'); io.stdout:flush()
+end)
 
 -- rex do establishes its automatic --all event scope only after this top-level
 -- script returns. Subscribe BEFORE the initial reads: without it session/block

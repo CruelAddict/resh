@@ -23,7 +23,7 @@ public struct SourceLoader: Sendable {
         case .union:
             var seen = Set<String>()
             return source.members.flatMap { availableEntries($0, configuration: configuration, sessions: sessions, snapshots: snapshots) }
-                .filter { seen.insert($0.path.map { "path:" + $0 } ?? $0.id).inserted }
+                .filter { seen.insert($0.deduplicationID).inserted }
         default: return snapshots[id] ?? []
         }
     }
@@ -44,17 +44,17 @@ public struct SourceLoader: Sendable {
                 let part = try load(member, configuration: configuration, sessions: sessions)
                 result.warnings += part.warnings
                 result.snapshots.merge(part.snapshots) { _, latest in latest }
-                result.entries += part.entries.filter { seen.insert($0.path.map { "path:" + $0 } ?? $0.id).inserted }
+                result.entries += part.entries.filter { seen.insert($0.deduplicationID).inserted }
             }
             return result
         case .paths: return SourceResult(entries: try candidates(source.paths, configuration: configuration))
         case .zoxide:
-            guard let zoxide = tools.zoxide else { return SourceResult(warnings: ["zoxide not found. Choose a folder-search source, or install zoxide."]) }
+            guard let zoxide = tools.zoxide else { return SourceResult() }
             let result = try runner.run(zoxide, ["query", "-l"], timeout: source.timeout, directory: source.cwd)
             guard result.status == 0 else { return SourceResult(warnings: [commandError(result, source: source).message]) }
             return SourceResult(entries: try candidates(result.text.split(separator: "\n").prefix(20_000).map(String.init), configuration: configuration))
         case .find:
-            guard let fd = tools.fd else { throw ReshError("Find folders needs fd. Install it with brew install fd.") }
+            guard let fd = tools.fd else { return SourceResult() }
             let result = try runner.run(fd, ["-H", "-d", "2", "-t", "d", "-E", ".Trash", "--print0", ".",
                 FileManager.default.homeDirectoryForCurrentUser.path], timeout: source.timeout, directory: nil)
             let paths = result.text.split(separator: "\0").prefix(20_000).map(String.init)

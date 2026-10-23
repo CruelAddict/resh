@@ -25,9 +25,13 @@ public struct RexClient: Sendable {
         self.tools = tools; self.target = target; self.runner = runner
     }
 
-    public func command(_ arguments: [String]) throws -> Data {
+    public func at(_ host: RexHost) -> RexClient {
+        RexClient(tools: tools, target: RexTarget(server: host.server), runner: runner)
+    }
+
+    public func command(_ arguments: [String], timeout: TimeInterval = 5) throws -> Data {
         let result = try runner.run(tools.rex,
-            ["--autostart=false", "--timeout", "5s", "--server", target.server] + arguments, timeout: 8)
+            ["--autostart=false", "--timeout", "\(timeout)s", "--server", target.server] + arguments, timeout: timeout)
         guard result.status == 0 else {
             let message = String(decoding: result.stderr, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
             throw ReshError(message.isEmpty ? "Rex command failed (\(result.status))." : message)

@@ -47,6 +47,17 @@ struct PanelTests {
         cell.configure(Candidate(id: "folder", kind: .directory, title: "folder", path: "/folder"),
             needsAttention: true, color: .systemBlue, textColor: .labelColor)
         #expect(cell.attention.isHidden)
+        let host = RexHost(id: "host:build", label: "Build server", endpoints: ["https://build.example"])
+        let remote = Candidate(id: "remote", kind: .session, title: long.title, sessionID: "remote", host: host)
+        cell.configure(remote, needsAttention: true, color: .systemBlue, textColor: .white, showHost: true)
+        cell.layoutSubtreeIfNeeded()
+        #expect(!cell.hostLabel.isHidden && cell.hostLabel.stringValue == host.label)
+        #expect(cell.attention.frame.maxX < cell.hostLabel.frame.minX)
+        #expect(cell.hostLabel.frame.maxX == cell.bounds.maxX - 8)
+        #expect(cell.accessibilityLabel()?.contains(host.label) == true)
+        cell.configure(session, needsAttention: false, color: .systemBlue, textColor: .labelColor)
+        cell.layoutSubtreeIfNeeded()
+        #expect(cell.hostLabel.isHidden && cell.textField!.frame.width == cell.bounds.width - 16)
     }
 
     /// Read-only end-to-end check against a session that Rex currently marks unread.
@@ -104,22 +115,32 @@ struct PanelTests {
         ]
         let sessions = titles.enumerated().map { RexSession(sessionID: "synthetic-\($0.offset)", label: $0.element) }
         let config = FileManager.default.temporaryDirectory.appendingPathComponent("resh-render-" + UUID().uuidString + ".toml")
+        let rex = config.appendingPathExtension("rex")
         try "".write(to: config, atomically: true, encoding: .utf8)
-        defer { try? FileManager.default.removeItem(at: config) }
-        let tools = Tools(rex: "/not/rex", zoxide: nil, fd: nil, rexApp: "/not/Rex.app")
+        try "#!/bin/sh\nprintf '{\"hosts\":[]}\\n'\n".write(to: rex, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: rex.path)
+        defer {
+            try? FileManager.default.removeItem(at: config)
+            try? FileManager.default.removeItem(at: rex)
+        }
+        let tools = Tools(rex: rex.path, zoxide: nil, fd: nil, rexApp: "/not/Rex.app")
         _ = NSApplication.shared
         let model = try SearchModel(service: ReshService(client: RexClient(tools: tools, target: RexTarget())),
             tools: tools, sessions: sessions, configurationURL: config, readTheme: { _, _ in .fixture },
             readPreferences: { ["Workspace.programActivitySeen": [:]] })
         defer { model.clear() }
+        let picker = PanelView(model: model)
         model.loadInitial()
         await model.loadingTask?.value
+        await model.hostsTask?.value
         // Deterministic rendering fixture; never injects status into a real Rex terminal.
         model.updateAttention([RexAttentionRecord(sessionID: "synthetic-2", blockID: "synthetic-block",
             state: "done", updatedAt: "2026-10-22T18:21:56.923423Z")])
         await model.attentionTask?.value
-        let picker = PanelView(model: model)
         picker.layoutSubtreeIfNeeded()
+        let buttons = picker.subviews.compactMap { ($0 as? NSScrollView)?.documentView }
+            .flatMap(\.subviews).compactMap { $0 as? NSButton }
+        #expect(buttons.map { $0.accessibilityIdentifier() } == ["resh.scope.sessions"])
         let table = try #require(picker.subviews.compactMap { $0 as? NSScrollView }
             .compactMap { $0.documentView as? NSTableView }.first)
         #expect(table.numberOfRows == titles.count)

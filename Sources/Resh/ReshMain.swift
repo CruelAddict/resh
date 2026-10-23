@@ -120,7 +120,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         let attention = controller?.stopAttention(), connection = dataConnection
         DispatchQueue.global(qos: .userInitiated).async {
             connection.waitUntilStopped()
-            attention?.waitUntilStopped()
+            for connection in attention ?? [] { connection.waitUntilStopped() }
             let children = RexProcess.stopAll()
             let deadline = ProcessInfo.processInfo.systemUptime + 1
             for child in children { _ = child.waitForExit(timeout: max(0, deadline - ProcessInfo.processInfo.systemUptime)) }
@@ -156,14 +156,9 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         let rexAppPID = target.clientID == nil && PanelShortcut.launcherIsEnabled(frontmostBundleID: frontmost?.bundleIdentifier)
             ? frontmost?.processIdentifier : nil
         let connection = dataConnection
-        let presentation = Task { [weak self] in
-            try? await Task.sleep(for: .milliseconds(150))
-            guard !Task.isCancelled, self?.openingID == id else { return }
-            controller.presentLoading()
-        }
+        controller.presentLoading()
         Task { [self] in
             defer {
-                presentation.cancel()
                 if openingID == id { openingID = nil }
             }
             do {
