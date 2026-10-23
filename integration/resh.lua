@@ -1,5 +1,5 @@
--- Rex action adapter. Opening and data loading belong to the resident app.
-local executable = os.getenv("HOME") .. "/Applications/resh.app/Contents/MacOS/resh"
+-- Rex action adapter. Opening and data loading belong to the resident helper.
+local executable = os.getenv("HOME") .. "/Library/Application Support/resh/resh"
 
 rex.action{
   name = "resh",

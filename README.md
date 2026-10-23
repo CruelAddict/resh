@@ -14,8 +14,10 @@ swift test
 python3 scripts/install.py
 ```
 
-Installs `~/Applications/resh.app`, a `dofile(...)` line and a `--start` command in Rex's config.
-The action implementation and Lua resources stay inside the app, not in dotfiles.
+Installs the native helper and its Lua resources in `~/Library/Application Support/resh`,
+plus a `dofile(...)` line and a `--start` command in Rex's config.
+There is no `.app` or Applications entry: Rex launches the executable directly.
+The action implementation and Lua resources stay with the helper, not in dotfiles.
 The installer preserves personal Rex settings and existing custom startup arguments.
 No server restart is necessary.
 Enable **Rex Settings → Rex Server → Remote Control** so the helper can ask Rex
@@ -140,9 +142,9 @@ Create `~/.config/resh/config.toml` (or `$XDG_CONFIG_HOME/resh/config.toml`).
 For a custom path, edit the startup command in Rex's `init.lua`:
 
 ```lua
-local resh = os.getenv("HOME") .. "/Applications/resh.app"
-dofile(resh .. "/Contents/Resources/resh.lua")
-rex.exec.start({ resh .. "/Contents/MacOS/resh", "--start", "--config", "/path/to/config.toml" },
+local resh = os.getenv("HOME") .. "/Library/Application Support/resh"
+dofile(resh .. "/resh.lua")
+rex.exec.start({ resh .. "/resh", "--start", "--config", "/path/to/config.toml" },
   { detach = true, stdout = false, stderr = false })
 ```
 
@@ -248,7 +250,7 @@ tmuxinator/tmuxp, and arbitrary URL/actions are not supported.
 Validate without running sources or creating sessions:
 
 ```sh
-~/Applications/resh.app/Contents/MacOS/resh --check-config
+"$HOME/Library/Application Support/resh/resh" --check-config
 ```
 
 See [`integration/config.example.toml`](integration/config.example.toml) for a
@@ -275,9 +277,9 @@ inputs include Rex preferences and theme-file metadata; refresh tasks do not pil
 bash scripts/build.sh
 swift test
 RESH_UI_TESTS=1 swift test --filter PanelTests
-dist/resh.app/Contents/MacOS/resh --diagnose
-dist/resh.app/Contents/MacOS/resh --name "$PWD"
-dist/resh.app/Contents/MacOS/resh --connect "$PWD" --client client:…
+dist/resh/resh --diagnose
+dist/resh/resh --name "$PWD"
+dist/resh/resh --connect "$PWD" --client client:…
 ```
 
 `--diagnose` and `--name` do not create sessions; `--connect` is deliberately
@@ -298,13 +300,15 @@ another pane's environment. It does not yet follow the app's active remote host.
 
 ### Uninstall
 
-Run `~/Applications/resh.app/Contents/MacOS/resh --quit`. Remove the resh `dofile(...)` and `rex.exec.start(...)` lines from Rex's `init.lua`
-and run `rex config reload`. Then remove
-`~/Applications/resh.app`. Existing Rex sessions remain untouched.
+Run `"$HOME/Library/Application Support/resh/resh" --quit`. Remove the resh `dofile(...)` and `rex.exec.start(...)` lines from Rex's `init.lua`
+and run `rex config reload`. Existing Rex sessions remain untouched.
 To also unload the stopped session job, run
 `launchctl bootout "gui/$(id -u)/io.github.CruelAddict.resh.panel"`
 ("not found" is harmless), then remove `~/Library/Caches/resh/launcher.plist`.
 Logout also unloads the job; the cached plist does not enable automatic login startup.
+Then remove `resh`, `resh.lua`, `resh_Resh.bundle`, `LICENSE` and `THIRD_PARTY_NOTICES.md`
+from `~/Library/Application Support/resh`. Keep `sessions.json` to retain folder/session
+identities. User configuration remains in `~/.config/resh/config.toml`.
 
 ## License
 
