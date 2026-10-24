@@ -353,6 +353,7 @@ struct ServiceTests {
         try await first.connect(session("c"))
         #expect(try await first.recentSessionIDs() == ["c", "a"])
         #expect(try await other.recentSessionIDs() == ["b"])
+        #expect(first.recentSessionIDsByClient() == ["client:test": ["c", "a"], "client:other": ["b"]])
     }
 
     @Test func previousSessionKeepsLocalAndRemoteIdentitiesSeparate() async throws {

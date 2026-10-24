@@ -7,7 +7,7 @@ final class LauncherPanel: NSPanel {
     override var canBecomeMain: Bool { false }
 }
 
-/// Keep native controls warm; replace session data on every invocation and clear it on hide.
+/// A reusable view of application-owned state. Opening never clears the catalog.
 @MainActor
 final class PanelController: NSObject, NSWindowDelegate {
     let panel: LauncherPanel
@@ -15,22 +15,20 @@ final class PanelController: NSObject, NSWindowDelegate {
     var onDismiss: (() -> Void)?
     private var monitor: Any?
     private var themeTimer: Timer?
-    private let attentionConnection: RexAttentionConnection
-    private var remoteConnections: [String: (RexHost, RexAttentionConnection)] = [:]
+    private let attentionConnection: RexEventConnection
+    private var remoteConnections: [String: (RexHost, RexEventConnection)] = [:]
     private var attentionGeneration = 0
     private var subscriptions = Set<AnyCancellable>()
     private var picker: PanelView?
     private var rexAppPID: Int32?
     private var isDismissing = false
-    private let defaultConfigurationURL: URL?
 
     init(service: ReshService, tools: Tools, sessions: [RexSession] = [], configurationURL: URL? = nil,
          snapshotProvider: (any RexSnapshotProviding)? = nil,
          readTheme: @escaping @Sendable (String, Bool) throws -> RexTheme = { try RexTheme.read(rexApp: $0, systemIsDark: $1) }) throws {
         self.model = try SearchModel(service: service, tools: tools, sessions: sessions, configurationURL: configurationURL,
             snapshotProvider: snapshotProvider, readTheme: readTheme)
-        self.attentionConnection = RexAttentionConnection(tools: tools)
-        self.defaultConfigurationURL = configurationURL
+        self.attentionConnection = RexEventConnection(tools: tools)
         panel = LauncherPanel(contentRect: NSRect(x: 0, y: 0, width: PanelLayout.width,
             height: PanelLayout.height(resultCount: sessions.count)),
             styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
@@ -65,11 +63,11 @@ final class PanelController: NSObject, NSWindowDelegate {
         if let picker { panel.makeFirstResponder(picker.searchField) }
     }
 
-    func prepare(service: ReshService, snapshot: RexSnapshot, recentSessionIDs: [String] = [], configurationURL: URL? = nil) {
+    func prepare(service: ReshService, snapshot: RexSnapshot, recentSessionIDs: [String] = []) {
         let pendingQuery = model.isOpening ? model.query : nil
         rexAppPID = snapshot.rexAppPID
         model.prepare(service: service, sessions: snapshot.sessions, recentSessionIDs: recentSessionIDs,
-            configurationURL: configurationURL ?? defaultConfigurationURL, rexAppPID: snapshot.rexAppPID)
+            rexAppPID: snapshot.rexAppPID)
         if let pendingQuery { model.query = pendingQuery }
     }
 
@@ -83,17 +81,16 @@ final class PanelController: NSObject, NSWindowDelegate {
     func present(error: Error, retry: @escaping () -> Void) {
         let pendingQuery = model.isOpening ? model.query : nil
         stopAttention()
-        model.clear()
         rexAppPID = nil
-        model.error = error.localizedDescription
-        model.onRetryOpening = retry
+        model.failOpening(error, retry: retry)
         if let pendingQuery { model.query = pendingQuery }
         display()
     }
 
     func show() {
+        model.startBackground()
         display()
-        model.loadInitial()
+        if model.isConfigurationReady { startAttention() }
         model.refreshTheme()
     }
 
@@ -103,7 +100,7 @@ final class PanelController: NSObject, NSWindowDelegate {
         attentionConnection.start(target: model.service.target) { [weak self] result in
             Task { @MainActor [weak self] in
                 guard let self, attentionGeneration == attentionRequest, panel.isVisible else { return }
-                model.receiveAttention(result)
+                model.receive(result)
             }
         }
         updateRemoteConnections(model.hosts)
@@ -117,13 +114,13 @@ final class PanelController: NSObject, NSWindowDelegate {
         for host in hosts {
             if remoteConnections[host.id]?.0 == host { continue }
             remoteConnections.removeValue(forKey: host.id)?.1.stop()
-            let connection = RexAttentionConnection(tools: model.tools), request = attentionGeneration
+            let connection = RexEventConnection(tools: model.tools), request = attentionGeneration
             remoteConnections[host.id] = (host, connection)
             connection.start(target: RexTarget(server: host.server)) { [weak self] result in
                 Task { @MainActor [weak self] in
                     guard let self, attentionGeneration == request, panel.isVisible,
                           remoteConnections[host.id]?.0 == host else { return }
-                    model.receiveAttention(result, host: host)
+                    model.receive(result, host: host)
                 }
             }
         }
@@ -133,7 +130,8 @@ final class PanelController: NSObject, NSWindowDelegate {
         isDismissing = false
         if let monitor { NSEvent.removeMonitor(monitor); self.monitor = nil }
         themeTimer?.invalidate()
-        position()
+        resize(resultCount: model.results.count, hasError: model.displayedError != nil)
+        if !panel.isVisible { position() }
         panel.makeKeyAndOrderFront(nil)
         if let picker { panel.makeFirstResponder(picker.searchField) }
         panel.contentView?.layoutSubtreeIfNeeded()
@@ -219,7 +217,7 @@ final class PanelController: NSObject, NSWindowDelegate {
         guard height != frame.height else { return }
         frame.origin.y = frame.maxY - height // Keep the search field stationary.
         frame.size.height = height
-        panel.setFrame(frame, display: true, animate: false)
+        panel.setFrame(frame, display: panel.isVisible, animate: false)
     }
 
     private func position() {
@@ -252,11 +250,11 @@ final class PanelController: NSObject, NSWindowDelegate {
         if focusRex, NSApp.isActive, let rexAppPID, NSWorkspace.shared.frontmostApplication?.processIdentifier != rexAppPID {
             NSRunningApplication(processIdentifier: rexAppPID)?.activate(options: [])
         }
-        model.clear()
+        model.endPresentation()
     }
 
     @discardableResult
-    func stopAttention() -> [RexAttentionConnection] {
+    func stopAttention() -> [RexEventConnection] {
         attentionGeneration += 1
         let connections = [attentionConnection] + remoteConnections.values.map { $0.1 }
         remoteConnections = [:]

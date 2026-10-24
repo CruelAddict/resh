@@ -8,6 +8,45 @@ import Testing
 @Suite("Native panel", .serialized)
 struct PanelTests {
     @Test(.enabled(if: ProcessInfo.processInfo.environment["RESH_UI_TESTS"] == "1"))
+    @MainActor func reopeningShowsThePreparedListAndSize() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("resh-panel-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let config = root.appendingPathComponent("config.toml"), rex = root.appendingPathComponent("rex")
+        try "".write(to: config, atomically: true, encoding: .utf8)
+        try """
+        #!/bin/sh
+        case " $* " in
+          *" hosts "*) printf '{"hosts":[]}\\n' ;;
+          *) exec /bin/sleep 30 ;;
+        esac
+        """.write(to: rex, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: rex.path)
+        let tools = Tools(rex: rex.path, zoxide: nil, fd: nil, rexApp: "/not/Rex.app")
+        let sessions = ["First", "Second", "Third"].map { RexSession(sessionID: $0, label: $0) }
+        _ = NSApplication.shared
+        let controller = try PanelController(service: ReshService(client: RexClient(tools: tools, target: RexTarget())),
+            tools: tools, sessions: sessions, configurationURL: config, readTheme: { _, _ in .fixture })
+        defer {
+            controller.dismiss(focusRex: false)
+            controller.model.clear()
+        }
+        controller.show()
+        await controller.model.loadingTask?.value
+        await controller.model.hostsTask?.value
+        let size = controller.panel.frame.size
+        controller.model.query = "second"
+        #expect(controller.model.results.count == 1)
+        controller.dismiss(focusRex: false)
+        controller.show()
+        let frame = controller.panel.frame
+        #expect(controller.model.query.isEmpty && controller.model.results.count == sessions.count)
+        #expect(frame.size == size && !controller.model.isLoading)
+        await Task.yield()
+        #expect(controller.panel.frame == frame)
+    }
+
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["RESH_UI_TESTS"] == "1"))
     @MainActor func sessionAttentionDotLayoutAndReuse() {
         _ = NSApplication.shared
         let cell = SessionCellView(frame: NSRect(x: 0, y: 0, width: 200, height: 27))
@@ -142,7 +181,7 @@ struct PanelTests {
             try bitmap.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
         }
         model.selection = 2
-        model.receiveAttention(.success(.sessions([RexSession(sessionID: "new", label: "new-session")] + sessions)))
+        model.receive(.success(.sessions([RexSession(sessionID: "new", label: "new-session")] + sessions)))
         #expect(table.numberOfRows == titles.count + 1)
         #expect(model.selected?.id == "synthetic-2")
         #expect(table.selectedRow == model.selection && model.selection == 3)

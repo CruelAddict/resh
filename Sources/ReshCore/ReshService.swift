@@ -26,6 +26,16 @@ public actor ReshService {
         return loadHistory().filter { $0.belongs(to: clientID, server: client.target.server) }.map(\.candidateID)
     }
 
+    public nonisolated var historyURL: URL { history.directory.appendingPathComponent("history.json") }
+
+    public nonisolated func recentSessionIDsByClient() -> [String: [String]] {
+        var result: [String: [String]] = [:]
+        for visit in loadHistory() where visit.server == client.target.server {
+            result[visit.clientID, default: []].append(visit.candidateID)
+        }
+        return result
+    }
+
     /// Paths are sent as JSON arguments, never interpolated into a shell command.
     @discardableResult
     public func connect(_ candidate: Candidate) throws -> String {
@@ -112,7 +122,7 @@ public actor ReshService {
         catch { DebugLog.shared.record(error, source: "history:lock"); return nil }
     }
 
-    private func loadHistory() -> [SessionHistory.Visit] {
+    private nonisolated func loadHistory() -> [SessionHistory.Visit] {
         do { return try history.load() }
         catch { DebugLog.shared.record(error, source: "history:read"); return [] }
     }

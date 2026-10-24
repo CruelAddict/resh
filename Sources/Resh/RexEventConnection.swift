@@ -2,25 +2,36 @@ import Darwin
 import Foundation
 import ReshCore
 
-enum RexAttentionUpdate: Sendable {
+struct RexAppClient: Decodable, Sendable {
+    let client: String
+    let rexAppPID: Int32
+    private enum CodingKeys: String, CodingKey { case client, rexAppPID = "rex_app_pid" }
+}
+
+enum RexEventUpdate: Sendable {
     case records([RexAttentionRecord])
     case sessions([RexSession])
+    case clients([RexAppClient])
+    case reconnecting
     case hostsChanged
     case capabilitiesChanged
 }
 
-/// A separate supported CLI event stream never delays the session-list fast path.
+/// Supported CLI event streams for the persistent catalog and visible-only activity.
 /// All process and pipe state belongs to the serial queue, including teardown.
-final class RexAttentionConnection: @unchecked Sendable {
+final class RexEventConnection: @unchecked Sendable {
+    enum Kind: String { case catalog, attention }
     private struct Update: Decodable {
         let type: String?
         let sessions: [RexSession]?
+        let clients: [RexAppClient]?
         let records: [RexAttentionRecord]?
         let error: String?
         let heartbeat: Bool?
     }
     private let tools: Tools
-    private let queue = DispatchQueue(label: "resh.attention", qos: .utility)
+    private let kind: Kind
+    private let queue = DispatchQueue(label: "resh.events", qos: .utility)
     private let state = NSLock()
     private var requestedGeneration = 0
     private var process: RexProcess?
@@ -30,9 +41,11 @@ final class RexAttentionConnection: @unchecked Sendable {
     private var target: RexTarget?
     private var recoveryDeadline: TimeInterval?
     private var retryDelay: TimeInterval = 0.1
-    private var onUpdate: (@Sendable (Result<RexAttentionUpdate, Error>) -> Void)?
+    private var onUpdate: (@Sendable (Result<RexEventUpdate, Error>) -> Void)?
+    private var childPID: pid_t?
+    var processID: pid_t? { state.lock(); defer { state.unlock() }; return childPID }
 
-    init(tools: Tools) { self.tools = tools }
+    init(tools: Tools, kind: Kind = .attention) { self.tools = tools; self.kind = kind }
 
     deinit {
         output?.readabilityHandler = nil
@@ -40,7 +53,7 @@ final class RexAttentionConnection: @unchecked Sendable {
         process?.stop()
     }
 
-    func start(target: RexTarget, onUpdate: @escaping @Sendable (Result<RexAttentionUpdate, Error>) -> Void) {
+    func start(target: RexTarget, onUpdate: @escaping @Sendable (Result<RexEventUpdate, Error>) -> Void) {
         let request = nextGeneration()
         queue.async { [self] in
             closeConnection()
@@ -55,14 +68,16 @@ final class RexAttentionConnection: @unchecked Sendable {
 
     private func connect(request: Int) {
         guard isCurrent(request), let target else { return }
-        guard let script = Bundle.module.url(forResource: "resh-attention", withExtension: "lua") else {
-            finish(request: request, error: ReshError("Missing bundled resource: resh-attention.lua. Reinstall resh."))
+        let resource = "resh-" + kind.rawValue
+        guard let script = Bundle.module.url(forResource: resource, withExtension: "lua") else {
+            finish(request: request, error: ReshError("Missing bundled resource: \(resource).lua. Reinstall resh."))
             return
         }
         do {
             let child = try RexProcess(executable: tools.rex,
                 arguments: ["--autostart=false", "--server", target.server, "do", script.path, "--all", "--fail-fast"])
             process = child
+            state.lock(); childPID = child.pid; state.unlock()
             guard isCurrent(request) else { closeConnection(); return }
             output = child.output
             if let descriptor = output?.fileDescriptor {
@@ -79,10 +94,11 @@ final class RexAttentionConnection: @unchecked Sendable {
         let now = ProcessInfo.processInfo.systemUptime
         if recoveryDeadline == nil {
             recoveryDeadline = now + 5; retryDelay = 0.1
+            onUpdate?(.success(.reconnecting))
         }
         closeProcess()
         guard let deadline = recoveryDeadline, now < deadline else {
-            finish(request: request, error: ReshError("Can’t reconnect to Rex activity. Try again."))
+            finish(request: request, error: ReshError("Can’t reconnect to Rex. Try again."))
             return
         }
         let delay = min(retryDelay, deadline - now)
@@ -90,7 +106,7 @@ final class RexAttentionConnection: @unchecked Sendable {
         queue.asyncAfter(deadline: .now() + delay) { [weak self] in
             guard let self, self.isCurrent(request) else { return }
             if ProcessInfo.processInfo.systemUptime >= deadline {
-                self.finish(request: request, error: ReshError("Can’t reconnect to Rex activity. Try again."))
+                self.finish(request: request, error: ReshError("Can’t reconnect to Rex. Try again."))
             } else { self.connect(request: request) }
         }
     }
@@ -122,7 +138,7 @@ final class RexAttentionConnection: @unchecked Sendable {
         if count < 0, errno == EINTR || errno == EAGAIN { return }
         guard count > 0 else { recover(request: request); return }
         buffer.append(contentsOf: bytes.prefix(count))
-        guard buffer.count <= 2 * 1024 * 1024 else { finish(request: request, error: ReshError("Rex activity update exceeded 2 MiB.")); return }
+        guard buffer.count <= 8 * 1024 * 1024 else { finish(request: request, error: ReshError("Rex event update exceeded 8 MiB.")); return }
         while let newline = buffer.firstIndex(of: 10) {
             let line = Data(buffer[..<newline])
             buffer.removeSubrange(...newline)
@@ -139,6 +155,7 @@ final class RexAttentionConnection: @unchecked Sendable {
                     if recovered { onUpdate?(.success(.capabilitiesChanged)) }
                     switch update.type {
                     case "sessions": onUpdate?(.success(.sessions(update.sessions ?? [])))
+                    case "clients": onUpdate?(.success(.clients(update.clients ?? [])))
                     case "hosts": onUpdate?(.success(.hostsChanged))
                     case "capabilities": onUpdate?(.success(.capabilitiesChanged))
                     case nil: onUpdate?(.success(.records(update.records ?? [])))
@@ -169,5 +186,6 @@ final class RexAttentionConnection: @unchecked Sendable {
         output?.readabilityHandler = nil
         process?.stop()
         process = nil; output = nil; buffer = Data()
+        state.lock(); childPID = nil; state.unlock()
     }
 }

@@ -246,8 +246,8 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
         Publishers.CombineLatest(model.$isConfigurationReady, model.$isOpening).sink { [weak self] ready, opening in
             guard let self else { return }
             searchField.isEnabled = ready || opening
-            table.isEnabled = ready
-            for button in sourceButtons { button.isEnabled = ready }
+            table.isEnabled = ready && !opening
+            for button in sourceButtons { button.isEnabled = ready && !opening }
             if ready || opening, window?.isKeyWindow == true { window?.makeFirstResponder(searchField) }
         }.store(in: &subscriptions)
         model.objectWillChange.sink { [weak self] in

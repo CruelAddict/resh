@@ -23,12 +23,12 @@ private final class AttentionUpdates: @unchecked Sendable {
     private var sessionUpdates: [[RexSession]] = []
     var values: [[RexAttentionRecord]] { lock.lock(); defer { lock.unlock() }; return updates }
     var sessions: [[RexSession]] { lock.lock(); defer { lock.unlock() }; return sessionUpdates }
-    func append(_ result: Result<RexAttentionUpdate, Error>) {
+    func append(_ result: Result<RexEventUpdate, Error>) {
         lock.lock(); defer { lock.unlock() }
         switch result {
         case let .success(.records(records)): updates.append(records)
         case let .success(.sessions(sessions)): sessionUpdates.append(sessions)
-        case .success(.hostsChanged), .success(.capabilitiesChanged): break
+        case .success(.hostsChanged), .success(.capabilitiesChanged), .success(.clients), .success(.reconnecting): break
         case .failure: updates.append([])
         }
     }
@@ -41,7 +41,7 @@ private final class AttentionUpdates: @unchecked Sendable {
     }
 }
 
-@Suite("Resident data connection")
+@Suite("Session data connections")
 struct DataConnectionTests {
     @Test func snapshotRecoversAfterDisconnect() throws {
         let stub = try StubRex(body: """
@@ -77,7 +77,7 @@ struct DataConnectionTests {
         print('{}',flush=True)
         time.sleep(30)
         """)
-        let connection = RexAttentionConnection(tools: stub.tools), updates = AttentionUpdates()
+        let connection = RexEventConnection(tools: stub.tools), updates = AttentionUpdates()
         defer { connection.stop() }
         connection.start(target: RexTarget(server: "explicit-server")) { updates.append($0) }
         try await updates.waitForCount(2)
@@ -95,7 +95,7 @@ struct DataConnectionTests {
         #expect(updates.values[count].first?.sessionID == "new-server")
     }
 
-    @Test @MainActor func liveUpdatesPreserveSearchAndSelectionAndAreClearedOnHide() async throws {
+    @Test @MainActor func liveUpdatesPreserveSearchAndSelection() async throws {
         let tools = Tools(rex: "/not/rex", zoxide: nil, fd: nil, rexApp: "/not/Rex.app")
         let service = ReshService(client: RexClient(tools: tools, target: RexTarget()))
         let sessions = [RexSession(sessionID: "first", label: "Session one"), RexSession(sessionID: "second", label: "Session two")]
@@ -108,14 +108,14 @@ struct DataConnectionTests {
         await model.attentionTask?.value
         #expect(model.attentionSessionIDs == ["first"])
         #expect(model.results == results && model.query == "session" && model.selection == 1)
-        model.receiveAttention(.success(.sessions([
+        model.receive(.success(.sessions([
             RexSession(sessionID: "new", label: "Session new"), sessions[0],
             RexSession(sessionID: "second", label: "Session renamed"),
         ])))
         #expect(model.sessionCount == 3 && model.results.count == 3)
         #expect(model.selected?.id == "second" && model.selected?.title == "Session renamed")
         #expect(model.query == "session")
-        model.receiveAttention(.success(.sessions([])))
+        model.receive(.success(.sessions([])))
         #expect(model.results.isEmpty && model.sessionCount == 0 && model.selection == 0)
         model.updateAttention([record])
         let pending = model.attentionTask
@@ -136,9 +136,8 @@ struct DataConnectionTests {
         """)
         let connection = RexDataConnection(tools: stub.tools, timeout: 1)
         defer { connection.stop() }
-        try connection.warmup()
-        let start = ProcessInfo.processInfo.systemUptime
         #expect(try connection.snapshot(target: RexTarget(), rexAppPID: 1).sessions.first?.label == "1")
+        let start = ProcessInfo.processInfo.systemUptime
         #expect(try connection.snapshot(target: RexTarget(), rexAppPID: 1).sessions.first?.label == "2")
         #expect(ProcessInfo.processInfo.systemUptime - start < 0.5)
     }
@@ -151,23 +150,51 @@ struct DataConnectionTests {
         """)
         let connection = RexDataConnection(tools: stub.tools, timeout: 1)
         defer { connection.stop() }
-        try connection.warmup()
         let start = ProcessInfo.processInfo.systemUptime
         #expect(throws: ReshError.self) { try connection.snapshot(target: RexTarget(), rexAppPID: 1) }
         connection.stop()
         #expect(ProcessInfo.processInfo.systemUptime - start < 2)
     }
 
-    @Test @MainActor func hidingClearsDataAndNextOpeningReplacesIt() throws {
-        let tools = Tools(rex: "/not/rex", zoxide: nil, fd: nil, rexApp: "/not/Rex.app")
-        let service = ReshService(client: RexClient(tools: tools, target: RexTarget()))
-        let model = try SearchModel(service: service, tools: tools,
-            sessions: [RexSession(sessionID: "first", label: "first")], readTheme: { _, _ in .fixture })
+    @Test @MainActor func catalogStaysCurrentBetweenPresentations() async throws {
+        let stub = try StubRex(body: """
+        import pathlib
+        root=pathlib.Path(__file__).parent
+        if 'hosts' in sys.argv:
+            print('{"hosts":[]}')
+        else:
+            print('{"type":"clients","clients":[{"client":"client:test","rex_app_pid":42}]}',flush=True)
+            print('{"type":"sessions","sessions":[{"session_id":"s","label":"First"}]}',flush=True)
+            while not (root/'changed').exists(): time.sleep(.01)
+            print('{"type":"sessions","sessions":[{"session_id":"s","label":"Renamed"}]}',flush=True)
+            time.sleep(30)
+        """)
+        let config = stub.directory.appendingPathComponent("config.toml")
+        try "".write(to: config, atomically: true, encoding: .utf8)
+        let service = ReshService(client: RexClient(tools: stub.tools, target: RexTarget(clientID: "client:test")),
+            registry: SessionRegistry(directory: stub.directory))
+        let model = try SearchModel(service: service, tools: stub.tools, configurationURL: config,
+            readTheme: { _, _ in .fixture })
+        defer { model.clear() }
+        model.startBackground()
+        await model.loadingTask?.value
+        for _ in 0..<300 {
+            if model.results.first?.title == "First" { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(model.results.map(\.title) == ["First"])
         model.query = "first"
-        model.clear()
-        #expect(model.query.isEmpty && model.results.isEmpty && model.sessionCount == 0)
-        model.prepare(service: service, sessions: [RexSession(sessionID: "second", label: "second")])
-        #expect(model.results.map(\.title) == ["second"])
+        model.endPresentation()
+        #expect(model.query.isEmpty && model.results.map(\.title) == ["First"])
+        try "".write(to: stub.directory.appendingPathComponent("changed"), atomically: true, encoding: .utf8)
+        for _ in 0..<300 {
+            if model.results.first?.title == "Renamed" { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let snapshot = try #require(model.catalog.snapshot(clientID: nil, rexAppPID: 42))
+        #expect(snapshot.client == "client:test" && snapshot.sessions.map(\.label) == ["Renamed"])
+        model.prepare(service: service, sessions: snapshot.sessions)
+        #expect(model.results.map(\.title) == ["Renamed"])
         #expect(!model.isLoading)
     }
 
@@ -236,18 +263,18 @@ struct DataConnectionTests {
         await model.loadingTask?.value
         await model.hostsTask?.value
         let host = try #require(model.hosts.first)
-        model.receiveAttention(.success(.sessions([RexSession(sessionID: "remote", label: "api")])), host: host)
+        model.receive(.success(.sessions([RexSession(sessionID: "remote", label: "api")])), host: host)
         #expect(model.results.count == 2 && model.showsHosts)
         #expect(model.results.map(\.id) == ["host:build/remote", "local"])
         model.query = "api build"
         #expect(model.results.count == 1 && model.selected?.host == host && model.showsHosts)
         let selectedID = model.selected?.id
-        model.receiveAttention(.success(.sessions([RexSession(sessionID: "another", label: "api"), local])))
+        model.receive(.success(.sessions([RexSession(sessionID: "another", label: "api"), local])))
         #expect(model.selected?.id == selectedID && model.query == "api build")
-        model.receiveAttention(.success(.records([RexAttentionRecord(sessionID: "remote", blockID: "b", state: "done", updatedAt: "2026-10-23T12:00:00Z")])), host: host)
+        model.receive(.success(.records([RexAttentionRecord(sessionID: "remote", blockID: "b", state: "done", updatedAt: "2026-10-23T12:00:00Z")])), host: host)
         await model.attentionTask?.value
         #expect(model.attentionSessionIDs == [Candidate.identity("remote", host: host)])
-        model.receiveAttention(.success(.sessions([RexSession(sessionID: "new", label: "api")])), host: host)
+        model.receive(.success(.sessions([RexSession(sessionID: "new", label: "api")])), host: host)
         #expect(model.sessionCount == 3)
         for _ in 0..<200 where model.visibleSources.map(\.id) != [.sessions] { try await Task.sleep(for: .milliseconds(10)) }
         #expect(model.visibleSources.map(\.id) == [.sessions])
@@ -293,7 +320,7 @@ struct DataConnectionTests {
         await model.loadingTask?.value
         await model.hostsTask?.value
         try await waitForSources(expected)
-        for host in model.hosts { model.receiveAttention(.success(.sessions([])), host: host) }
+        for host in model.hosts { model.receive(.success(.sessions([])), host: host) }
         if scenario == "remote" {
             model.changeScope(.directories)
             await model.loadingTask?.value
@@ -301,7 +328,7 @@ struct DataConnectionTests {
             #expect(model.results.isEmpty && model.visibleSources.map(\.id) == expected)
             try "".write(to: stub.directory.appendingPathComponent("rex.disabled"), atomically: true, encoding: .utf8)
             let host = try #require(model.hosts.first { $0.label == "second" })
-            model.receiveAttention(.success(.capabilitiesChanged), host: host)
+            model.receive(.success(.capabilitiesChanged), host: host)
             try await waitForSources([.sessions])
             #expect(model.scope == .sessions)
             model.changeScope(.directories)

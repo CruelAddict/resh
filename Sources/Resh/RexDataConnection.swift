@@ -31,13 +31,12 @@ func isRexTransportFailure(_ message: String) -> Bool {
         || message == "EOF" || message == "unexpected EOF"
 }
 
-/// Keep one supported `rex do` connection open, rather than starting CLI programs
-/// on every hotkey. The Lua side reads server state anew for every request.
+/// Request/reply bridge for cold openings, explicit reloads and diagnostics.
+/// Normal openings use SessionStore, without issuing a new request.
 final class RexDataConnection: RexSnapshotProviding, @unchecked Sendable {
     private final class Connection {
         let process: RexProcess
         let server: String
-        var ready = false // Protected by the state lock.
         var buffer = Data() // Only the request lock may access the buffer.
         init(process: RexProcess, server: String) { self.process = process; self.server = server }
     }
@@ -49,24 +48,8 @@ final class RexDataConnection: RexSnapshotProviding, @unchecked Sendable {
     private let state = NSLock()
     private var connection: Connection?
     private var generation = 0
-    var processID: pid_t? {
-        state.lock(); defer { state.unlock() }
-        return connection?.process.isRunning == true ? connection?.process.pid : nil
-    }
-    var isReady: Bool {
-        state.lock(); defer { state.unlock() }
-        return connection?.ready == true && connection?.process.isRunning == true
-    }
-
     init(tools: Tools, timeout: TimeInterval = 5) { self.tools = tools; self.timeout = timeout }
     deinit { stop() }
-
-    func warmup() throws {
-        let request = currentGeneration()
-        let deadline = ProcessInfo.processInfo.systemUptime + timeout
-        requests.lock(); defer { requests.unlock() }
-        _ = try startIfNeeded(server: RexTarget().server, request: request, deadline: deadline)
-    }
 
     func snapshot(target: RexTarget, rexAppPID: Int32? = nil) throws -> RexSnapshot {
         let request = currentGeneration()
@@ -141,7 +124,6 @@ final class RexDataConnection: RexSnapshotProviding, @unchecked Sendable {
         do {
             let hello = try JSONSerialization.jsonObject(with: readLine(created, request: request, deadline: deadline)) as? [String: Any]
             guard hello?["ready"] as? Bool == true else { throw ReshError("Invalid Rex data connection handshake.") }
-            state.lock(); created.ready = true; state.unlock()
             try check(request)
             return created
         } catch { discard(request: request); throw error }

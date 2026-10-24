@@ -16,7 +16,7 @@ bash install.sh local
 ```
 
 Installs the native helper and its Lua resources in `~/Library/Application Support/resh`,
-plus a `dofile(...)` line and a `--start` command in Rex's config.
+plus a `dofile(...)` line and a `service start` command in Rex's config.
 There is no `.app` or Applications entry: Rex launches the executable directly.
 The action implementation and Lua resources stay with the helper, not in dotfiles.
 The installer preserves personal Rex settings and existing custom startup arguments.
@@ -110,14 +110,16 @@ The panel shows session names and shortened folder paths in a single-line list,
 sized to its results (up to 12 rows). It opens on the pointer's display and
 accepts keyboard input without deactivating Rex.
 
-The resident helper reuses its AppKit controls and a persistent `rex do`
-connection (`resh-data.lua`) while Rex is running. Each warm opening reads a fresh
-local client/session snapshot, without spawning CLI processes or inspecting individual tabs. The native hotkey,
-Rex action and CLI all use this same opening path; explicit reloads use the same connection.
-While the panel is open, the existing activity stream also updates the session list
-on creation, removal and renaming. Combined sources keep their loaded folder rows;
-session changes do not rerun filesystem providers or change the selected row's identity.
-Hiding clears session and folder data and the query.
+The background service keeps its AppKit controls and session catalog ready while
+Rex is running. A lightweight persistent `rex do` stream (`resh-catalog.lua`)
+receives session creation, removal and renaming, client changes and host changes,
+including while the panel is hidden. Opening uses the prepared catalog and client
+identity without a new API request, CLI process or terminal scan. The native
+hotkey, Rex action and CLI all use this same opening path. The panel is sized
+before it is shown and positioned only once.
+Combined sources keep their loaded folder rows; session changes do not rerun
+filesystem providers or change the selected row's identity. Hiding resets the
+query, selection and initial source, not the catalog or provider capabilities.
 Sessions use most-recently-used order, based only on successful selections through
 resh (including `--connect` and `--last`). Unknown sessions keep Rex's original
 order. Search still ranks by match quality, using recency to break ties; folder
@@ -141,8 +143,9 @@ This is Ctrl+A followed by Shift+L, including with non-Latin keyboard layouts.
 Switching through Rex's sidebar or built-in session actions is not tracked:
 resh does not poll Rex's private preferences or infer focus from attachments.
 
-The normal panel opens immediately, with an inline spinner while data arrives;
-there is no delayed loading presentation. Remote hosts never hold back local rows.
+Normal openings show the prepared session list immediately. During initial
+startup or recovery, the same panel can show an inline spinner while data arrives.
+Remote hosts never hold back local rows.
 Configuration errors, failed initial connections and actionable Rex refusals
 (such as disabled Remote Control or a session limit) appear inside the panel.
 Optional-source, remote-transport, protocol, history, theme and unread-receipt
@@ -155,30 +158,31 @@ success; failed registry cleanup is ignored. If closure cannot be confirmed, the
 row is retained until Rex supplies an updated snapshot, rather than removed
 optimistically. Session-changing commands are never automatically repeated.
 
-Configuration, filesystem providers and search-index preparation run in the
-background. Combined sources show available sessions/projects while providers
+Configuration and session history are loaded in the background and refreshed by
+filesystem notifications, including atomic saves. Filesystem providers and
+search-index preparation also run in the background. Combined sources show available sessions/projects while providers
 load; returning to Sessions is immediate. Search normalizes each list once,
-then reuses it for keystrokes until the source changes or the panel closes.
+then reuses it for keystrokes until the source changes.
 Folder sources are snapshots: leaving and returning to a source reloads it.
 Typing only filters the snapshot; there are no folder watchers or periodic scans.
 
 ### Lifecycle and background work
 
-- The native AppKit host and controls stay resident for fast opening; the glass
+- The native AppKit service and controls stay resident for fast opening; the glass
   renderer is unchanged. Switching to another app does not make the connection cold.
 - Closing the last Rex app, or putting the Mac to sleep, closes the CLI bridges
-  and hides the panel. Launch/wake notifications attempt one preliminary data
-  connection; failed connections recover on the next opening, not in a background
-  retry loop. There is no hidden polling timer.
+  and hides the panel. Launch/wake notifications reconnect the catalog and read
+  its initial snapshot. Subsequent catalog updates are event-driven, not polled.
+  Failed connections can be retried on the next opening.
 - A temporary `launchd` job supervises the host for the current GUI login session.
-  Failures restart it; successful `resh --quit` stays stopped until an explicit
+  Failures restart it; successful `resh service stop` stays stopped until an explicit
   show/start or Rex config reload. Nothing is installed in `~/Library/LaunchAgents`.
   The definition is cached at `~/Library/Caches/resh/launcher.plist`, with only an
   allowlist of launch environment variables, not the caller's full environment.
 - Normal bridge shutdown sends SIGTERM, then SIGKILL after 200 ms if necessary,
   without blocking the UI. After a host crash, launchd signals its old process
-  group; the data script also exits on stdin EOF. The visible-only activity
-  stream writes a tiny heartbeat every 10 seconds to detect a closed reader.
+  group; the request script also exits on stdin EOF. Event streams write a tiny
+  heartbeat every 10 seconds to detect a closed reader.
   This is not a Rex API poll.
 - Broken snapshot connections (including server EOF returned through Lua) are
   recreated automatically within one five-second deadline. Slow openings show
@@ -189,11 +193,13 @@ Typing only filters the snapshot; there are no folder watchers or periodic scans
   Other API errors, malformed responses and session-changing operations are not retried.
 
 The startup command in Rex's config runs on every Rex launch, including after a
-Mac restart. `--start` closes an existing resh host and starts a new one with the
-supplied arguments, without opening the panel. Normal hotkeys/openings reuse it.
-There is no separate warmup step or persistent custom-config selection in resh.
+Mac restart. `resh service start` starts the service without opening the panel
+and leaves an already-running instance alone. `resh service restart` explicitly
+replaces it with the supplied startup arguments. `resh serve` is the long-lived
+process run by launchd. Plain `resh` opens the panel and starts the service
+automatically if necessary; there is no separate preparation command.
 
-`resh --status` reports the host PID, connection state, data CLI PID, shutdown state
+`resh service status` reports the service PID, connection state, catalog CLI PID, session count, shutdown state
 and native hotkey registration. It does not start a stopped host.
 
 ### Debugging
@@ -205,8 +211,8 @@ The next opening without `--debug` returns to quiet mode.
 
 Use `resh --last --debug` or `resh --connect DIRECTORY --debug` to diagnose a CLI
 operation. To include startup and native-hotkey openings, add `--debug` to the
-existing `resh --start` command (preserving its `--config` argument, if any), then
-reload Rex's config. Remove it and reload again to stop startup-level logging.
+existing `resh service start` command (preserving its `--config` argument, if any), then
+restart the resh service with those arguments. Remove it and restart again to stop startup-level logging.
 
 The log records operations, sources/hosts, protocol replies (limited to 8192
 characters per message), failures and result counts. It can contain session names
@@ -218,8 +224,9 @@ Sessions with an unseen result, a request for user action, or an error show a sm
 dot beside their name. Running agents and plain idle agents have no indicator;
 an idle agent whose completion Rex has announced keeps its unread dot. Activity arrives
 through Rex's program-status API and events, asynchronously after the panel opens;
-there is no terminal polling. The event connection closes and its data is cleared
-when the panel hides. Folder and project rows never show activity dots.
+there is no terminal polling. The activity connection closes when the panel hides;
+last-known dots are retained until refreshed. The lightweight catalog stream
+remains connected. Folder and project rows never show activity dots.
 
 Read receipts are read from Rex's local `Workspace.programActivitySeen` preferences,
 so viewing activity in Rex removes the corresponding dot (within a second while
@@ -255,24 +262,25 @@ For a custom path, edit the startup command in Rex's `init.lua`:
 ```lua
 local resh = os.getenv("HOME") .. "/Library/Application Support/resh"
 dofile(resh .. "/resh.lua")
-rex.exec.start({ resh .. "/resh", "--start", "--config", "/path/to/config.toml" },
+rex.exec.start({ resh .. "/resh", "service", "start", "--config", "/path/to/config.toml" },
   { detach = true, stdout = false, stderr = false })
 ```
 
-Replace the existing resh startup command; do not add a second one. Reload Rex's
-config to restart resh with the new path. After reboot, Rex runs that same command.
+Replace the existing resh startup command; do not add a second one. Run
+`resh service restart --config /path/to/config.toml` to apply the new startup path.
+After reboot, Rex runs the startup command.
 `resh.lua` only registers the palette action; it does not start the host itself.
-`--config FILE` without `--start` still applies only to that opening; native hotkeys
+`--config FILE` on a normal opening still applies only to that opening; native hotkeys
 use the host's startup path. `RESH_CONFIG` remains an environment override.
 No config is required: all existing shortcuts and sources keep working.
 A file explicitly chosen by `RESH_CONFIG` or `--config` must exist; only the default file is optional.
-The resident panel rereads the file on each opening; no restart or Rex config reload
+The service watches the file; no restart, reopening or Rex config reload
 is needed for edits to its contents. A missing/invalid chosen file does not kill
 the host or silently use old/default settings. Cmd+S opens the same glass panel
 with a selectable error and full file path instead of results. Search and source
 actions are disabled; there is no Retry button for configuration errors.
-For a wrong path, correct `--config` in Rex's `init.lua` and reload Rex's config.
-For invalid contents, fix the file and reopen the panel. No config copy is saved.
+For a wrong path, correct `--config` in Rex's `init.lua` and restart the resh service.
+For invalid contents, fix the file. No config copy is saved.
 
 ```toml
 # Optional: order of visible sources. Omitted sources are hidden from the source bar.
@@ -505,7 +513,7 @@ explicitly attached to a host, not inferred from the app's active remote host.
 
 ### Uninstall
 
-Run `"$HOME/Library/Application Support/resh/resh" --quit`. Remove the resh `dofile(...)` and `rex.exec.start(...)` lines from Rex's `init.lua`
+Run `"$HOME/Library/Application Support/resh/resh" service stop`. Remove the resh `dofile(...)` and `rex.exec.start(...)` lines from Rex's `init.lua`
 and run `rex config reload`. Existing Rex sessions remain untouched.
 To also unload the stopped session job, run
 `launchctl bootout "gui/$(id -u)/io.github.CruelAddict.resh.panel"`

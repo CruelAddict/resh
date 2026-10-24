@@ -3,6 +3,8 @@ import Darwin
 import Foundation
 import ReshCore
 
+private enum ServiceOperation: String { case start, stop, restart, status }
+
 private struct Options {
     var client: String?
     var server: String?
@@ -12,14 +14,25 @@ private struct Options {
     var diagnose = false
     var debug = false
     var help = false
-    var standby = false
-    var quit = false
-    var status = false
-    var start = false
+    var serve = false
+    var serviceOperation: ServiceOperation?
     var config: String?
     var checkConfig = false
 
     init(_ arguments: [String]) throws {
+        var arguments = arguments
+        if arguments.first == "serve" {
+            serve = true
+            arguments.removeFirst()
+        } else if arguments.first == "service" {
+            arguments.removeFirst()
+            if arguments.first == "--help" || arguments.first == "-h" { help = true; return }
+            guard let command = arguments.first, let operation = ServiceOperation(rawValue: command) else {
+                throw ReshError("Usage: resh service start|stop|restart|status")
+            }
+            serviceOperation = operation
+            arguments.removeFirst()
+        }
         var index = 0
         while index < arguments.count {
             let argument = arguments[index]
@@ -36,10 +49,6 @@ private struct Options {
             case "--name": name = try value()
             case "--diagnose": diagnose = true
             case "--debug": debug = true
-            case "--standby": standby = true
-            case "--quit": quit = true
-            case "--status": status = true
-            case "--start": start = true
             case "--config": config = URL(fileURLWithPath: (try value() as NSString).expandingTildeInPath).standardizedFileURL.path
             case "--check-config": checkConfig = true
             case "--help", "-h": help = true
@@ -61,7 +70,6 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
     private var hotkey: RexHotkey?
     private var openingID: UUID?
     private let dataConnection: RexDataConnection
-    private var warmupTask: Task<Void, Never>?
     private var rexMonitor: RexAppMonitor?
     private var isStopping = false
 
@@ -99,16 +107,12 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         rexMonitor?.onChange = { [weak self] available in
             guard let self, !self.isStopping else { return }
             if available {
-                let connection = self.dataConnection
-                self.warmupTask = Task.detached {
-                    do { try connection.warmup() }
-                    catch { DebugLog.shared.record(error, source: "connection:warmup") }
-                }
+                self.controller?.model.startBackground()
             } else {
-                self.warmupTask?.cancel(); self.warmupTask = nil
                 self.dataConnection.stop()
                 self.openingID = nil
                 self.controller?.dismiss(focusRex: false)
+                self.controller?.model.stopBackground()
             }
         }
         rexMonitor?.refresh()
@@ -122,13 +126,14 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         openingID = nil
         rexMonitor?.stop()
         hotkey?.stop()
-        warmupTask?.cancel(); warmupTask = nil
         dataConnection.stop()
         controller?.dismiss(focusRex: false)
-        let attention = controller?.stopAttention(), connection = dataConnection
+        let connections = (controller?.stopAttention() ?? []) + (controller?.model.stopBackground() ?? [])
+        controller?.model.clear()
+        let connection = dataConnection
         DispatchQueue.global(qos: .userInitiated).async {
             connection.waitUntilStopped()
-            for connection in attention ?? [] { connection.waitUntilStopped() }
+            for connection in connections { connection.waitUntilStopped() }
             let children = RexProcess.stopAll()
             let deadline = ProcessInfo.processInfo.systemUptime + 1
             for child in children { _ = child.waitForExit(timeout: max(0, deadline - ProcessInfo.processInfo.systemUptime)) }
@@ -148,23 +153,37 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         hotkey?.stop()
         dataConnection.stop()
         controller?.stopAttention()
+        controller?.model.stopBackground()
     }
     private func open(_ request: LauncherRequest) -> Bool {
         guard !isStopping, openingID == nil, let controller,
               !controller.model.isConnecting, !controller.model.isPresentingConfirmation else { return false }
         DebugLog.shared.setEnabled(request.debug ?? options.debug)
         DebugLog.shared.record("Opening panel", source: "panel")
+        let started = ProcessInfo.processInfo.systemUptime
         if controller.panel.isVisible, controller.model.displayedError == nil,
            request.client == nil, request.server == nil, request.config == nil, request.debug == nil {
             controller.panel.makeKeyAndOrderFront(nil)
             return true
         }
-        let id = UUID()
-        openingID = id
         let target = RexTarget(clientID: request.client, server: request.server)
         let frontmost = NSWorkspace.shared.frontmostApplication
         let rexAppPID = target.clientID == nil && PanelShortcut.launcherIsEnabled(frontmostBundleID: frontmost?.bundleIdentifier)
             ? frontmost?.processIdentifier : nil
+        let configurationURL = (request.config ?? options.config).map { URL(fileURLWithPath: $0) }
+        controller.model.configure(target: target, configurationURL: configurationURL)
+        controller.model.startBackground()
+        if let snapshot = controller.model.catalog.snapshot(clientID: target.clientID, rexAppPID: rexAppPID) {
+            let selected = RexTarget(clientID: snapshot.client, server: target.server)
+            let service = ReshService(client: RexClient(tools: tools, target: selected))
+            controller.prepare(service: service, snapshot: snapshot,
+                recentSessionIDs: controller.model.catalog.recentSessionIDs[snapshot.client] ?? [])
+            controller.show()
+            DebugLog.shared.record("Catalog ready; panel displayed in \((ProcessInfo.processInfo.systemUptime - started) * 1000) ms", source: "panel")
+            return true
+        }
+        let id = UUID()
+        openingID = id
         let connection = dataConnection
         controller.presentLoading()
         Task { [self] in
@@ -172,17 +191,13 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
                 if openingID == id { openingID = nil }
             }
             do {
-                let snapshot = try await Task.detached { try connection.snapshot(target: target, rexAppPID: rexAppPID) }.value
+                let fetched = try await Task.detached { try connection.snapshot(target: target, rexAppPID: rexAppPID) }.value
                 guard openingID == id, !controller.model.isConnecting, !controller.model.isPresentingConfirmation else { return }
+                let snapshot = controller.model.catalog.snapshot(clientID: target.clientID, rexAppPID: rexAppPID) ?? fetched
                 let selected = RexTarget(clientID: snapshot.client, server: target.server)
                 let service = ReshService(client: RexClient(tools: tools, target: selected))
-                var recent: [String] = [], historyError: Error?
-                do { recent = try await service.recentSessionIDs() }
-                catch { historyError = error }
-                guard openingID == id else { return }
-                controller.prepare(service: service, snapshot: snapshot, recentSessionIDs: recent,
-                    configurationURL: request.config.map { URL(fileURLWithPath: $0) })
-                controller.model.reportDiagnostic(historyError, source: "history")
+                controller.prepare(service: service, snapshot: snapshot,
+                    recentSessionIDs: controller.model.catalog.recentSessionIDs[snapshot.client] ?? [])
                 controller.model.reportDiagnostic(nil, source: "connection")
                 controller.show()
             } catch {
@@ -203,11 +218,12 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         let connectionState: String
         if isStopping { connectionState = "stopping" }
-        else if dataConnection.isReady { connectionState = "ready" }
+        else if controller.model.catalog.isConnected { connectionState = "ready" }
         else { connectionState = rexMonitor?.isAvailable == true ? "unavailable" : "waitingForRex" }
         return ["running": true, "pid": getpid(), "visible": controller.panel.isVisible,
                  "stopping": isStopping, "connectionState": connectionState,
-                 "dataProcessID": dataConnection.processID as Any? ?? NSNull(),
+                 "dataProcessID": controller.model.catalog.processID as Any? ?? NSNull(),
+                 "sessions": controller.model.sessionCount,
                 "configPath": (controller.model.configurationURL ?? ConfigurationFile.url()).path,
                 "panelError": controller.model.displayedError as Any? ?? NSNull(),
                 "nativeHotkeyRegistered": hotkey?.isRegistered ?? false,
@@ -253,8 +269,8 @@ struct ReshMain {
                 resh --last [--client CLIENT_ID]
                 resh --name DIRECTORY
                 resh --diagnose
-                resh --status | --quit
-                resh --start [--config FILE] [--debug]
+                resh service start|stop|restart|status [--config FILE] [--debug]
+                resh serve [--config FILE] [--debug]
                 resh --check-config [--config FILE]
 
                 Config: ~/.config/resh/config.toml (or $RESH_CONFIG / --config FILE)
@@ -273,30 +289,32 @@ struct ReshMain {
                 print("Config: \((configURL ?? ConfigurationFile.url()).path)\nSources: \(config.visibleSources.map(\.id.rawValue).joined(separator: ", "))\nProjects: \(config.projects.count)\nValid")
                 return
             }
-            if !options.standby, options.connect == nil, !options.last, !options.diagnose, options.name == nil {
+            if !options.serve, options.connect == nil, !options.last, !options.diagnose, options.name == nil {
                 var request = LauncherRequest(client: options.client, server: options.server, config: configURL?.path,
                     debug: options.debug ? true : nil)
-                if options.quit {
-                    try ResidentLauncher().stop()
+                if options.serviceOperation == .stop {
+                    try ServiceLauncher().stop()
                     print("{\"running\":false}")
                     return
                 }
-                if options.status { request.operation = "status" }
-                if options.start {
-                    try LauncherIPC.launchHost(configurationPath: configURL?.path, restart: true, debug: options.debug)
+                if options.serviceOperation != nil { request.operation = "status" }
+                let startsService = options.serviceOperation == .start || options.serviceOperation == .restart
+                if startsService {
+                    try LauncherIPC.launchHost(configurationPath: configURL?.path,
+                        restart: options.serviceOperation == .restart, debug: options.debug)
                     request.operation = "status"
                 }
                 var response = try LauncherIPC.send(request)
-                if response == nil, request.operation == "show" || options.start {
-                    if !options.start { try LauncherIPC.launchHost(configurationPath: configURL?.path) }
+                if response == nil, request.operation == "show" || startsService {
+                    if !startsService { try LauncherIPC.launchHost(configurationPath: configURL?.path) }
                     for _ in 0..<200 {
                         usleep(10_000)
                         response = try LauncherIPC.send(request)
                         if response != nil { break }
                     }
-                    guard response != nil else { throw ReshError("The resh background panel did not start.") }
+                    guard response != nil else { throw ReshError("The resh service did not start.") }
                 }
-                if options.status {
+                if options.serviceOperation == .status {
                     let data = try JSONSerialization.data(withJSONObject: response ?? ["running": false])
                     FileHandle.standardOutput.write(data); print("")
                 }

@@ -215,10 +215,10 @@ if not found then text = text .. (text == "" and "" or "\n") .. integration .. "
 if args.mode == "local" then
   local startup = false
   for arguments in ("\n" .. text):gmatch("\n[ \t]*rex%.exec%.start%s*%(%s*{(.-)}") do
-    if arguments:find("resh", 1, true) and arguments:match("['\"]%-%-start['\"]") then startup = true end
+    if arguments:find("resh", 1, true) and arguments:match("['\"]service['\"]%s*,%s*['\"]start['\"]") then startup = true end
   end
   if not startup then
-    text = text .. "rex.exec.start({ " .. string.format("%q", args.executable) .. ", \"--start\" },\n  { detach = true, stdout = false, stderr = false })\n"
+    text = text .. "rex.exec.start({ " .. string.format("%q", args.executable) .. ", \"service\", \"start\" },\n  { detach = true, stdout = false, stderr = false })\n"
   end
 end
 local output = assert(io.open(args.output, "wb"))
@@ -246,7 +246,7 @@ atomic_copy() {
 }
 
 install_native() {
-    "$bundle/resh" --quit
+    "$bundle/resh" service stop
     local name
     for name in resh LICENSE THIRD_PARTY_NOTICES.md; do
         atomic_copy "$bundle/$name" "$destination/$name"

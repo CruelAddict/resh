@@ -35,6 +35,11 @@ final class SearchModel: ObservableObject {
     private var hostGeneration = 0
     private var remoteRequest = UUID()
     private var rexAppPID: Int32?
+    let catalog: SessionStore
+    private var configurationWatcher: FileWatcher?
+    private var isBackgroundActive = false
+    private var isPresented = false
+    private var subscriptions = Set<AnyCancellable>()
     private let snapshotProvider: any RexSnapshotProviding
     private let readPreferences: @Sendable () -> [String: Any]
     private let readTheme: @Sendable (String, Bool) throws -> RexTheme
@@ -57,6 +62,7 @@ final class SearchModel: ObservableObject {
          readTheme: @escaping @Sendable (String, Bool) throws -> RexTheme = { try RexTheme.read(rexApp: $0, systemIsDark: $1) },
          readPreferences: @escaping @Sendable () -> [String: Any] = { RexTheme.preferences(keys: ["Workspace.programActivitySeen"]) }) throws {
         self.service = service; self.tools = tools
+        self.catalog = SessionStore(tools: tools, service: service)
         self.configurationURL = configurationURL
         self.snapshotProvider = snapshotProvider ?? RexDataConnection(tools: tools)
         self.readPreferences = readPreferences
@@ -71,6 +77,13 @@ final class SearchModel: ObservableObject {
         scope = configuration.initialSource
         showAvailableEntries()
         isLoading = false
+        catalog.updates.sink { [weak self] result, host in
+            self?.receive(result, host: host)
+        }.store(in: &subscriptions)
+        catalog.$recentSessionIDs.dropFirst().sink { [weak self] history in
+            guard let self, let client = self.service.target.clientID else { return }
+            updateRecentSessions(history[client] ?? [])
+        }.store(in: &subscriptions)
     }
     static var systemIsDark: Bool { UserDefaults.standard.string(forKey: "AppleInterfaceStyle") == "Dark" }
     var selected: Candidate? { results.indices.contains(selection) ? results[selection] : nil }
@@ -96,42 +109,111 @@ final class SearchModel: ObservableObject {
         load(reloadConfiguration: true, resetScope: true)
     }
 
-    func beginOpening() {
-        clear()
-        isOpening = true
-        isLoading = true
+    func startBackground() {
+        catalog.start()
+        guard !isBackgroundActive else { return }
+        isBackgroundActive = true
+        watchConfiguration()
+        loadInitial()
     }
 
-    func prepare(service: ReshService, sessions: [RexSession], recentSessionIDs: [String] = [], configurationURL: URL? = nil, rexAppPID: Int32? = nil) {
-        clear()
-        if configurationURL != self.configurationURL {
-            self.configurationURL = configurationURL
-            configuration = .defaults
-            configurationError = nil
+    @discardableResult
+    func stopBackground() -> [RexEventConnection] {
+        isBackgroundActive = false
+        configurationWatcher?.stop(); configurationWatcher = nil
+        generation += 1
+        hostGeneration += 1
+        hostsTask?.cancel(); hostsTask = nil
+        remoteRequest = UUID()
+        for task in remoteTasks.values { task.cancel() }
+        remoteTasks = [:]
+        loadingTask?.cancel(); loadingTask = nil
+        attentionTask?.cancel(); attentionTask = nil
+        themeTask?.cancel(); themeTask = nil; themeTaskID = nil
+        isLoading = false
+        return catalog.stop()
+    }
+
+    private func watchConfiguration() {
+        configurationWatcher?.stop()
+        configurationWatcher = FileWatcher(url: configurationURL ?? ConfigurationFile.url()) { [weak self] in
+            Task { @MainActor [weak self] in
+                guard let self, isBackgroundActive else { return }
+                load(reloadConfiguration: true, resetScope: !isPresented)
+            }
         }
+    }
+
+    func configure(target: RexTarget, configurationURL: URL?) {
+        let changedServer = service.target.server != target.server
+        let changedConfiguration = self.configurationURL != configurationURL
+        guard changedServer || changedConfiguration else { return }
+        if changedServer {
+            clear()
+            service = ReshService(client: RexClient(tools: tools, target: target))
+            catalog.configure(target: target)
+        }
+        if changedConfiguration {
+            self.configurationURL = configurationURL
+            configurationError = nil
+            isConfigurationReady = false
+        }
+        if changedServer { startBackground() }
+        else { watchConfiguration(); loadInitial() }
+    }
+
+    private func updateRecentSessions(_ recent: [String]) {
+        let ranks = Dictionary(recent.enumerated().map { ($0.element, $0.offset) }, uniquingKeysWith: min)
+        guard ranks != sessionRanks else { return }
+        sessionRanks = ranks
+        refreshEntries()
+    }
+
+    func beginOpening() {
+        isPresented = true
+        isOpening = true
+        isLoading = true
+        error = configurationError
+    }
+
+    func prepare(service: ReshService, sessions: [RexSession], recentSessionIDs: [String] = [], rexAppPID: Int32? = nil) {
+        if !isOpening { query = ""; selection = 0 }
+        isPresented = true
         self.service = service
         self.rexAppPID = rexAppPID
         sessionSnapshot = ReshService.candidates(from: sessions)
         sessionRanks = Dictionary(recentSessionIDs.enumerated().map { ($0.element, $0.offset) }, uniquingKeysWith: min)
         scope = configuration.initialSource
         showAvailableEntries()
-        isLoading = false
+        isOpening = false
+        isLoading = loadingTask != nil
+        onRetryOpening = nil
+        if isConfigurationReady, configuration.source(scope)?.kind != .sessions { load(keepingSnapshots: true) }
+    }
+
+    func failOpening(_ error: Error, retry: @escaping () -> Void) {
+        isOpening = false; isLoading = false
+        self.error = configurationError ?? error.localizedDescription
+        onRetryOpening = retry
+    }
+
+    func endPresentation() {
+        isPresented = false
+        query = ""; scope = configuration.initialSource; selection = 0
+        isOpening = false; isConnecting = false
+        isLoading = loadingTask != nil
+        error = configurationError
+        onRetryOpening = nil
+        showAvailableEntries()
     }
 
     func clear() {
-        generation += 1
-        hostGeneration += 1
-        hostsTask?.cancel(); hostsTask = nil
-        remoteRequest = UUID()
-        for task in remoteTasks.values { task.cancel() }
-        remoteTasks = [:]; hosts = []; hostSessions = [:]; hostSources = [:]; hostFunctions = [:]
+        stopBackground()
+        hosts = []; hostSessions = [:]; hostSources = [:]; hostFunctions = [:]
         hasHostCatalog = false
         visibleSources = configuration.visibleSources
         pendingHosts = []
         hostAttentionRecords = [:]; isRemoteLoading = false
-        loadingTask?.cancel(); loadingTask = nil
-        attentionTask?.cancel(); attentionTask = nil
-        themeTask?.cancel(); themeTask = nil; themeTaskID = nil
         attentionRecords = []; attentionSessionIDs = []
         sessionSnapshot = []; sessionRanks = [:]; search = FuzzyMatcher([])
         sourceSnapshots = [:]
@@ -163,6 +245,11 @@ final class SearchModel: ObservableObject {
     }
 
     private func refreshEntries() {
+        guard configurationError == nil else {
+            search = FuzzyMatcher([])
+            updateResults()
+            return
+        }
         var visible = configuration.visibleSources.filter {
             sourceIsAvailable($0.id, includeSessions: $0.id != .all || $0.kind != .union)
         }
@@ -253,6 +340,7 @@ final class SearchModel: ObservableObject {
                     pendingHosts.insert(host.id)
                 }
                 hosts = updated
+                self.catalog.updateHosts(updated)
                 hasHostCatalog = true
                 reportDiagnostic(catalog.warnings.isEmpty ? nil : ReshError(catalog.warnings.joined(separator: "\n")), source: "hosts")
                 refreshEntries()
@@ -325,11 +413,11 @@ final class SearchModel: ObservableObject {
 
     private func updateRemoteLoading() { isRemoteLoading = hostsTask != nil || !remoteTasks.isEmpty || !pendingHosts.isEmpty }
 
-    private func load(reloadConfiguration: Bool = false, resetScope: Bool = false, refreshSessions: Bool = false) {
+    private func load(reloadConfiguration: Bool = false, resetScope: Bool = false, refreshSessions: Bool = false,
+                      keepingSnapshots: Bool = false) {
         generation += 1
         loadingTask?.cancel()
-        sourceSnapshots = [:]
-        hostSources = [:]
+        if !reloadConfiguration, !keepingSnapshots { sourceSnapshots = [:]; hostSources = [:] }
         remoteRequest = UUID()
         for task in remoteTasks.values { task.cancel() }
         remoteTasks = [:]
@@ -341,7 +429,7 @@ final class SearchModel: ObservableObject {
             hostFunctions = [:]
         }
         updateRemoteLoading()
-        let request = generation, url = configurationURL
+        let request = generation, url = configurationURL, watcher = configurationWatcher
         error = configurationError
         if reloadConfiguration { isConfigurationReady = false }
         if !reloadConfiguration {
@@ -354,21 +442,28 @@ final class SearchModel: ObservableObject {
         }
         isLoading = true
         loadingTask = Task {
+            defer { if generation == request { isLoading = false; loadingTask = nil } }
             if reloadConfiguration {
-                let worker = Task.detached { try ConfigurationFile.load(url) }
+                let worker = Task.detached {
+                    watcher?.waitUntilReady()
+                    return try ConfigurationFile.load(url)
+                }
                 do {
                     let updated = try await withTaskCancellationHandler(operation: { try await worker.value }, onCancel: { worker.cancel() })
                     guard generation == request else { return }
-                    if updated != configuration { configuration = updated }
+                    if updated != configuration {
+                        sourceSnapshots = [:]; hostSources = [:]
+                        configuration = updated
+                    }
                     configurationError = nil
                     isConfigurationReady = true
                 } catch {
                     guard generation == request else { return }
                     let path = (url ?? ConfigurationFile.url()).path
                     if !FileManager.default.fileExists(atPath: path) {
-                        configurationError = "Config file not found: \(path)\nCorrect --config in Rex's init.lua and reload the Rex config."
+                        configurationError = "Config file not found: \(path)\nCorrect --config in Rex's init.lua and restart the resh service."
                     } else {
-                        configurationError = error.localizedDescription + "\nFix this file, then reopen resh."
+                        configurationError = error.localizedDescription + "\nFix this file to reload resh’s configuration."
                     }
                     search = FuzzyMatcher([])
                     updateResults()
@@ -417,11 +512,10 @@ final class SearchModel: ObservableObject {
                 guard generation == request else { return }
                 if !(error is CancellationError) { reportDiagnostic(error, source: "source:\(scope.rawValue)") }
             }
-            isLoading = false
         }
     }
     func changeScope(_ scope: SearchScope) {
-        guard isConfigurationReady, !isConnecting, self.scope != scope else { return }
+        guard isConfigurationReady, !isOpening, !isConnecting, self.scope != scope else { return }
         guard visibleSources.contains(where: { $0.id == scope }) else { return }
         self.scope = scope; selection = 0; error = configurationError
         load()
@@ -437,13 +531,14 @@ final class SearchModel: ObservableObject {
         selection = (selection + delta + count) % count
     }
     func openSelection() {
-        guard isConfigurationReady, !isConnecting, let candidate = selected else { return }
+        guard isConfigurationReady, !isOpening, !isConnecting, let candidate = selected else { return }
         isConnecting = true; error = nil
         let request = generation, service = service
         Task {
             do {
                 try await service.connect(candidate)
                 guard generation == request else { return }
+                catalog.refreshHistory()
                 onDismiss?(true)
             } catch {
                 guard generation == request else { return }
@@ -464,7 +559,7 @@ final class SearchModel: ObservableObject {
         }
     }
     func deleteSelection() {
-        guard isConfigurationReady, !isConnecting, let selected, let sessionID = selected.sessionID else { return }
+        guard isConfigurationReady, !isOpening, !isConnecting, let selected, let sessionID = selected.sessionID else { return }
         let alert = NSAlert()
         alert.messageText = "Close ‘\(selected.title)’" + (showsHosts ? " on \(selected.hostLabel)?" : "?")
         alert.informativeText = "This closes every terminal and running program in this Rex session. It cannot be undone."
@@ -518,9 +613,12 @@ final class SearchModel: ObservableObject {
         if let message { DebugLog.shared.record(message, source: source) }
     }
 
-    func receiveAttention(_ result: Result<RexAttentionUpdate, Error>, host: RexHost? = nil) {
+    func receive(_ result: Result<RexEventUpdate, Error>, host: RexHost? = nil) {
         let key = host.map { "attention:\($0.id)" } ?? "attention"
         switch result {
+        case .success(.clients): break
+        case .success(.reconnecting):
+            if let host { pendingHosts.insert(host.id); updateRemoteLoading() }
         case .success(.hostsChanged):
             if host == nil { discoverHosts() }
         case .success(.capabilitiesChanged):

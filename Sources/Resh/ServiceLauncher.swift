@@ -5,7 +5,7 @@ import ReshCore
 
 /// A per-GUI-session launchd job, not an always-installed login item. There is
 /// no extra watchdog process: launchd starts the actual AppKit host directly.
-struct ResidentLauncher {
+struct ServiceLauncher {
     private let directory = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Caches/resh")
     private let label = "io.github.CruelAddict.resh.panel"
 
@@ -14,7 +14,7 @@ struct ResidentLauncher {
     var job: String { "\(domain)/\(label)" }
 
     func definition(executable: String, configurationPath: String?, environment: [String: String], debug: Bool = false) -> [String: Any] {
-        var arguments = [executable, "--standby"]
+        var arguments = [executable, "serve"]
         if let configurationPath { arguments += ["--config", configurationPath] }
         if debug { arguments.append("--debug") }
         // Do not persist arbitrary shell credentials or another pane's Rex IDs.
@@ -34,7 +34,7 @@ struct ResidentLauncher {
         if restart { try stopHost() }
         if CFMessagePortCreateRemote(nil, LauncherIPC.name) != nil { return }
         let loaded = try command(["print", job]).status == 0
-        // Only --start replaces this login session's startup arguments.
+        // Only an explicit restart replaces this login session's startup arguments.
         if !loaded {
             let definition = definition(executable: executable, configurationPath: configurationPath, environment: environment, debug: debug)
             let data = try PropertyListSerialization.data(fromPropertyList: definition, format: .xml, options: 0)
@@ -50,21 +50,19 @@ struct ResidentLauncher {
     func stop() throws {
         let lock = try FileLock(url: directory.appendingPathComponent("launcher.lock"))
         defer { withExtendedLifetime(lock) {} }
-        try stopHost(unload: false)
+        try stopHost()
     }
 
-    private func stopHost(unload: Bool = true) throws {
-        let response = try LauncherIPC.send(LauncherRequest(operation: "quit"))
+    private func stopHost() throws {
+        _ = try LauncherIPC.send(LauncherRequest(operation: "quit"))
         let deadline = ProcessInfo.processInfo.systemUptime + 5
         while CFMessagePortCreateRemote(nil, LauncherIPC.name) != nil {
             guard ProcessInfo.processInfo.systemUptime < deadline else {
-                throw ReshError("The resh helper did not stop.")
+                throw ReshError("The resh service did not stop.")
             }
             usleep(20_000)
         }
-        if unload || response == nil {
-            if try command(["print", job]).status == 0 { try requireSuccess(command(["bootout", job])) }
-        }
+        if try command(["print", job]).status == 0 { try requireSuccess(command(["bootout", job])) }
     }
 
     private func command(_ arguments: [String]) throws -> CommandResult {

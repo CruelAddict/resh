@@ -14,6 +14,7 @@ struct ConfigurationModelTests {
         let model = try SearchModel(service: ReshService(client: RexClient(tools: tools, target: RexTarget())),
             tools: tools, sessions: [RexSession(sessionID: "s", label: "Live session")], configurationURL: url,
             readTheme: { _, _ in .fixture })
+        defer { model.clear() }
         try """
         source_order = ["sessions", "configs"]
         [keymap]
@@ -22,7 +23,7 @@ struct ConfigurationModelTests {
         name = "Project one"
         path = "project"
         """.write(to: url, atomically: true, encoding: .utf8)
-        model.loadInitial()
+        model.startBackground()
         await model.loadingTask?.value
         #expect(model.configuration.visibleSources.map(\.id) == [.sessions, .configs])
         #expect(model.configuration.keymap.action(for: try KeyChord("ctrl+t")) == .scope(.configs))
@@ -30,8 +31,8 @@ struct ConfigurationModelTests {
         await model.loadingTask?.value
         #expect(model.results.map(\.title) == ["Project one"])
         model.query = "one"
-        model.clear()
-        #expect(model.results.isEmpty && model.query.isEmpty)
+        model.endPresentation()
+        #expect(model.results.map(\.title) == ["Live session"] && model.query.isEmpty)
         try """
         initial_source = "configs"
         source_order = ["configs"]
@@ -39,9 +40,10 @@ struct ConfigurationModelTests {
         name = "Project two"
         path = "project"
         """.write(to: url, atomically: true, encoding: .utf8)
-        model.prepare(service: ReshService(client: RexClient(tools: tools, target: RexTarget())), sessions: [], configurationURL: url)
-        model.loadInitial()
-        await model.loadingTask?.value
+        for _ in 0..<300 {
+            if model.results.map(\.title) == ["Project two"] { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
         #expect(model.scope == .configs)
         #expect(model.results.map(\.title) == ["Project two"])
     }
@@ -77,7 +79,7 @@ struct ConfigurationModelTests {
         #expect(FileManager.default.fileExists(atPath: root.appendingPathComponent("started").path))
         #expect(model.scope == .all && model.isLoading)
         #expect(model.results.map(\.title) == ["Live", "Project"])
-        model.receiveAttention(.success(.sessions([RexSession(sessionID: "new", label: "Fresh")])))
+        model.receive(.success(.sessions([RexSession(sessionID: "new", label: "Fresh")])))
         #expect(model.results.map(\.title) == ["Fresh", "Project"] && model.isLoading)
         let oldTask = model.loadingTask
         model.changeScope(.sessions)
@@ -125,7 +127,7 @@ struct ConfigurationModelTests {
             try await Task.sleep(for: .milliseconds(10))
         }
         #expect(FileManager.default.fileExists(atPath: root.appendingPathComponent("started").path))
-        model.receiveAttention(.success(.sessions([RexSession(sessionID: "s", label: "Test changed")])))
+        model.receive(.success(.sessions([RexSession(sessionID: "s", label: "Test changed")])))
         try "".write(to: root.appendingPathComponent("ready"), atomically: true, encoding: .utf8)
         await model.loadingTask?.value
         #expect(model.results.map(\.title) == ["Test project", "test-folder-one", "Test changed"])
@@ -133,7 +135,7 @@ struct ConfigurationModelTests {
         model.selection = try #require(model.results.firstIndex { $0.kind == .directory })
         let selectedID = model.selected?.id
         try "test-folder-two\n".write(to: paths, atomically: true, encoding: .utf8)
-        model.receiveAttention(.success(.sessions([
+        model.receive(.success(.sessions([
             RexSession(sessionID: "s", label: "Test renamed"), RexSession(sessionID: "new", label: "Test new"),
         ])))
         #expect(model.sessionCount == 2 && model.results.count == 4)
@@ -141,7 +143,7 @@ struct ConfigurationModelTests {
         #expect(model.results.contains { $0.title == "test-folder-one" })
         #expect(!model.results.contains { $0.title == "test-folder-two" })
         model.query = ""
-        model.receiveAttention(.success(.sessions([])))
+        model.receive(.success(.sessions([])))
         #expect(model.results.map(\.title) == ["Test project", "test-folder-one"])
         model.changeScope(.sessions)
         model.changeScope(.all)
@@ -161,14 +163,14 @@ struct ConfigurationModelTests {
         model.query = "session"
         #expect(model.results.map(\.id) == ["b", "a", "d"])
         model.selection = 1
-        model.receiveAttention(.success(.sessions([
+        model.receive(.success(.sessions([
             RexSession(sessionID: "d", label: "Session"), RexSession(sessionID: "a", label: "Session"),
             RexSession(sessionID: "b", label: "Session"), RexSession(sessionID: "new", label: "Session"),
         ])))
         #expect(model.results.map(\.id) == ["b", "a", "d", "new"])
         #expect(model.selected?.id == "a")
         model.query = "other"
-        model.receiveAttention(.success(.sessions([
+        model.receive(.success(.sessions([
             RexSession(sessionID: "a", label: "Other"), RexSession(sessionID: "b", label: "Session other"),
         ])))
         #expect(model.results.first?.id == "a")
