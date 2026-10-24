@@ -20,7 +20,7 @@ public enum PanelLayout {
 }
 
 public enum PanelShortcut: Equatable, Sendable {
-    case scope(SearchScope), move(Int), open, dismiss, delete, ignore, reload, nextSource, previousSource
+    case scope(SearchScope), move(Int), open, openResult(Int), pin, dismiss, delete, ignore, reload, nextSource, previousSource
     public static let launcherKeyCode: UInt16 = 1
     public static func launcherIsEnabled(frontmostBundleID: String?) -> Bool {
         frontmostBundleID == "com.superlogical.rex"

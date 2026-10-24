@@ -43,6 +43,45 @@ private final class AttentionUpdates: @unchecked Sendable {
 
 @Suite("Session data connections")
 struct DataConnectionTests {
+    @Test @MainActor func numberedShortcutsSkipTheCurrentSession() async throws {
+        let stub = try StubRex(body: """
+        import pathlib
+        if 'client' in sys.argv:
+            print('{"clients":[{"client_id":"client:test","info":{"kind":"app","platform":"macos"}}]}')
+        elif 'session.select' in sys.argv:
+            pathlib.Path(__file__+'.selected').write_text(json.loads(sys.argv[sys.argv.index('--args')+1])['session_id'])
+            print('{}')
+        else:
+            raise Exception('Unexpected command')
+        """)
+        let service = ReshService(client: RexClient(tools: stub.tools, target: RexTarget(clientID: "client:test")),
+            registry: SessionRegistry(directory: stub.directory))
+        let model = SearchModel(service: service, tools: stub.tools, readTheme: { _, _ in .fixture })
+        defer { model.clear() }
+        let sessions = ["a", "b", "c"].map { RexSession(sessionID: $0, label: $0) }
+        model.prepare(service: service, sessions: sessions)
+        model.query = "missing"
+        #expect(model.results.isEmpty)
+        model.openResult(1)
+        #expect(!model.isConnecting)
+        model.prepare(service: service, sessions: sessions, currentSessionID: "b")
+        model.selection = try #require(model.results.firstIndex { $0.id == "c" })
+        model.togglePin()
+        model.query = "missing"
+        #expect(model.results.map(\.id) == ["b"])
+        model.openResult(1)
+        #expect(!model.isConnecting)
+        model.query = ""
+        #expect(model.results.map(\.id) == ["c", "b", "a"])
+        var connected = false
+        model.onDismiss = { _ in connected = true }
+        model.openResult(2)
+        for _ in 0..<300 where !connected { try await Task.sleep(for: .milliseconds(10)) }
+        #expect(connected)
+        let selected = stub.directory.appendingPathComponent("rex.selected")
+        #expect(try String(contentsOf: selected, encoding: .utf8) == "a")
+    }
+
     @Test func snapshotRecoversAfterDisconnect() throws {
         let stub = try StubRex(body: """
         import pathlib

@@ -63,11 +63,11 @@ final class PanelController: NSObject, NSWindowDelegate {
         if let picker { panel.makeFirstResponder(picker.searchField) }
     }
 
-    func prepare(service: ReshService, snapshot: RexSnapshot, recentSessionIDs: [String] = []) {
+    func prepare(service: ReshService, snapshot: RexSnapshot, recentSessionIDs: [String] = [], currentSessionID: String? = nil) {
         let pendingQuery = model.isOpening ? model.query : nil
         rexAppPID = snapshot.rexAppPID
         model.prepare(service: service, sessions: snapshot.sessions, recentSessionIDs: recentSessionIDs,
-            rexAppPID: snapshot.rexAppPID)
+            rexAppPID: snapshot.rexAppPID, currentSessionID: currentSessionID)
         if let pendingQuery { model.query = pendingQuery }
     }
 
@@ -133,11 +133,17 @@ final class PanelController: NSObject, NSWindowDelegate {
         resize(resultCount: model.results.count, hasError: model.error != nil)
         if !panel.isVisible { position() }
         panel.makeKeyAndOrderFront(nil)
+        picker?.updateModifiers(NSEvent.modifierFlags)
         if let picker { panel.makeFirstResponder(picker.searchField) }
         panel.contentView?.layoutSubtreeIfNeeded()
         panel.displayIfNeeded()
-        monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard let self, event.window === self.panel else { return event }
+        monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .flagsChanged]) { [weak self] event in
+            guard let self, self.panel.isKeyWindow else { return event }
+            if event.type == .flagsChanged {
+                self.picker?.updateModifiers(event.modifierFlags)
+                return event
+            }
+            guard event.window === self.panel else { return event }
             return self.handle(event) ? nil : event
         }
         themeTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
@@ -201,6 +207,8 @@ final class PanelController: NSObject, NSWindowDelegate {
         case let .scope(scope): model.changeScope(scope)
         case let .move(delta): model.move(delta)
         case .open: model.openSelection()
+        case let .openResult(number): model.openResult(number)
+        case .pin: if !event.isARepeat { model.togglePin() }
         case .dismiss: if !model.isConnecting { dismiss(focusRex: true) }
         case .delete: model.deleteSelection()
         case .ignore: break
@@ -247,6 +255,7 @@ final class PanelController: NSObject, NSWindowDelegate {
         themeTimer?.invalidate()
         stopAttention()
         panel.orderOut(nil)
+        picker?.updateModifiers([])
         if focusRex, NSApp.isActive, let rexAppPID, NSWorkspace.shared.frontmostApplication?.processIdentifier != rexAppPID {
             NSRunningApplication(processIdentifier: rexAppPID)?.activate(options: [])
         }

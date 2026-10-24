@@ -1,5 +1,6 @@
 import AppKit
 import Combine
+import QuartzCore
 import ReshCore
 
 private final class SelectionRow: NSTableRowView {
@@ -14,6 +15,14 @@ private final class SelectionRow: NSTableRowView {
 final class SessionCellView: NSTableCellView {
     let attention = NSImageView()
     let hostLabel = NSTextField(labelWithString: "")
+    let pin = NSImageView()
+    let shortcutLabel = NSTextField(labelWithString: "")
+    let pinHintLabel = NSTextField(labelWithString: "")
+    let closeHintLabel = NSTextField(labelWithString: "")
+    private var hostColumnWidth: CGFloat = 0
+    private var representedID: String?
+    private var isPinned = false
+    private var animatesPinChange = false
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -27,6 +36,22 @@ final class SessionCellView: NSTableCellView {
         attention.setAccessibilityElement(false)
         attention.isHidden = true
         addSubview(attention)
+        pin.image = NSImage(systemSymbolName: "pin.fill", accessibilityDescription: nil)
+        pin.imageScaling = .scaleProportionallyUpOrDown
+        pin.setAccessibilityElement(false)
+        pin.wantsLayer = true
+        pin.alphaValue = 0
+        addSubview(pin)
+        shortcutLabel.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
+        shortcutLabel.alignment = .right
+        shortcutLabel.isHidden = true
+        addSubview(shortcutLabel)
+        for hint in [pinHintLabel, closeHintLabel] {
+            hint.font = shortcutLabel.font
+            hint.alignment = .right
+            hint.isHidden = true
+            addSubview(hint)
+        }
         hostLabel.font = .systemFont(ofSize: 11)
         hostLabel.lineBreakMode = .byTruncatingMiddle
         hostLabel.alignment = .right
@@ -36,17 +61,44 @@ final class SessionCellView: NSTableCellView {
 
     required init?(coder: NSCoder) { nil }
 
-    func configure(_ candidate: Candidate, needsAttention: Bool, color: NSColor, textColor: NSColor, showHost: Bool = false) {
+    func configure(_ candidate: Candidate, needsAttention: Bool, color: NSColor, textColor: NSColor,
+                   showHost: Bool = false, hostWidth: CGFloat = 0, isPinned: Bool = false,
+                   isCurrent: Bool = false, shortcut: String = "", showsShortcut: Bool = true,
+                   pinHint: String = "", closeHint: String = "") {
+        let pinned = candidate.kind == .session && isPinned
+        if representedID != candidate.id {
+            animatesPinChange = false
+            pin.layer?.removeAnimation(forKey: "pin")
+        } else if self.isPinned != pinned {
+            layoutSubtreeIfNeeded()
+            animatesPinChange = window?.isVisible == true && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        }
+        representedID = candidate.id
+        self.isPinned = pinned
         textField?.stringValue = candidate.displayTitle
         textField?.textColor = textColor
         attention.isHidden = candidate.kind != .session || !needsAttention
         attention.contentTintColor = color
+        let hintColor = textColor.withAlphaComponent(0.55)
+        pin.contentTintColor = hintColor
+        shortcutLabel.stringValue = shortcut
+        shortcutLabel.textColor = hintColor
+        shortcutLabel.isHidden = !showsShortcut || shortcut.isEmpty
+        pinHintLabel.stringValue = pinHint
+        closeHintLabel.stringValue = closeHint
+        for hint in [pinHintLabel, closeHintLabel] {
+            hint.textColor = hintColor
+            hint.isHidden = hint.stringValue.isEmpty
+        }
+        hostColumnWidth = hostWidth
         hostLabel.stringValue = candidate.hostLabel
-        hostLabel.textColor = textColor.withAlphaComponent(0.55)
+        hostLabel.textColor = hintColor
         hostLabel.isHidden = !showHost
         toolTip = attention.isHidden ? nil : "Unread result or action required in this session"
         setAccessibilityLabel("\(candidate.kind == .session ? "Session" : "Folder"), \(candidate.displayTitle)"
             + (showHost ? ", \(candidate.hostLabel)" : "")
+            + (pinned ? ", pinned" : "")
+            + (isCurrent ? ", current session" : "")
             + (attention.isHidden ? "" : ", unread activity"))
         needsLayout = true
     }
@@ -54,15 +106,47 @@ final class SessionCellView: NSTableCellView {
     override func layout() {
         super.layout()
         guard let textField else { return }
-        let hostWidth = hostLabel.isHidden ? 0 : min(bounds.width * 0.3, ceil(hostLabel.cell?.cellSize.width ?? 0))
+        let hostWidth = hostLabel.isHidden ? 0 : min(bounds.width * 0.3,
+            hostColumnWidth > 0 ? hostColumnWidth : ceil(hostLabel.cell?.cellSize.width ?? 0))
         hostLabel.frame = NSRect(x: bounds.width - 8 - hostWidth, y: 5, width: hostWidth, height: 17)
-        let available = max(0, bounds.width - 16 - (attention.isHidden ? 0 : 14) - (hostLabel.isHidden ? 0 : hostWidth + 14))
+        pin.frame = NSRect(x: 8, y: 6, width: 12, height: 14)
+        let gap: CGFloat = 12
+        var trailing = hostLabel.frame.minX - (hostLabel.isHidden ? 0 : gap)
+        // Size each item to its text: a wide, right-aligned number field adds
+        // invisible padding that makes the preceding gap look much larger.
+        for hint in [shortcutLabel, closeHintLabel, pinHintLabel] {
+            let width = hint.stringValue.isEmpty ? 0 : ceil(hint.cell?.cellSize.width ?? 0)
+            hint.frame = NSRect(x: trailing - width, y: 5, width: width, height: 17)
+            if width > 0 { trailing = hint.frame.minX - gap }
+        }
+        let titleX: CGFloat = isPinned ? 26 : 8
+        let available = max(0, trailing - titleX - 14)
         // NSTextField's intrinsic width omits NSTextFieldCell's horizontal
         // drawing insets. Using it clips even "resh" despite ample row space.
         let fitting = ceil(textField.cell?.cellSize.width ?? available)
-        let width = attention.isHidden ? available : min(available, fitting)
-        textField.frame = NSRect(x: 8, y: 5, width: width, height: 17)
-        attention.frame = NSRect(x: textField.frame.maxX + 6, y: 10, width: 7, height: 7)
+        let width = min(available, fitting)
+        let titleFrame = NSRect(x: titleX, y: 5, width: width, height: 17)
+        let attentionFrame = NSRect(x: titleFrame.maxX + 6, y: 10, width: 7, height: 7)
+        if animatesPinChange {
+            animatesPinChange = false
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.16
+                context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                textField.animator().frame = titleFrame
+                attention.animator().frame = attentionFrame
+                pin.animator().alphaValue = isPinned ? 1 : 0
+            }
+            if isPinned {
+                let pulse = CAKeyframeAnimation(keyPath: "transform.scale")
+                pulse.values = [0.85, 1.12, 1]
+                pulse.duration = 0.16
+                pin.layer?.add(pulse, forKey: "pin")
+            }
+        } else {
+            textField.frame = titleFrame
+            attention.frame = attentionFrame
+            pin.alphaValue = isPinned ? 1 : 0
+        }
     }
 }
 
@@ -86,6 +170,13 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
     private var sourceButtons: [NSButton] = []
     private var rows: [Candidate] = []
     private var attentionSessionIDs = Set<String>()
+    private var pinnedSessionIDs = Set<String>()
+    private var currentCandidateID: String?
+    private var modifiers: UInt8 = 0
+    private var shortcutsVisible = false
+    private var shortcutTask: Task<Void, Never>?
+    private var showsActions = true
+    private var hostColumnWidth: CGFloat = 0
     private var showsHosts = false
     private var theme: RexTheme
     private var activeScope: SearchScope = .sessions
@@ -173,11 +264,14 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
 
     required init?(coder: NSCoder) { nil }
 
+    deinit { shortcutTask?.cancel() }
+
     private func bindModel() {
         model.$configuration.sink { [weak self] configuration in
             guard let self else { return }
             keymap = configuration.keymap
             updateSources()
+            refreshCells()
         }.store(in: &subscriptions)
         model.$visibleSources.sink { [weak self] sources in
             guard let self else { return }
@@ -196,16 +290,19 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
         }.store(in: &subscriptions)
         model.$results.sink { [weak self] entries in
             guard let self else { return }
-            rows = entries
-            table.reloadData()
-            selectRow(model.selection)
+            updateRows(entries)
             emptyLabel.isHidden = !entries.isEmpty || model.configurationError != nil
             needsLayout = true
         }.store(in: &subscriptions)
-        model.$selection.sink { [weak self] in self?.selectRow($0) }.store(in: &subscriptions)
+        model.$selection.sink { [weak self] in
+            self?.selectRow($0)
+        }.store(in: &subscriptions)
         model.$hosts.sink { [weak self] hosts in
             guard let self else { return }
             showsHosts = !hosts.isEmpty
+            hostColumnWidth = (["This Mac"] + hosts.map(\.label)).map {
+                ceil(($0 as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 11)]).width) + 4
+            }.max() ?? 0
             table.reloadData()
             selectRow(model.selection)
         }.store(in: &subscriptions)
@@ -213,13 +310,16 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
             guard let self else { return }
             attentionSessionIDs = sessionIDs
             // Status updates must not reload search results or move the selection.
-            let visible = table.rows(in: table.visibleRect)
-            guard visible.location != NSNotFound else { return }
-            for row in visible.location..<NSMaxRange(visible) where rows.indices.contains(row) {
-                if let cell = table.view(atColumn: 0, row: row, makeIfNecessary: false) as? SessionCellView {
-                    configure(cell, row: row)
-                }
-            }
+            refreshCells()
+        }.store(in: &subscriptions)
+        model.$pinnedSessionIDs.sink { [weak self] ids in
+            guard let self else { return }
+            pinnedSessionIDs = Set(ids)
+            refreshCells()
+        }.store(in: &subscriptions)
+        model.$currentCandidateID.sink { [weak self] id in
+            self?.currentCandidateID = id
+            self?.refreshCells()
         }.store(in: &subscriptions)
         model.$scope.sink { [weak self] scope in
             self?.activeScope = scope
@@ -248,6 +348,8 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
             searchField.isEnabled = ready || opening
             table.isEnabled = ready && !opening
             for button in sourceButtons { button.isEnabled = ready && !opening }
+            showsActions = ready && !opening
+            refreshCells()
             if ready || opening, window?.isKeyWindow == true { window?.makeFirstResponder(searchField) }
         }.store(in: &subscriptions)
         model.objectWillChange.sink { [weak self] in
@@ -319,6 +421,64 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
         emptyLabel.frame = NSRect(x: 14, y: y + 5, width: width - 28, height: 19)
     }
 
+    func updateModifiers(_ flags: NSEvent.ModifierFlags) {
+        let updated = KeyChord(code: 0, command: flags.contains(.command), control: flags.contains(.control),
+            option: flags.contains(.option), shift: flags.contains(.shift)).modifiers
+        let changed = modifiers & 7 != updated & 7
+        modifiers = updated
+        if changed {
+            shortcutTask?.cancel(); shortcutTask = nil
+            shortcutsVisible = false
+            if updated & 7 != 0 {
+                shortcutTask = Task { [weak self] in
+                    do { try await Task.sleep(for: .milliseconds(600)) }
+                    catch { return }
+                    guard !Task.isCancelled, let self else { return }
+                    shortcutsVisible = true
+                    shortcutTask = nil
+                    refreshCells()
+                }
+            }
+        }
+        refreshCells()
+    }
+
+    private func refreshCells() {
+        let visible = table.rows(in: table.visibleRect)
+        if visible.location != NSNotFound {
+            for row in visible.location..<NSMaxRange(visible) where rows.indices.contains(row) {
+                if let cell = table.view(atColumn: 0, row: row, makeIfNecessary: false) as? SessionCellView {
+                    configure(cell, row: row)
+                }
+            }
+        }
+    }
+
+    private func updateRows(_ entries: [Candidate]) {
+        let previous = rows
+        rows = entries
+        isSelecting = true
+        if let id = model.animatedSessionID, window?.isVisible == true,
+           !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion,
+           let from = previous.firstIndex(where: { $0.id == id }), let to = entries.firstIndex(where: { $0.id == id }),
+           from != to, previous.filter({ $0.id != id }) == entries.filter({ $0.id != id }) {
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.24
+                context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                context.allowsImplicitAnimation = true
+                table.beginUpdates()
+                table.moveRow(at: from, to: to)
+                table.endUpdates()
+            }
+            selectRow(to)
+        } else {
+            table.reloadData()
+            selectRow(model.selection)
+        }
+        isSelecting = false
+        refreshCells()
+    }
+
     func numberOfRows(in tableView: NSTableView) -> Int { rows.count }
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
@@ -331,9 +491,23 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
 
     private func configure(_ cell: SessionCellView, row: Int) {
         let entry = rows[row]
+        let selected = table.selectedRow == row
+        let numbered = rows.indices.filter { rows[$0].id != currentCandidateID }.prefix(9)
+        let number = numbered.firstIndex(of: row).map { numbered.distance(from: numbered.startIndex, to: $0) + 1 }
+        var pinHint = "", closeHint = ""
+        if shortcutsVisible, selected, showsActions, entry.kind == .session {
+            let pinKey = keymap.label(for: .pin, modifiers: modifiers)
+            let closeKey = keymap.label(for: .delete, modifiers: modifiers)
+            if !pinKey.isEmpty { pinHint = pinKey + (pinnedSessionIDs.contains(entry.id) ? "  Unpin" : "  Pin") }
+            if !closeKey.isEmpty { closeHint = closeKey + "  Close" }
+        }
         cell.configure(entry, needsAttention: attentionSessionIDs.contains(entry.id),
-            color: theme.attentionColor.nsColor, textColor: table.selectedRow == row ? .white : theme.foreground.nsColor,
-            showHost: showsHosts)
+            color: theme.attentionColor.nsColor, textColor: selected ? .white : theme.foreground.nsColor,
+            showHost: showsHosts, hostWidth: hostColumnWidth, isPinned: pinnedSessionIDs.contains(entry.id),
+            isCurrent: entry.id == currentCandidateID,
+            shortcut: number.map { keymap.label(for: .openResult($0), modifiers: modifiers & 7 == 0 ? nil : modifiers) } ?? "",
+            showsShortcut: shortcutsVisible,
+            pinHint: pinHint, closeHint: closeHint)
     }
 
     func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
@@ -344,16 +518,13 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
 
     func tableViewSelectionDidChange(_ notification: Notification) {
         if !isSelecting, table.selectedRow >= 0 { model.selection = table.selectedRow }
-        for row in table.rows(in: table.visibleRect).location..<NSMaxRange(table.rows(in: table.visibleRect)) {
-            if rows.indices.contains(row), let cell = table.view(atColumn: 0, row: row, makeIfNecessary: false) as? SessionCellView {
-                configure(cell, row: row)
-            }
-        }
+        refreshCells()
     }
 
     private func selectRow(_ row: Int) {
+        let wasSelecting = isSelecting
         isSelecting = true
-        defer { isSelecting = false }
+        defer { isSelecting = wasSelecting }
         if rows.indices.contains(row) {
             table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
             table.scrollRowToVisible(row)

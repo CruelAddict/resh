@@ -12,7 +12,7 @@ Requires macOS 15+, Xcode 26+ (Swift 6 and the macOS 26 SDK), and Rex with its l
 ```sh
 swift test
 bash scripts/build.sh
-bash install.sh local
+bash install.sh
 ```
 
 Installs the native helper and its Lua resources in `~/Library/Application Support/resh`,
@@ -26,19 +26,21 @@ to show the selected session. This is a Rex permission, not macOS Accessibility.
 
 ### Installer
 
-`install.sh` is the only installer, for both modes. The local command above uses
-the checkout's `dist/resh` build; `--source DIRECTORY` selects another unpacked
-distribution. Build and release packaging remain separate developer commands.
+`install.sh` installs resh by default, using the checkout's `dist/resh` build;
+`--source DIRECTORY` selects another unpacked distribution. Build and release
+packaging remain separate developer commands.
 
-On a remote host with this checkout or the unpacked remote distribution:
+To install the optional folder-source adapter on a remote host with this checkout
+or the unpacked adapter distribution:
 
 ```sh
-bash install.sh remote
+bash install.sh --remote
 ```
 
-The installer needs Bash and Rex, not Python or a compiler. It installs resh and
-updates the Rex config; it does not install system packages, require a connected
-GUI client or run an application health check. Inline Lua uses Rex's interpreter
+The installer needs Bash and Rex, not Python or a compiler. It installs resh (or
+only its adapter with `--remote`) and updates the Rex config; it does not install
+system packages, require a connected GUI client or run an application health check.
+Inline Lua uses Rex's interpreter
 to update its config; no separate setup script is installed.
 
 Setup must run as the OS account of a **running local Rex server**, using Rex's
@@ -51,8 +53,8 @@ duplicate integration lines.
 For publishing, `sh scripts/package.sh` creates `dist/releases/resh-remote.tar.gz`,
 an archive for the currently built macOS architecture (if available), and
 `checksums.txt`. A piped bootstrap can fetch these with
-`bash -s -- remote --repository OWNER/REPO --version TAG` (or `local`). It verifies
-the checksum and rejects archive traversal/links before extraction. **This checkout
+`bash -s -- --repository OWNER/REPO --version TAG` (add `--remote` for the adapter).
+It verifies the checksum and rejects archive traversal/links before extraction. **This checkout
 has no configured public repository/release URL yet**; no working curl endpoint is
 claimed. Published native archives do not require Xcode to install.
 
@@ -76,10 +78,13 @@ optional and only affects repository-based session naming.
 | Key | Action |
 | --- | --- |
 | ⌘S in Rex | Open the native panel (physical S key, on any keyboard layout) |
-| ⌘1 | Existing Rex sessions (initial source, like the original sesh binding) |
-| ⌘2 | Sessions + zoxide folders |
-| ⌘3 | Recent/frequent folders, in zoxide order |
-| ⌘4 | `fd -H -d 2 -t d -E .Trash . ~` |
+| ⌘E | Existing Rex sessions (initial source) |
+| ⌘A | Sessions + projects + zoxide folders |
+| ⌘R | Recent/frequent folders, in zoxide order |
+| ⌘F | `fd -H -d 2 -t d -E .Trash . ~` |
+| ⌘P | Configured projects |
+| ⌘1…9 | Open a numbered result, excluding the current Rex session |
+| ⌘⇧P | Pin/unpin the selected session |
 | ↑ / ↓, Tab / Shift-Tab, ⌃P / ⌃N | Select a result |
 | Return / click | Switch or create |
 | Esc / Ctrl+[ / click outside | Dismiss without creating a session |
@@ -93,9 +98,9 @@ source. Cycling skips hidden tabs without renumbering shortcuts. If the selected
 source becomes unavailable, the picker returns to Sessions.
 
 The shortcut is scoped to Rex; it intentionally shadows Save inside programs
-running in Rex. Native copy, paste, and select-all work in the search field.
-Source shortcuts also use physical key positions; ⌘A/C/V/X/Z and ⌘Backspace remain native text
-editing shortcuts. The resident helper registers physical Cmd+S with macOS only
+running in Rex. Native copy and paste work in the search field.
+Source shortcuts also use physical key positions; ⌘C/V/X/Z and ⌘Backspace remain native text
+editing shortcuts. ⌘A selects All rather than selecting search text. The resident helper registers physical Cmd+S with macOS only
 while Rex is frontmost. It does not rely on Rex's character/keyboard-layout
 matching. There are no duplicate launcher bindings in Rex's keymap. Outside Rex
 the hotkey is unregistered, so other apps retain their normal Save shortcut.
@@ -122,11 +127,38 @@ filesystem providers or change the selected row's identity. Hiding resets the
 query, selection and initial source, not the catalog or provider capabilities.
 Sessions use most-recently-used order, based only on successful selections through
 resh (including `--connect` and `--last`). Unknown sessions keep Rex's original
-order. Search still ranks by match quality, using recency to break ties; folder
+order. Unpinned search results rank by match quality, using recency to break ties; folder
 providers retain their own order. History is saved in `history.json` alongside
 `sessions.json`, separately for each calling Rex client and home server.
 History is best-effort: an unreadable or unwritable history never prevents a
 session from opening or turns a completed switch into a failure.
+
+Pinned sessions precede the current session and the remaining MRU-ordered sessions.
+Pins belong to the resident resh process: dismissing the picker keeps them, restarting
+the service clears them. Their order follows pinning order, not MRU or search score;
+a new pin goes after existing pins. Closing a session removes its pin. Pin/unpin
+smoothly moves its row without losing the selected session; Reduce Motion disables
+the movement. Search filters pinned sessions without reordering the matching pins.
+
+The current session stays visible below the pins in sources containing sessions,
+even when it doesn't match the query. If pinned, it keeps its pinned place instead.
+It never receives a number; the first other result is selected initially.
+The Rex action passes its session context. Native Cmd+S reads Rex's private
+`Workspace.lastFocusedSession` preference only for the frontmost Rex process;
+unavailable, malformed or ambiguous focus data leaves the current session unknown,
+never inferred from MRU or attachments. CLI callers can supply `--current-session ID`
+alongside `--client`. resh never writes Rex's focus preference.
+
+Holding Cmd for 500 ms reveals result numbers and inline `Pin`/`Unpin` and `Close` hints
+on the selected session's row; there is no hint footer.
+Hints follow the configured bindings, so Ctrl bindings appear while holding Ctrl.
+The same delay applies when the picker opens with Cmd already held after Cmd+S.
+Releasing the modifier hides hints immediately and cancels any pending reveal.
+Pin/close hints and result numbers share one color and equal inter-item spacing.
+The pin sits before the title: pinning softly reveals it and shifts the title right;
+unpinning reverses the transition. The unread dot stays immediately after the title,
+while result numbers and host labels keep their right-hand columns. Unread changes
+and modifier presses do not move the title's starting position or resize the panel.
 
 `resh --last [--client CLIENT_ID]` switches back without opening the picker.
 Repeated calls toggle between the last two sessions opened through resh; closed
@@ -327,12 +359,14 @@ timeout = 5
 
 **Keymaps.** Bindings extend the defaults; `"none"` removes a binding. Actions:
 `next`, `previous`, `open`, `dismiss`, `delete` (still confirms), `reload`,
-`next_source`, `previous_source`, and `source:ID`. Modifiers are `cmd`, `ctrl`,
+`pin`, `open:1` through `open:9`, `next_source`, `previous_source`, and `source:ID`. Modifiers are `cmd`, `ctrl`,
 `alt`/`option`, and `shift`. Keys use US physical positions, so `ctrl+t` also
 works with the Russian layout. Modifiers match exactly. Shifted symbols are
 written as `shift+5`, not `%`. UI shortcut hints follow the configuration.
 Unconfigured keys keep native text editing; binding Ctrl+A or Ctrl+F deliberately
-replaces its editing action. The Rex-scoped **Cmd+S launcher** is unchanged;
+replaces its editing action. For example, `"ctrl+1" = "open:1"` and
+`"ctrl+shift+p" = "pin"` add Ctrl alternatives without removing the Cmd defaults.
+The Rex-scoped **Cmd+S launcher** is unchanged;
 these bindings apply only inside the picker.
 
 **Sources.** Built-in IDs are `sessions`, `all`, `directories` (zoxide), `find`
@@ -398,7 +432,7 @@ Search text and selected row identity survive arriving snapshots.
 ### Optional remote folder sources
 
 No server-side resh installation is needed for **sessions**. For remote recent
-folders and folder search, use `bash install.sh remote` on that machine. It installs:
+folders and folder search, use `bash install.sh --remote` on that machine. It installs:
 
 ```text
 ~/.local/share/resh/rex-actions.lua   # our code (XDG_DATA_HOME is respected)

@@ -35,19 +35,24 @@ struct PanelTests {
         await controller.model.loadingTask?.value
         await controller.model.hostsTask?.value
         let size = controller.panel.frame.size
+        controller.model.selection = 2
+        controller.model.togglePin()
+        #expect(controller.model.results.map(\.title) == ["Third", "First", "Second"])
+        #expect(controller.model.selected?.id == "Third")
         controller.model.query = "second"
         #expect(controller.model.results.count == 1)
         controller.dismiss(focusRex: false)
         controller.show()
         let frame = controller.panel.frame
         #expect(controller.model.query.isEmpty && controller.model.results.count == sessions.count)
+        #expect(controller.model.results.first?.id == "Third")
         #expect(frame.size == size && !controller.model.isLoading)
         await Task.yield()
         #expect(controller.panel.frame == frame)
     }
 
     @Test(.enabled(if: ProcessInfo.processInfo.environment["RESH_UI_TESTS"] == "1"))
-    @MainActor func sessionAttentionDotLayoutAndReuse() {
+    @MainActor func sessionMetadataLayoutAndReuse() {
         _ = NSApplication.shared
         let cell = SessionCellView(frame: NSRect(x: 0, y: 0, width: 200, height: 27))
         let session = Candidate(id: "s", kind: .session, title: "Ready session", sessionID: "s")
@@ -58,14 +63,28 @@ struct PanelTests {
         #expect(cell.attention.frame.minX == cell.textField!.frame.maxX + 6)
         #expect(cell.attention.frame.maxX < cell.bounds.maxX)
         #expect(cell.accessibilityLabel()?.contains("unread activity") == true)
+        let titleFrame = cell.textField!.frame, attentionFrame = cell.attention.frame
+        cell.configure(session, needsAttention: false, color: .systemBlue, textColor: .labelColor,
+            isPinned: true, shortcut: "⌘1")
+        cell.layoutSubtreeIfNeeded()
+        #expect(cell.textField!.frame.minX > titleFrame.minX && cell.textField!.frame.width == titleFrame.width)
+        #expect(cell.attention.frame.minX > attentionFrame.minX)
+        #expect(cell.pin.alphaValue == 1 && !cell.shortcutLabel.isHidden)
+        #expect(cell.pin.frame.maxX < cell.textField!.frame.minX)
+        #expect(cell.accessibilityLabel()?.contains("pinned") == true)
         let long = Candidate(id: "long", kind: .session, title: String(repeating: "long-session-", count: 20), sessionID: "s")
-        cell.configure(long, needsAttention: true, color: .systemBlue, textColor: .white)
+        cell.configure(long, needsAttention: true, color: .systemBlue, textColor: .white, shortcut: "⌘9", showsShortcut: false)
         cell.layoutSubtreeIfNeeded()
         #expect(cell.attention.frame.maxX <= cell.bounds.maxX - 8)
+        let truncatedFrame = cell.textField!.frame
+        cell.configure(long, needsAttention: false, color: .systemBlue, textColor: .white, isPinned: true, shortcut: "⌘9")
+        cell.layoutSubtreeIfNeeded()
+        #expect(cell.textField!.frame.minX > truncatedFrame.minX && cell.textField!.frame.maxX == truncatedFrame.maxX)
         cell.configure(session, needsAttention: false, color: .systemBlue, textColor: .labelColor)
         cell.layoutSubtreeIfNeeded()
         #expect(cell.attention.isHidden && cell.toolTip == nil)
-        #expect(cell.textField!.frame.width == cell.bounds.width - 16)
+        #expect(cell.textField!.frame == titleFrame)
+        #expect(cell.pin.alphaValue == 0 && cell.shortcutLabel.isHidden)
         #expect(cell.accessibilityLabel()?.contains("unread activity") == false)
         cell.configure(Candidate(id: "folder", kind: .directory, title: "folder", path: "/folder"),
             needsAttention: true, color: .systemBlue, textColor: .labelColor)
@@ -76,11 +95,12 @@ struct PanelTests {
         cell.layoutSubtreeIfNeeded()
         #expect(!cell.hostLabel.isHidden && cell.hostLabel.stringValue == host.label)
         #expect(cell.attention.frame.maxX < cell.hostLabel.frame.minX)
+        #expect(cell.pin.frame.maxX < cell.hostLabel.frame.minX)
         #expect(cell.hostLabel.frame.maxX == cell.bounds.maxX - 8)
         #expect(cell.accessibilityLabel()?.contains(host.label) == true)
         cell.configure(session, needsAttention: false, color: .systemBlue, textColor: .labelColor)
         cell.layoutSubtreeIfNeeded()
-        #expect(cell.hostLabel.isHidden && cell.textField!.frame.width == cell.bounds.width - 16)
+        #expect(cell.hostLabel.isHidden && cell.textField!.frame == titleFrame)
     }
 
     /// Read-only end-to-end check against a session that Rex currently marks unread.
@@ -139,7 +159,13 @@ struct PanelTests {
         let sessions = titles.enumerated().map { RexSession(sessionID: "synthetic-\($0.offset)", label: $0.element) }
         let config = FileManager.default.temporaryDirectory.appendingPathComponent("resh-render-" + UUID().uuidString + ".toml")
         let rex = config.appendingPathExtension("rex")
-        try "".write(to: config, atomically: true, encoding: .utf8)
+        try """
+        source_order = ["sessions"]
+        [keymap]
+        "ctrl+1" = "open:1"
+        "ctrl+shift+p" = "pin"
+        "ctrl+d" = "delete"
+        """.write(to: config, atomically: true, encoding: .utf8)
         try "#!/bin/sh\nprintf '{\"hosts\":[]}\\n'\n".write(to: rex, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: rex.path)
         defer {
@@ -153,9 +179,14 @@ struct PanelTests {
             readPreferences: { ["Workspace.programActivitySeen": [:]] })
         defer { model.clear() }
         let picker = PanelView(model: model)
+        let window = LauncherPanel(contentRect: picker.frame, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        window.contentView = picker
+        window.orderFront(nil)
+        defer { window.orderOut(nil) }
         model.loadInitial()
         await model.loadingTask?.value
         await model.hostsTask?.value
+        model.prepare(service: model.service, sessions: sessions, currentSessionID: "synthetic-0")
         // Deterministic rendering fixture; never injects status into a real Rex terminal.
         model.updateAttention([RexAttentionRecord(sessionID: "synthetic-2", blockID: "synthetic-block",
             state: "done", updatedAt: "2026-10-22T18:21:56.923423Z")])
@@ -167,6 +198,7 @@ struct PanelTests {
         let table = try #require(picker.subviews.compactMap { $0 as? NSScrollView }
             .compactMap { $0.documentView as? NSTableView }.first)
         #expect(table.numberOfRows == titles.count)
+        #expect(table.enclosingScrollView!.frame.maxY == picker.bounds.maxY - PanelLayout.outerPadding)
         for (row, title) in titles.enumerated() {
             let cell = try #require(table.view(atColumn: 0, row: row, makeIfNecessary: true) as? SessionCellView)
             cell.layoutSubtreeIfNeeded()
@@ -175,11 +207,59 @@ struct PanelTests {
             #expect(field.frame.width >= ceil(field.cell!.cellSize.width))
             #expect(cell.attention.isHidden == (row != 2))
         }
+        let current = try #require(table.view(atColumn: 0, row: 0, makeIfNecessary: true) as? SessionCellView)
+        let first = try #require(table.view(atColumn: 0, row: 1, makeIfNecessary: true) as? SessionCellView)
+        let frame = picker.frame, titleFrame = first.textField!.frame
+        let pressed = ProcessInfo.processInfo.systemUptime
+        // The same initial modifier update is used when Cmd+S opens the panel
+        // with Cmd already held; it must not reveal hints immediately.
+        picker.updateModifiers(.command)
+        #expect(first.shortcutLabel.isHidden && first.pinHintLabel.isHidden && first.closeHintLabel.isHidden)
+        for _ in 0..<100 where first.pinHintLabel.isHidden { try await Task.sleep(for: .milliseconds(10)) }
+        #expect(ProcessInfo.processInfo.systemUptime - pressed >= 0.5)
+        #expect(current.shortcutLabel.isHidden && !first.shortcutLabel.isHidden && first.shortcutLabel.stringValue == "⌘1")
+        #expect(first.pinHintLabel.stringValue == "⇧⌘P  Pin" && first.closeHintLabel.stringValue == "⇧⌘⌫  Close")
+        #expect(current.pinHintLabel.isHidden && current.closeHintLabel.isHidden)
+        first.layoutSubtreeIfNeeded()
+        #expect(first.closeHintLabel.frame.minX - first.pinHintLabel.frame.maxX
+            == first.shortcutLabel.frame.minX - first.closeHintLabel.frame.maxX)
+        #expect(first.pinHintLabel.textColor == first.closeHintLabel.textColor && first.closeHintLabel.textColor == first.shortcutLabel.textColor)
+        // Releasing during the delay cancels it, including after switching to
+        // a different configured modifier family.
+        picker.updateModifiers(.control)
+        #expect(first.shortcutLabel.isHidden && first.pinHintLabel.isHidden && first.closeHintLabel.isHidden)
+        try await Task.sleep(for: .milliseconds(100))
+        picker.updateModifiers([])
+        try await Task.sleep(for: .milliseconds(600))
+        #expect(first.shortcutLabel.isHidden && first.pinHintLabel.isHidden && first.closeHintLabel.isHidden)
+        picker.updateModifiers(.control)
+        for _ in 0..<100 where first.pinHintLabel.isHidden { try await Task.sleep(for: .milliseconds(10)) }
+        #expect(first.shortcutLabel.stringValue == "⌃1")
+        #expect(first.pinHintLabel.stringValue == "⌃⇧P  Pin" && first.closeHintLabel.stringValue == "⌃D  Close")
+        picker.updateModifiers([])
+        picker.layoutSubtreeIfNeeded()
+        #expect(first.shortcutLabel.isHidden && first.pinHintLabel.isHidden && first.closeHintLabel.isHidden)
+        #expect(picker.frame == frame && first.textField!.frame == titleFrame)
+        model.selection = 2
+        model.togglePin()
+        picker.updateModifiers(.command)
+        picker.layoutSubtreeIfNeeded()
+        let pinned = try #require(table.view(atColumn: 0, row: 0, makeIfNecessary: true) as? SessionCellView)
+        for _ in 0..<100 where pinned.pin.alphaValue < 1 || pinned.pinHintLabel.isHidden { try await Task.sleep(for: .milliseconds(10)) }
+        picker.layoutSubtreeIfNeeded()
+        #expect(pinned.textField?.stringValue == titles[2] && pinned.pin.alphaValue == 1 && !pinned.attention.isHidden)
+        #expect(pinned.pin.frame.maxX < pinned.textField!.frame.minX)
+        #expect(pinned.shortcutLabel.stringValue == "⌘1" && pinned.pinHintLabel.stringValue == "⇧⌘P  Unpin" && pinned.closeHintLabel.stringValue == "⇧⌘⌫  Close")
+        #expect(pinned.closeHintLabel.frame.minX - pinned.pinHintLabel.frame.maxX
+            == pinned.shortcutLabel.frame.minX - pinned.closeHintLabel.frame.maxX)
+        #expect(first.pinHintLabel.isHidden && current.pinHintLabel.isHidden)
         if let path = ProcessInfo.processInfo.environment["RESH_UI_REGRESSION_SNAPSHOT"],
            let bitmap = picker.bitmapImageRepForCachingDisplay(in: picker.bounds) {
             picker.cacheDisplay(in: picker.bounds, to: bitmap)
             try bitmap.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
         }
+        model.togglePin()
+        picker.updateModifiers([])
         model.selection = 2
         model.receive(.success(.sessions([RexSession(sessionID: "new", label: "new-session")] + sessions)))
         #expect(table.numberOfRows == titles.count + 1)

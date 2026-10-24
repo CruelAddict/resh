@@ -7,6 +7,7 @@ private enum ServiceOperation: String { case start, stop, restart, status }
 
 private struct Options {
     var client: String?
+    var currentSessionID: String?
     var server: String?
     var connect: String?
     var last = false
@@ -43,6 +44,7 @@ private struct Options {
             }
             switch argument {
             case "--client": client = try value()
+            case "--current-session": currentSessionID = try value()
             case "--server": server = try value()
             case "--connect": connect = try value()
             case "--last": last = true
@@ -162,7 +164,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         DebugLog.shared.record("Opening panel", source: "panel")
         let started = ProcessInfo.processInfo.systemUptime
         if controller.panel.isVisible, controller.model.error == nil,
-           request.client == nil, request.server == nil, request.config == nil, request.debug == nil {
+           request.client == nil, request.currentSessionID == nil, request.server == nil, request.config == nil, request.debug == nil {
             controller.panel.makeKeyAndOrderFront(nil)
             return true
         }
@@ -170,6 +172,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         let frontmost = NSWorkspace.shared.frontmostApplication
         let rexAppPID = target.clientID == nil && PanelShortcut.launcherIsEnabled(frontmostBundleID: frontmost?.bundleIdentifier)
             ? frontmost?.processIdentifier : nil
+        let currentSessionID = request.currentSessionID ?? RexAppMonitor.focusedSessionID(rexAppPID: rexAppPID)
         let configurationURL = (request.config ?? options.config).map { URL(fileURLWithPath: $0) }
         controller.model.configure(target: target, configurationURL: configurationURL)
         controller.model.startBackground()
@@ -177,7 +180,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
             let selected = RexTarget(clientID: snapshot.client, server: target.server)
             let service = ReshService(client: RexClient(tools: tools, target: selected))
             controller.prepare(service: service, snapshot: snapshot,
-                recentSessionIDs: controller.model.catalog.recentSessionIDs[snapshot.client] ?? [])
+                recentSessionIDs: controller.model.catalog.recentSessionIDs[snapshot.client] ?? [], currentSessionID: currentSessionID)
             controller.show()
             DebugLog.shared.record("Catalog ready; panel displayed in \((ProcessInfo.processInfo.systemUptime - started) * 1000) ms", source: "panel")
             return true
@@ -197,7 +200,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
                 let selected = RexTarget(clientID: snapshot.client, server: target.server)
                 let service = ReshService(client: RexClient(tools: tools, target: selected))
                 controller.prepare(service: service, snapshot: snapshot,
-                    recentSessionIDs: controller.model.catalog.recentSessionIDs[snapshot.client] ?? [])
+                    recentSessionIDs: controller.model.catalog.recentSessionIDs[snapshot.client] ?? [], currentSessionID: currentSessionID)
                 controller.model.reportDiagnostic(nil, source: "connection")
                 controller.show()
             } catch {
@@ -264,7 +267,7 @@ struct ReshMain {
                 print("""
                 resh — native, sesh-inspired session/folder picker for Rex
 
-                resh [--client CLIENT_ID] [--server ADDRESS] [--debug]
+                resh [--client CLIENT_ID] [--current-session SESSION_ID] [--server ADDRESS] [--debug]
                 resh --connect DIRECTORY [--client CLIENT_ID]
                 resh --last [--client CLIENT_ID]
                 resh --name DIRECTORY
@@ -276,7 +279,8 @@ struct ReshMain {
                 Config: ~/.config/resh/config.toml (or $RESH_CONFIG / --config FILE)
                 --debug: write diagnostics to ~/Library/Logs/resh/debug.log
 
-                ⌘1 Sessions · ⌘2 All · ⌘3 Recent folders · ⌘4 Find folders
+                ⌘E Sessions · ⌘A All · ⌘R Recent folders · ⌘F Find folders · ⌘P Projects
+                ⌘1…9 open a result · ⌘⇧P pin/unpin a session (memory only)
                 ↑/↓ or Tab/Shift-Tab navigate · Return open · Esc or Ctrl+[ dismiss
                 ⌘⇧Backspace close a selected session (asks for confirmation)
                 """)
@@ -292,6 +296,7 @@ struct ReshMain {
             if !options.serve, options.connect == nil, !options.last, !options.diagnose, options.name == nil {
                 var request = LauncherRequest(client: options.client, server: options.server, config: configURL?.path,
                     debug: options.debug ? true : nil)
+                request.currentSessionID = options.currentSessionID
                 if options.serviceOperation == .stop {
                     try ServiceLauncher().stop()
                     print("{\"running\":false}")

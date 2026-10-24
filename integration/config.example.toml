@@ -1,4 +1,4 @@
-# Copy to ~/.config/resh/config.toml. Changes apply the next time resh opens.
+# Optional Ctrl preset. Copy to ~/.config/resh/config.toml; changes reload live.
 # Optional: override source visibility and order. Otherwise use the app defaults.
 # source_order = ["sessions", "all", "configs", "directories", "find"]
 
@@ -16,6 +16,16 @@
 "ctrl+r" = "reload"
 "ctrl+tab" = "next_source"
 "ctrl+shift+tab" = "previous_source"
+"ctrl+shift+p" = "pin"
+"ctrl+1" = "open:1"
+"ctrl+2" = "open:2"
+"ctrl+3" = "open:3"
+"ctrl+4" = "open:4"
+"ctrl+5" = "open:5"
+"ctrl+6" = "open:6"
+"ctrl+7" = "open:7"
+"ctrl+8" = "open:8"
+"ctrl+9" = "open:9"
 
 # Named projects (sesh-compatible fields):
 # [[session]]

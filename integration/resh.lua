@@ -6,7 +6,12 @@ rex.action{
   description = "Find a folder or switch to a named Rex session.",
   category = "Session",
   run = function(ctx)
-    local handle, err = rex.exec.start({ executable, "--client", ctx.client_id },
+    local arguments = { executable, "--client", ctx.client_id }
+    if ctx.session_id then
+      table.insert(arguments, "--current-session")
+      table.insert(arguments, ctx.session_id)
+    end
+    local handle, err = rex.exec.start(arguments,
       { detach = true, stdout = false, stderr = false })
     if not handle then error(tostring(err)) end
   end,

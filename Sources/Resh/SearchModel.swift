@@ -4,7 +4,7 @@ import Combine
 
 @MainActor
 final class SearchModel: ObservableObject {
-    @Published var query = "" { didSet { updateResults(); selection = 0 } }
+    @Published var query = "" { didSet { updateResults(); selectFirstResult() } }
     @Published private(set) var scope: SearchScope = .sessions
     @Published var selection = 0
     @Published var isLoading = true
@@ -17,6 +17,10 @@ final class SearchModel: ObservableObject {
     @Published var theme: RexTheme
     @Published private(set) var results: [Candidate] = []
     @Published private(set) var attentionSessionIDs = Set<String>()
+    @Published private(set) var pinnedSessionIDs: [String] = []
+    @Published private(set) var currentCandidateID: String?
+    private var currentSessionID: String?
+    private(set) var animatedSessionID: String?
     @Published private(set) var configuration = ReshConfiguration.defaults
     @Published private(set) var visibleSources = ReshConfiguration.defaults.visibleSources
     private(set) var configurationURL: URL?
@@ -87,6 +91,7 @@ final class SearchModel: ObservableObject {
     }
     static var systemIsDark: Bool { UserDefaults.standard.string(forKey: "AppleInterfaceStyle") == "Dark" }
     var selected: Candidate? { results.indices.contains(selection) ? results[selection] : nil }
+    var numberedRows: [Int] { Array(results.indices.filter { results[$0].id != currentCandidateID }.prefix(9)) }
     private var allSessions: [Candidate] {
         (sessionSnapshot + hosts.flatMap { hostSessions[$0.id] ?? [] }).enumerated().sorted {
             let left = sessionRanks[$0.element.id] ?? Int.max, right = sessionRanks[$1.element.id] ?? Int.max
@@ -175,15 +180,18 @@ final class SearchModel: ObservableObject {
         error = configurationError
     }
 
-    func prepare(service: ReshService, sessions: [RexSession], recentSessionIDs: [String] = [], rexAppPID: Int32? = nil) {
+    func prepare(service: ReshService, sessions: [RexSession], recentSessionIDs: [String] = [], rexAppPID: Int32? = nil,
+                 currentSessionID: String? = nil) {
         if !isOpening { query = ""; selection = 0 }
         isPresented = true
         self.service = service
         self.rexAppPID = rexAppPID
+        self.currentSessionID = currentSessionID
         sessionSnapshot = ReshService.candidates(from: sessions)
         sessionRanks = Dictionary(recentSessionIDs.enumerated().map { ($0.element, $0.offset) }, uniquingKeysWith: min)
         scope = configuration.initialSource
         showAvailableEntries()
+        selectFirstResult()
         isOpening = false
         isLoading = loadingTask != nil
         onRetryOpening = nil
@@ -215,6 +223,7 @@ final class SearchModel: ObservableObject {
         hostAttentionRecords = [:]; isRemoteLoading = false
         attentionRecords = []; attentionSessionIDs = []
         sessionSnapshot = []; sessionRanks = [:]; search = FuzzyMatcher([])
+        pinnedSessionIDs = []; currentSessionID = nil; currentCandidateID = nil
         sourceSnapshots = [:]
         rexAppPID = nil
         diagnostics = [:]
@@ -233,9 +242,49 @@ final class SearchModel: ObservableObject {
     }
 
     private func updateResults() {
-        let updated = search.filter(query: query)
+        // A session ID must identify exactly one known host. Never infer focus
+        // from attachment order, a session label, or resh's MRU history.
+        let current = (sessionSnapshot + hosts.flatMap { hostSessions[$0.id] ?? [] })
+            .filter { $0.sessionID == currentSessionID && currentSessionID != nil }
+        let currentID = current.count == 1 ? current.first?.id : nil
+        if currentCandidateID != currentID { currentCandidateID = currentID }
+        let updated: [Candidate]
+        if pinnedSessionIDs.isEmpty, currentID == nil {
+            updated = search.filter(query: query)
+        } else {
+            let matching = search.filter(query: query, limit: search.entries.count)
+            var byID = Dictionary(matching.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+            // Keep the current session visible in a session-containing source,
+            // even when the query doesn't match it.
+            if let currentID, let entry = search.entries.first(where: { $0.id == currentID }) { byID[currentID] = entry }
+            var ordered = pinnedSessionIDs.compactMap { byID.removeValue(forKey: $0) }
+            if let currentID, let entry = byID.removeValue(forKey: currentID) { ordered.append(entry) }
+            ordered += matching.filter { byID[$0.id] != nil }
+            updated = Array(ordered.prefix(100))
+        }
         if updated != results { results = updated }
         if !results.indices.contains(selection) { selection = 0 }
+    }
+
+    private func selectFirstResult() {
+        selection = results.firstIndex { $0.id != currentCandidateID } ?? 0
+    }
+
+    func togglePin() {
+        guard isConfigurationReady, !isOpening, !isConnecting, let selected, selected.kind == .session else { return }
+        animatedSessionID = selected.id
+        if pinnedSessionIDs.contains(selected.id) { pinnedSessionIDs.removeAll { $0 == selected.id } }
+        else { pinnedSessionIDs.append(selected.id) }
+        updateResults()
+        selection = results.firstIndex { $0.id == selected.id } ?? 0
+        animatedSessionID = nil
+    }
+
+    func openResult(_ number: Int) {
+        let rows = numberedRows, index = number - 1
+        guard isConfigurationReady, !isOpening, !isConnecting, rows.indices.contains(index) else { return }
+        selection = rows[index]
+        openSelection()
     }
 
     private func showAvailableEntries() {
@@ -298,6 +347,9 @@ final class SearchModel: ObservableObject {
 
     private func updateSessions(_ sessions: [RexSession], host: RexHost? = nil) {
         let updated = ReshService.candidates(from: sessions, host: host)
+        let previous = host.map { hostSessions[$0.id] ?? [] } ?? sessionSnapshot
+        let removed = Set(previous.map(\.id)).subtracting(updated.map(\.id))
+        if pinnedSessionIDs.contains(where: removed.contains) { pinnedSessionIDs.removeAll(where: removed.contains) }
         if let host {
             guard updated != hostSessions[host.id] else { return }
             hostSessions[host.id] = updated
@@ -327,6 +379,8 @@ final class SearchModel: ObservableObject {
                 let ids = Set(updated.map(\.id))
                 let previousHosts = Dictionary(uniqueKeysWithValues: hosts.map { ($0.id, $0) })
                 for host in hosts where !ids.contains(host.id) {
+                    let removed = Set((hostSessions[host.id] ?? []).map(\.id))
+                    pinnedSessionIDs.removeAll(where: removed.contains)
                     reportDiagnostic(nil, source: "sources:\(host.id)")
                     reportDiagnostic(nil, source: "attention:\(host.id)")
                 }
@@ -578,6 +632,7 @@ final class SearchModel: ObservableObject {
                 guard generation == request else { return }
                 if let host = selected.host { hostSessions[host.id]?.removeAll { $0.id == selected.id } }
                 else { sessionSnapshot.removeAll { $0.id == selected.id } }
+                pinnedSessionIDs.removeAll { $0 == selected.id }
                 refreshEntries()
             } catch {
                 guard generation == request else { return }

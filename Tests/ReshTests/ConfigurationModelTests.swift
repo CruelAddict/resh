@@ -178,4 +178,31 @@ struct ConfigurationModelTests {
             recentSessionIDs: ["a", "b"])
         #expect(model.results.map(\.id) == ["a", "b"])
     }
+
+    @Test @MainActor func pinningKeepsSessionOrder() throws {
+        let tools = Tools(rex: "/not/rex", zoxide: nil, fd: nil, rexApp: "/not/Rex.app")
+        let service = ReshService(client: RexClient(tools: tools, target: RexTarget()))
+        let sessions = ["a", "b", "c", "d"].map { RexSession(sessionID: $0, label: $0) }
+        let model = SearchModel(service: service, tools: tools, readTheme: { _, _ in .fixture })
+        defer { model.clear() }
+        model.prepare(service: service, sessions: sessions, recentSessionIDs: ["b", "a"], currentSessionID: "b")
+        model.selection = try #require(model.results.firstIndex { $0.id == "c" })
+        model.togglePin()
+        model.selection = try #require(model.results.firstIndex { $0.id == "a" })
+        model.togglePin()
+        #expect(model.results.map(\.id) == ["c", "a", "b", "d"])
+        #expect(model.selected?.id == "a")
+        model.endPresentation()
+        model.prepare(service: service, sessions: sessions, recentSessionIDs: ["d", "a", "c"], currentSessionID: "a")
+        #expect(model.results.map(\.id) == ["c", "a", "d", "b"])
+        model.query = "d"
+        #expect(model.results.map(\.id) == ["a", "d"])
+        model.query = ""
+        model.selection = try #require(model.results.firstIndex { $0.id == "a" })
+        model.togglePin()
+        #expect(model.results.map(\.id) == ["c", "a", "d", "b"])
+        model.selection = 0
+        model.togglePin()
+        #expect(model.results.map(\.id) == ["a", "d", "c", "b"])
+    }
 }

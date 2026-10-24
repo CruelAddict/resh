@@ -10,6 +10,15 @@ final class RexAppMonitor {
     private(set) var isAvailable = false
     var onChange: ((Bool) -> Void)?
 
+    /// Rex exposes no selected-session API. Its read-only focus preference is
+    /// meaningful only for the frontmost app, never for an arbitrary --client.
+    static func focusedSessionID(rexAppPID: Int32?) -> String? {
+        guard let rexAppPID, NSWorkspace.shared.frontmostApplication?.processIdentifier == rexAppPID,
+              let data = RexTheme.preferences(keys: ["Workspace.lastFocusedSession"])["Workspace.lastFocusedSession"] as? Data else { return nil }
+        struct Focus: Decodable { let sessionID: String }
+        return try? JSONDecoder().decode(Focus.self, from: data).sessionID
+    }
+
     init() {
         let center = NSWorkspace.shared.notificationCenter
         for name in [NSWorkspace.didLaunchApplicationNotification, NSWorkspace.didTerminateApplicationNotification,

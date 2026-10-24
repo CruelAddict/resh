@@ -5,11 +5,13 @@ import Testing
 
 @Suite("Subprocess execution")
 struct RunnerTests {
-    @Test func missingInstallationOptionValue() throws {
+    @Test(arguments: [[], ["--remote"]])
+    func missingInstallationOptionValue(_ options: [String]) throws {
         let installer = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
             .deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("install.sh")
-        let result = try SystemCommandRunner().run("/bin/bash", [installer.path, "remote", "--source"], timeout: 2)
+        let result = try SystemCommandRunner().run("/bin/bash", [installer.path] + options + ["--source"], timeout: 2)
         #expect(result.status != 0)
+        #expect(String(decoding: result.stderr, as: UTF8.self).contains("Missing value for --source"))
     }
 
     @Test func drainsBothPipes() throws {

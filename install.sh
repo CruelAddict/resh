@@ -4,14 +4,15 @@ set -euo pipefail
 
 usage() {
     cat <<'EOF'
-Usage: bash install.sh local|remote [options]
+Usage: bash install.sh [options]
+  --remote                 Install only the remote folder-source adapter
   --source DIRECTORY       Use a checkout or unpacked distribution
   --config FILE            Rex config file (required for a custom server config)
   --repository OWNER/REPO  Download a checksummed GitHub release
   --version TAG            Release tag (default: latest)
 
 Rex must already be installed and running as the installing account.
-Remote mode installs only Lua files; local mode requires a prebuilt macOS bundle.
+Installing resh requires a prebuilt macOS bundle. --remote installs only Lua files.
 EOF
 }
 
@@ -19,14 +20,9 @@ say() { printf '%s\n' "$*"; }
 die() { printf 'resh: %s\n' "$*" >&2; exit 1; }
 
 parse_options() {
-    case "${1:-}" in
-        local|remote) mode=$1; shift ;;
-        ''|-h|--help) usage; exit 0 ;;
-        *) usage >&2; exit 1 ;;
-    esac
-
     while (( $# > 0 )); do
         case "$1" in
+            --remote) remote=true; shift ;;
             --source|--config|--repository|--version)
                 [[ $# -ge 2 && -n $2 ]] || die "Missing value for $1"
                 case "$1" in
@@ -58,7 +54,7 @@ resolve_config_path() {
 
 configure_environment() {
     platform=$(uname -s)
-    [[ $mode != local || $platform == Darwin ]] || die 'The native picker requires macOS. Use remote mode on this machine.'
+    [[ $remote == true || $platform == Darwin ]] || die 'resh requires macOS. Use --remote to install the adapter on a remote Rex host.'
 
     export PATH="${PATH:-/usr/bin:/bin}:/opt/homebrew/bin:/usr/local/bin"
     # Never inherit the terminal's session, remote target, or selected client.
@@ -70,9 +66,9 @@ configure_environment() {
         *) config="$PWD/$config" ;;
     esac
     tools_reference=${RESH_TOOLS:-${XDG_CONFIG_HOME:-$HOME/.config}/resh/tools.lua}
-    destination="${XDG_DATA_HOME:-$HOME/.local/share}/resh"
-    if [[ $mode == local ]]; then
-        destination="$HOME/Library/Application Support/resh"
+    destination="$HOME/Library/Application Support/resh"
+    if [[ $remote == true ]]; then
+        destination="${XDG_DATA_HOME:-$HOME/.local/share}/resh"
     fi
     local path
     for path in "$HOME" "$config" "$tools_reference" "$destination"; do
@@ -120,8 +116,9 @@ download_release() {
     [[ $repository =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || die 'Pass --repository OWNER/REPO (or RESH_REPOSITORY), or --source DIRECTORY.'
     [[ $version =~ ^[A-Za-z0-9._-]+$ ]] || die 'Invalid release tag.'
 
-    artifact=resh-remote.tar.gz
-    if [[ $mode == local ]]; then
+    if [[ $remote == true ]]; then
+        artifact=resh-remote.tar.gz
+    else
         case "$(uname -m)" in
             arm64|aarch64) arch=arm64 ;;
             x86_64) arch=x86_64 ;;
@@ -160,7 +157,7 @@ find_source() {
     fi
     source_dir=$(cd -- "$source_dir" && pwd)
 
-    if [[ $mode == remote ]]; then
+    if [[ $remote == true ]]; then
         module_source="$source_dir/rex-actions.lua"
         [[ -f $module_source ]] || module_source="$source_dir/integration/rex-actions.lua"
         [[ -r $module_source ]] || die 'Missing rex-actions.lua in the distribution.'
@@ -197,22 +194,22 @@ unchanged() {
 }
 
 prepare_rex_config() {
-    rex_lua "input=$work/config.before" "output=$work/config.after" "mode=$mode" \
+    rex_lua "input=$work/config.before" "output=$work/config.after" "remote=$remote" \
         "module=$module" "tools=$tools_reference" "executable=$destination/resh" <<'LUA'
 local args = rex.args
 local file = assert(io.open(args.input, "rb"))
 local text = assert(file:read("*a")); file:close()
-local integration = args.mode == "remote"
+local integration = args.remote
   and "assert(loadfile(" .. string.format("%q", args.module) .. "))(" .. string.format("%q", args.tools) .. ")"
   or "dofile(" .. string.format("%q", args.module) .. ")"
 local found = text:find(integration, 1, true) ~= nil
-if args.mode == "local" and not found then
+if not args.remote and not found then
   for argument in text:gmatch("dofile%s*%(([^\n%)]+)%)") do
     if argument:find(args.module, 1, true) then found = true end
   end
 end
 if not found then text = text .. (text == "" and "" or "\n") .. integration .. "\n" end
-if args.mode == "local" then
+if not args.remote then
   local startup = false
   for arguments in ("\n" .. text):gmatch("\n[ \t]*rex%.exec%.start%s*%(%s*{(.-)}") do
     if arguments:find("resh", 1, true) and arguments:match("['\"]service['\"]%s*,%s*['\"]start['\"]") then startup = true end
@@ -246,7 +243,7 @@ atomic_copy() {
 }
 
 install_native() {
-    "$bundle/resh" service stop
+    "$bundle/resh" service stop >/dev/null
     local name
     for name in resh LICENSE THIRD_PARTY_NOTICES.md; do
         atomic_copy "$bundle/$name" "$destination/$name"
@@ -285,7 +282,8 @@ cleanup() {
 }
 
 main() {
-    mode= source_dir= config=
+    remote=false
+    source_dir= config=
     repository=${RESH_REPOSITORY:-}
     version=latest
     explicit_config=false
@@ -308,7 +306,7 @@ main() {
     cp -p "$module_source" "$work/module.after"
 
     unchanged "$config" "$work/config.before" || die 'Rex config changed during installation; refusing to overwrite concurrent edits.'
-    if [[ $mode == local ]]; then
+    if [[ $remote == false ]]; then
         install_native
     fi
     atomic_copy "$work/module.after" "$module" true
@@ -329,8 +327,10 @@ main() {
     "${rex_command[@]}" config reload >/dev/null
     committed=true
 
-    say "Installed $mode resh: $destination"
-    if [[ $mode == local ]]; then
+    if [[ $remote == true ]]; then
+        say "Installed resh remote adapter: $destination"
+    else
+        say "Installed resh: $destination"
         say 'Rex Server → Remote Control must be enabled for session switching.'
     fi
 }

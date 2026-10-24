@@ -6,6 +6,7 @@ import ReshCore
 struct LauncherRequest: Codable {
     var operation = "show"
     var client: String?
+    var currentSessionID: String?
     var server: String?
     var config: String?
     var debug: Bool?

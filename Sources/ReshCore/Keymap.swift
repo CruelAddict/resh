@@ -27,10 +27,14 @@ public struct KeyChord: Hashable, Sendable {
         self.code = code; modifiers = flags
     }
     public var label: String {
-        let key = Self.names[code] ?? "?"
+        let key = Self.symbols[code] ?? Self.names[code]?.uppercased() ?? "?"
         return (modifiers & 2 != 0 ? "⌃" : "") + (modifiers & 4 != 0 ? "⌥" : "")
-            + (modifiers & 8 != 0 ? "⇧" : "") + (modifiers & 1 != 0 ? "⌘" : "") + key.uppercased()
+            + (modifiers & 8 != 0 ? "⇧" : "") + (modifiers & 1 != 0 ? "⌘" : "") + key
     }
+    private static let symbols: [UInt16: String] = [
+        36:"↩",48:"⇥",49:"␣",51:"⌫",53:"⎋",76:"⌤",115:"↖",116:"⇞",117:"⌦",119:"↘",121:"⇟",
+        123:"←",124:"→",125:"↓",126:"↑",
+    ]
     private static let names: [UInt16: String] = [
         0:"a",1:"s",2:"d",3:"f",4:"h",5:"g",6:"z",7:"x",8:"c",9:"v",11:"b",12:"q",13:"w",14:"e",15:"r",16:"y",17:"t",
         18:"1",19:"2",20:"3",21:"4",22:"6",23:"5",24:"=",25:"9",26:"7",27:"-",28:"8",29:"0",30:"]",31:"o",32:"u",33:"[",34:"i",35:"p",
@@ -49,13 +53,15 @@ public struct Keymap: Equatable, Sendable {
     private var customized: [KeyChord] = []
     public init(overrides: [String: String] = [:], sources: Set<SearchScope> = [.sessions, .all, .directories, .find]) throws {
         let defaults: [String: PanelShortcut] = [
-            "cmd+1":.scope(.sessions), "cmd+2":.scope(.all), "cmd+3":.scope(.directories), "cmd+4":.scope(.find),
+            "cmd+e":.scope(.sessions), "cmd+a":.scope(.all), "cmd+r":.scope(.directories),
+            "cmd+f":.scope(.find), "cmd+p":.scope(.configs), "cmd+shift+p":.pin,
             "cmd+s":.ignore, "cmd+shift+backspace":.delete,
             "ctrl+n":.move(1), "ctrl+p":.move(-1), "down":.move(1), "up":.move(-1),
             "tab":.move(1), "shift+tab":.move(-1), "enter":.open, "keypadenter":.open, "escape":.dismiss,
             "ctrl+[":.dismiss,
         ]
         for (key, action) in defaults { bindings[try KeyChord(key)] = action }
+        for number in 1...9 { bindings[try KeyChord("cmd+\(number)")] = .openResult(number) }
         var seen = Set<KeyChord>()
         for key in overrides.keys.sorted() {
             let chord = try KeyChord(key)
@@ -68,12 +74,17 @@ public struct Keymap: Equatable, Sendable {
             case "next": action = .move(1)
             case "previous": action = .move(-1)
             case "open": action = .open
+            case "pin": action = .pin
             case "dismiss": action = .dismiss
             case "delete": action = .delete
             case "reload": action = .reload
             case "next_source": action = .nextSource
             case "previous_source": action = .previousSource
             default:
+                if value.hasPrefix("open:"), let number = Int(value.dropFirst(5)), (1...9).contains(number) {
+                    action = .openResult(number)
+                    break
+                }
                 guard value.hasPrefix("source:") else { throw ReshError("Unknown action for \(key): \(value)") }
                 let source = SearchScope(rawValue: String(value.dropFirst(7)))
                 guard sources.contains(source) else { throw ReshError("Unknown source for \(key): \(source.rawValue)") }
@@ -84,8 +95,18 @@ public struct Keymap: Equatable, Sendable {
     }
     public func action(for chord: KeyChord) -> PanelShortcut? { bindings[chord] }
     public func label(for source: SearchScope) -> String {
-        let action = PanelShortcut.scope(source)
-        if let key = customized.first(where: { bindings[$0] == action }) { return key.label }
-        return bindings.filter { $0.value == action }.map(\.key.label).sorted().first ?? ""
+        label(for: .scope(source))
+    }
+    /// Shift may complete an advertised chord; the held primary modifiers select
+    /// the hint family (Cmd, Ctrl, Option, or their combination).
+    public func label(for action: PanelShortcut, modifiers: UInt8? = nil) -> String {
+        func matches(_ key: KeyChord) -> Bool {
+            guard bindings[key] == action else { return false }
+            guard let modifiers else { return true }
+            let primary = modifiers & 7
+            return primary != 0 && key.modifiers & 7 == primary
+        }
+        if let key = customized.first(where: matches) { return key.label }
+        return bindings.keys.filter(matches).map(\.label).sorted().first ?? ""
     }
 }
