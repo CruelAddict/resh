@@ -36,8 +36,14 @@ local function publish_clients()
   reply(value)
 end
 
-rex.on("session_created", function() publish_sessions() end)
-rex.on("session_destroyed", function() publish_sessions() end)
+rex.on("session_created", function(_, ev)
+  reply({ type = "created", session_id = ev.session.session_id })
+  publish_sessions()
+end)
+rex.on("session_destroyed", function(_, ev)
+  reply({ type = "destroyed", session_id = ev.session_id })
+  publish_sessions()
+end)
 rex.on("session_label_changed", function() publish_sessions() end)
 rex.on("client_joined", function(_, ev)
   if ev.client.info and ev.client.info.kind == "app" then publish_clients() end

@@ -11,6 +11,8 @@ struct RexAppClient: Decodable, Sendable {
 enum RexEventUpdate: Sendable {
     case records([RexAttentionRecord])
     case sessions([RexSession])
+    case created(String)
+    case destroyed(String)
     case clients([RexAppClient])
     case reconnecting
     case hostsChanged
@@ -28,6 +30,11 @@ final class RexEventConnection: @unchecked Sendable {
         let records: [RexAttentionRecord]?
         let error: String?
         let heartbeat: Bool?
+        let sessionID: String?
+        private enum CodingKeys: String, CodingKey {
+            case type, sessions, clients, records, error, heartbeat
+            case sessionID = "session_id"
+        }
     }
     private let tools: Tools
     private let kind: Kind
@@ -155,6 +162,10 @@ final class RexEventConnection: @unchecked Sendable {
                     if recovered { onUpdate?(.success(.capabilitiesChanged)) }
                     switch update.type {
                     case "sessions": onUpdate?(.success(.sessions(update.sessions ?? [])))
+                    case "created":
+                        if let id = update.sessionID { onUpdate?(.success(.created(id))) }
+                    case "destroyed":
+                        if let id = update.sessionID { onUpdate?(.success(.destroyed(id))) }
                     case "clients": onUpdate?(.success(.clients(update.clients ?? [])))
                     case "hosts": onUpdate?(.success(.hostsChanged))
                     case "capabilities": onUpdate?(.success(.capabilitiesChanged))

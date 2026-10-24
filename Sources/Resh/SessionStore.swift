@@ -42,6 +42,8 @@ final class SessionStore {
                 switch result {
                 case let .success(.sessions(sessions)):
                     self.sessions = sessions; isConnected = true
+                case let .success(.destroyed(sessionID)):
+                    sessions?.removeAll { $0.sessionID == sessionID }
                 case let .success(.clients(clients)): self.clients = clients
                 case .success(.reconnecting): isConnected = false
                 case .failure: isConnected = false; running = false

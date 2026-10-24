@@ -354,6 +354,8 @@ struct ServiceTests {
         #expect(try await service.connectLast() == "a")
         #expect(try await service.recentSessionIDs() == ["a", "c"])
         #expect(try await service.connectLast() == "c")
+        try await service.delete(sessionID: "c")
+        #expect(try await service.recentSessionIDs() == ["a"])
     }
 
     @Test func sessionHistoryBelongsToTheCallingClientAndServer() async throws {

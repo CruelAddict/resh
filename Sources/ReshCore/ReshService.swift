@@ -46,6 +46,19 @@ public actor ReshService {
         }
     }
 
+    public func recordVisit(sessionID: String, host: RexHost? = nil, clientID: String) {
+        history.withVisits { visits in
+            SessionHistory.record(sessionID, host: host, clientID: clientID, server: client.target.server, visits: &visits)
+        }
+    }
+
+    public func forgetSession(sessionID: String, host: RexHost? = nil) {
+        let candidateID = Candidate.identity(sessionID, host: host)
+        history.withVisits { visits in
+            visits.removeAll { $0.server == client.target.server && $0.candidateID == candidateID }
+        }
+    }
+
     public func connect(_ path: String, configuration: ReshConfiguration, cwd: String) throws -> (sessionID: String, path: String) {
         let expanded = (path as NSString).expandingTildeInPath
         let absolute = expanded.hasPrefix("/") ? expanded : URL(fileURLWithPath: cwd).appendingPathComponent(expanded).path
@@ -176,6 +189,7 @@ public actor ReshService {
             }
             if sessions.contains(where: { $0.sessionID == sessionID }) { throw deletionError }
         }
+        forgetSession(sessionID: sessionID, host: host)
         do {
             let lock = try FileLock(url: registry.directory.appendingPathComponent("create.lock"), wait: false)
             defer { withExtendedLifetime(lock) {} }

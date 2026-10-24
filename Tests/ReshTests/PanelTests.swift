@@ -97,6 +97,8 @@ struct PanelTests {
         #expect(cell.attention.frame.maxX < cell.hostLabel.frame.minX)
         #expect(cell.pin.frame.maxX < cell.hostLabel.frame.minX)
         #expect(cell.hostLabel.frame.maxX == cell.bounds.maxX - 8)
+        #expect(cell.hostLabel.frame.maxY - cell.hostLabel.firstBaselineOffsetFromTop
+            == cell.textField!.frame.maxY - cell.textField!.firstBaselineOffsetFromTop)
         #expect(cell.accessibilityLabel()?.contains(host.label) == true)
         cell.configure(session, needsAttention: false, color: .systemBlue, textColor: .labelColor)
         cell.layoutSubtreeIfNeeded()
@@ -223,6 +225,10 @@ struct PanelTests {
         first.layoutSubtreeIfNeeded()
         #expect(first.closeHintLabel.frame.minX - first.pinHintLabel.frame.maxX
             == first.shortcutLabel.frame.minX - first.closeHintLabel.frame.maxX)
+        for hint in [first.shortcutLabel, first.pinHintLabel, first.closeHintLabel] {
+            #expect(hint.frame.maxY - hint.firstBaselineOffsetFromTop
+                == first.textField!.frame.maxY - first.textField!.firstBaselineOffsetFromTop)
+        }
         #expect(first.pinHintLabel.textColor == first.closeHintLabel.textColor && first.closeHintLabel.textColor == first.shortcutLabel.textColor)
         // Releasing during the delay cancels it, including after switching to
         // a different configured modifier family.

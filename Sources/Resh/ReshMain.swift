@@ -123,6 +123,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
     // Hiding the accessory panel must not terminate its resident native controls.
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        DebugLog.shared.record("Application termination requested", source: "lifecycle")
         guard controller != nil else { return .terminateNow }
         guard !isStopping else { return .terminateLater }
         isStopping = true
@@ -160,7 +161,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
     }
     private func open(_ request: LauncherRequest) -> Bool {
         guard !isStopping, !isExecutingCommand, openingID == nil, let controller,
-              !controller.model.isConnecting, !controller.model.isPresentingConfirmation else { return false }
+              !controller.model.isConnecting else { return false }
         DebugLog.shared.setEnabled(request.debug ?? options.debug)
         DebugLog.shared.record("Opening panel", source: "panel")
         let started = ProcessInfo.processInfo.systemUptime
@@ -196,7 +197,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             do {
                 let fetched = try await Task.detached { try connection.snapshot(target: target, rexAppPID: rexAppPID) }.value
-                guard openingID == id, !controller.model.isConnecting, !controller.model.isPresentingConfirmation else { return }
+                guard openingID == id, !controller.model.isConnecting else { return }
                 let snapshot = controller.model.catalog.snapshot(clientID: target.clientID, rexAppPID: rexAppPID) ?? fetched
                 let selected = RexTarget(clientID: snapshot.client, server: target.server)
                 let service = service.at(selected)
@@ -205,7 +206,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
                 controller.model.reportDiagnostic(nil, source: "connection")
                 controller.show()
             } catch {
-                guard openingID == id, !controller.model.isConnecting, !controller.model.isPresentingConfirmation else { return }
+                guard openingID == id, !controller.model.isConnecting else { return }
                 controller.present(error: error) { [weak self] in _ = self?.open(request) }
             }
         }
@@ -218,8 +219,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
             return ["stopping": true]
         }
         if request.changesSession {
-            guard !isStopping, !isExecutingCommand, openingID == nil, !controller.model.isConnecting,
-                  !controller.model.isPresentingConfirmation else {
+            guard !isStopping, !isExecutingCommand, openingID == nil, !controller.model.isConnecting else {
                 return ["error": "A session operation is still in progress."]
             }
             isExecutingCommand = true
@@ -310,7 +310,7 @@ struct ReshMain {
                 ⌘E Sessions · ⌘A All · ⌘R Recent folders · ⌘F Find folders · ⌘P Projects
                 ⌘1…9 open a result · ⌘⇧P pin/unpin a session (memory only)
                 ↑/↓ or Tab/Shift-Tab navigate · Return open · Esc or Ctrl+[ dismiss
-                ⌘⇧Backspace close a selected session (asks for confirmation)
+                ⌘⇧Backspace immediately close a selected session
                 """)
                 return
             }

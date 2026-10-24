@@ -41,11 +41,15 @@ final class SearchModel: ObservableObject {
     private var rexAppPID: Int32?
     let catalog: SessionStore
     private var configurationWatcher: FileWatcher?
+    private var focusWatcher: FileWatcher?
+    private var unvisitedCreatedSessionIDs = Set<String>()
+    private var pendingDeletionFocus: (sessionID: String, clientID: String)?
     private var isBackgroundActive = false
     private var isPresented = false
     private var subscriptions = Set<AnyCancellable>()
     private let snapshotProvider: any RexSnapshotProviding
     private let readPreferences: @Sendable () -> [String: Any]
+    private let readFocusedSession: @MainActor (Int32?) -> String?
     private let readTheme: @Sendable (String, Bool) throws -> RexTheme
     private var diagnostics: [String: String] = [:]
     private(set) var service: ReshService
@@ -58,18 +62,19 @@ final class SearchModel: ObservableObject {
     private var hostAttentionRecords: [String: [RexAttentionRecord]] = [:]
     var onDismiss: ((Bool) -> Void)?
     var onRetryOpening: (() -> Void)?
-    var isPresentingConfirmation = false
     private var generation = 0
 
     init(service: ReshService, tools: Tools, sessions: [RexSession] = [], recentSessionIDs: [String] = [], configurationURL: URL? = nil,
          snapshotProvider: (any RexSnapshotProviding)? = nil,
          readTheme: @escaping @Sendable (String, Bool) throws -> RexTheme = { try RexTheme.read(rexApp: $0, systemIsDark: $1) },
-         readPreferences: @escaping @Sendable () -> [String: Any] = { RexTheme.preferences(keys: ["Workspace.programActivitySeen"]) }) {
+         readPreferences: @escaping @Sendable () -> [String: Any] = { RexTheme.preferences(keys: ["Workspace.programActivitySeen"]) },
+         readFocusedSession: @escaping @MainActor (Int32?) -> String? = { RexAppMonitor.focusedSessionID(rexAppPID: $0) }) {
         self.service = service; self.tools = tools
         self.catalog = SessionStore(tools: tools, service: service)
         self.configurationURL = configurationURL
         self.snapshotProvider = snapshotProvider ?? RexDataConnection(tools: tools)
         self.readPreferences = readPreferences
+        self.readFocusedSession = readFocusedSession
         self.readTheme = readTheme
         do { self.theme = try readTheme(tools.rexApp, Self.systemIsDark) }
         catch {
@@ -118,6 +123,13 @@ final class SearchModel: ObservableObject {
         guard !isBackgroundActive else { return }
         isBackgroundActive = true
         watchConfiguration()
+        focusWatcher = FileWatcher(url: FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Preferences/com.superlogical.rex.plist")) { [weak self] in
+            Task { @MainActor [weak self] in
+                guard let self, isBackgroundActive else { return }
+                refreshFocus()
+            }
+        }
         loadInitial()
     }
 
@@ -125,6 +137,7 @@ final class SearchModel: ObservableObject {
     func stopBackground() -> [RexEventConnection] {
         isBackgroundActive = false
         configurationWatcher?.stop(); configurationWatcher = nil
+        focusWatcher?.stop(); focusWatcher = nil
         generation += 1
         hostGeneration += 1
         hostsTask?.cancel(); hostsTask = nil
@@ -196,6 +209,7 @@ final class SearchModel: ObservableObject {
         isLoading = loadingTask != nil
         onRetryOpening = nil
         if isConfigurationReady, configuration.source(scope)?.kind != .sessions { load(keepingSnapshots: true) }
+        refreshFocus()
     }
 
     func failOpening(_ error: Error, retry: @escaping () -> Void) {
@@ -224,6 +238,7 @@ final class SearchModel: ObservableObject {
         attentionRecords = []; attentionSessionIDs = []
         sessionSnapshot = []; sessionRanks = [:]; search = FuzzyMatcher([])
         pinnedSessionIDs = []; currentSessionID = nil; currentCandidateID = nil
+        unvisitedCreatedSessionIDs = []; pendingDeletionFocus = nil
         sourceSnapshots = [:]
         rexAppPID = nil
         diagnostics = [:]
@@ -349,6 +364,7 @@ final class SearchModel: ObservableObject {
         let updated = ReshService.candidates(from: sessions, host: host)
         let previous = host.map { hostSessions[$0.id] ?? [] } ?? sessionSnapshot
         let removed = Set(previous.map(\.id)).subtracting(updated.map(\.id))
+        unvisitedCreatedSessionIDs.subtract(removed)
         if pinnedSessionIDs.contains(where: removed.contains) { pinnedSessionIDs.removeAll(where: removed.contains) }
         if let host {
             guard updated != hostSessions[host.id] else { return }
@@ -358,6 +374,53 @@ final class SearchModel: ObservableObject {
             sessionSnapshot = updated
         }
         if isConfigurationReady { refreshEntries() }
+        refreshFocus()
+    }
+
+    func refreshFocus() {
+        // Creation events have no calling client. A real app focus is required
+        // before recording a visit; CLI-created background sessions stay unvisited.
+        var clients = catalog.clients
+        if let rexAppPID, let client = service.target.clientID, !clients.contains(where: { $0.client == client }) {
+            clients.append(RexAppClient(client: client, rexAppPID: rexAppPID))
+        }
+        for client in clients {
+            guard let sessionID = readFocusedSession(client.rexAppPID) else { continue }
+            let matches = (sessionSnapshot + hosts.flatMap { hostSessions[$0.id] ?? [] }).filter { $0.sessionID == sessionID }
+            guard matches.count == 1, let candidate = matches.first else { continue }
+            if service.target.clientID == client.client, currentSessionID != sessionID {
+                currentSessionID = sessionID
+                refreshEntries()
+            }
+            let afterDeletion = pendingDeletionFocus.map { $0.clientID == client.client && $0.sessionID != sessionID } ?? false
+            guard unvisitedCreatedSessionIDs.remove(candidate.id) != nil || afterDeletion else { continue }
+            if afterDeletion { pendingDeletionFocus = nil }
+            let service = service, request = generation
+            Task {
+                await service.recordVisit(sessionID: sessionID, host: candidate.host, clientID: client.client)
+                guard generation == request else { return }
+                await catalog.refreshHistory().value
+            }
+        }
+    }
+
+    private func removeSession(_ sessionID: String, host: RexHost?) {
+        let id = Candidate.identity(sessionID, host: host)
+        unvisitedCreatedSessionIDs.remove(id)
+        if currentCandidateID == id, let clientID = service.target.clientID {
+            pendingDeletionFocus = (sessionID, clientID)
+        }
+        if let host { hostSessions[host.id]?.removeAll { $0.id == id } }
+        else { sessionSnapshot.removeAll { $0.id == id } }
+        pinnedSessionIDs.removeAll { $0 == id }
+        refreshEntries()
+        refreshFocus()
+        let service = service, request = generation
+        Task {
+            await service.forgetSession(sessionID: sessionID, host: host)
+            guard generation == request else { return }
+            await catalog.refreshHistory().value
+        }
     }
 
     private func discoverHosts() {
@@ -613,27 +676,13 @@ final class SearchModel: ObservableObject {
     }
     func deleteSelection() {
         guard isConfigurationReady, !isOpening, !isConnecting, let selected, let sessionID = selected.sessionID else { return }
-        let alert = NSAlert()
-        alert.messageText = "Close ‘\(selected.title)’" + (showsHosts ? " on \(selected.hostLabel)?" : "?")
-        alert.informativeText = "This closes every terminal and running program in this Rex session. It cannot be undone."
-        alert.alertStyle = .warning
-        alert.addButton(withTitle: "Cancel")
-        let destructive = alert.addButton(withTitle: "Close Session")
-        destructive.hasDestructiveAction = true
-        isPresentingConfirmation = true
-        let response = alert.runModal()
-        isPresentingConfirmation = false
-        guard response == .alertSecondButtonReturn else { return }
         isConnecting = true
         let request = generation, service = service
         Task {
             do {
                 try await service.delete(sessionID: sessionID, host: selected.host)
                 guard generation == request else { return }
-                if let host = selected.host { hostSessions[host.id]?.removeAll { $0.id == selected.id } }
-                else { sessionSnapshot.removeAll { $0.id == selected.id } }
-                pinnedSessionIDs.removeAll { $0 == selected.id }
-                refreshEntries()
+                removeSession(sessionID, host: selected.host)
             } catch {
                 guard generation == request else { return }
                 reportDiagnostic(error, source: "close:\(selected.id)")
@@ -670,7 +719,12 @@ final class SearchModel: ObservableObject {
     func receive(_ result: Result<RexEventUpdate, Error>, host: RexHost? = nil) {
         let key = host.map { "attention:\($0.id)" } ?? "attention"
         switch result {
-        case .success(.clients): break
+        case .success(.clients): refreshFocus()
+        case let .success(.created(sessionID)):
+            unvisitedCreatedSessionIDs.insert(Candidate.identity(sessionID, host: host))
+            refreshFocus()
+        case let .success(.destroyed(sessionID)):
+            removeSession(sessionID, host: host)
         case .success(.reconnecting):
             if let host { pendingHosts.insert(host.id); updateRemoteLoading() }
         case .success(.hostsChanged):

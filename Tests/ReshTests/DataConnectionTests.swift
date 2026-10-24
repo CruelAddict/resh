@@ -29,7 +29,8 @@ private final class AttentionUpdates: @unchecked Sendable {
         switch result {
         case let .success(.records(records)): updates.append(records)
         case let .success(.sessions(sessions)): sessionUpdates.append(sessions)
-        case .success(.hostsChanged), .success(.capabilitiesChanged), .success(.clients), .success(.reconnecting): break
+        case .success(.hostsChanged), .success(.capabilitiesChanged), .success(.clients), .success(.reconnecting),
+             .success(.created), .success(.destroyed): break
         case .failure: updates.append([])
         }
     }
@@ -262,10 +263,17 @@ struct DataConnectionTests {
         root=pathlib.Path(__file__).parent
         if 'hosts' in sys.argv:
             print('{"hosts":[]}')
+        elif 'kill' in sys.argv:
+            (root/'closed').touch()
+            print('{}')
         else:
             print('{"type":"clients","clients":[{"client":"client:test","rex_app_pid":42}]}',flush=True)
             print('{"type":"sessions","sessions":[{"session_id":"s","label":"First"}]}',flush=True)
             while not (root/'changed').exists(): time.sleep(.01)
+            print('{"type":"created","session_id":"new"}',flush=True)
+            print('{"type":"sessions","sessions":[{"session_id":"s","label":"Renamed"},{"session_id":"new","label":"New"}]}',flush=True)
+            while not (root/'closed').exists(): time.sleep(.01)
+            print('{"type":"destroyed","session_id":"new"}',flush=True)
             print('{"type":"sessions","sessions":[{"session_id":"s","label":"Renamed"}]}',flush=True)
             time.sleep(30)
         """)
@@ -273,8 +281,10 @@ struct DataConnectionTests {
         try "".write(to: config, atomically: true, encoding: .utf8)
         let service = ReshService(client: RexClient(tools: stub.tools, target: RexTarget(clientID: "client:test")),
             registry: SessionRegistry(directory: stub.directory))
+        await service.recordVisit(sessionID: "s", clientID: "client:test")
+        var focus = "s"
         let model = SearchModel(service: service, tools: stub.tools, configurationURL: config,
-            readTheme: { _, _ in .fixture })
+            readTheme: { _, _ in .fixture }, readFocusedSession: { _ in focus })
         defer { model.clear() }
         model.startBackground()
         await model.loadingTask?.value
@@ -292,10 +302,29 @@ struct DataConnectionTests {
             try await Task.sleep(for: .milliseconds(10))
         }
         let snapshot = try #require(model.catalog.snapshot(clientID: nil, rexAppPID: 42))
-        #expect(snapshot.client == "client:test" && snapshot.sessions.map(\.label) == ["Renamed"])
-        model.prepare(service: service, sessions: snapshot.sessions)
-        #expect(model.results.map(\.title) == ["Renamed"])
+        #expect(snapshot.client == "client:test" && snapshot.sessions.map(\.label) == ["Renamed", "New"])
+        #expect(try await service.recentSessionIDs() == ["s"])
+        focus = "new"
+        model.prepare(service: service, sessions: snapshot.sessions, rexAppPID: 42, currentSessionID: focus)
+        for _ in 0..<300 where model.catalog.recentSessionIDs["client:test"] != ["new", "s"] {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(model.results.map(\.title) == ["New", "Renamed"])
+        #expect(model.numberedRows.map { model.results[$0].id } == ["s"])
         #expect(!model.isLoading)
+        model.selection = 0
+        model.deleteSelection()
+        for _ in 0..<300 where model.isConnecting { try await Task.sleep(for: .milliseconds(10)) }
+        #expect(model.results.map(\.id) == ["s"] && model.currentCandidateID == nil)
+        focus = "s"
+        model.refreshFocus()
+        for _ in 0..<300 {
+            if !model.isConnecting, model.currentCandidateID == "s", model.catalog.recentSessionIDs["client:test"] == ["s"] { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(model.results.map(\.id) == ["s"] && model.currentCandidateID == "s")
+        #expect(model.numberedRows.isEmpty && !model.isConnecting)
+        #expect(try await service.recentSessionIDs() == ["s"])
     }
 
     @Test @MainActor func reloadUsesTheSnapshotProvider() async {

@@ -210,7 +210,7 @@ final class PanelController: NSObject, NSWindowDelegate {
         case let .openResult(number): model.openResult(number)
         case .pin: if !event.isARepeat { model.togglePin() }
         case .dismiss: if !model.isConnecting { dismiss(focusRex: true) }
-        case .delete: model.deleteSelection()
+        case .delete: if !event.isARepeat { model.deleteSelection() }
         case .ignore: break
         case .reload: model.reload()
         case .nextSource: model.cycleSource(1)
@@ -243,13 +243,15 @@ final class PanelController: NSObject, NSWindowDelegate {
     }
 
     func windowDidResignKey(_ notification: Notification) {
-        guard !model.isConnecting, !model.isPresentingConfirmation, NSApp.modalWindow == nil else { return }
+        guard !model.isConnecting, NSApp.modalWindow == nil else { return }
+        DebugLog.shared.record("Panel lost key window", source: "panel")
         dismiss(focusRex: false)
     }
 
     func dismiss(focusRex: Bool) {
         guard !isDismissing else { return }
         isDismissing = true
+        DebugLog.shared.record("Hiding panel (focusRex: \(focusRex))", source: "panel")
         onDismiss?()
         if let monitor { NSEvent.removeMonitor(monitor); self.monitor = nil }
         themeTimer?.invalidate()

@@ -108,7 +108,10 @@ final class SessionCellView: NSTableCellView {
         guard let textField else { return }
         let hostWidth = hostLabel.isHidden ? 0 : min(bounds.width * 0.3,
             hostColumnWidth > 0 ? hostColumnWidth : ceil(hostLabel.cell?.cellSize.width ?? 0))
-        hostLabel.frame = NSRect(x: bounds.width - 8 - hostWidth, y: 5, width: hostWidth, height: 17)
+        // Smaller metadata text shares the title's baseline, not its frame origin.
+        let titleBaselineOffset = textField.firstBaselineOffsetFromTop
+        hostLabel.frame = NSRect(x: bounds.width - 8 - hostWidth,
+            y: 5 + hostLabel.firstBaselineOffsetFromTop - titleBaselineOffset, width: hostWidth, height: 17)
         pin.frame = NSRect(x: 8, y: 6, width: 12, height: 14)
         let gap: CGFloat = 12
         var trailing = hostLabel.frame.minX - (hostLabel.isHidden ? 0 : gap)
@@ -116,7 +119,8 @@ final class SessionCellView: NSTableCellView {
         // invisible padding that makes the preceding gap look much larger.
         for hint in [shortcutLabel, closeHintLabel, pinHintLabel] {
             let width = hint.stringValue.isEmpty ? 0 : ceil(hint.cell?.cellSize.width ?? 0)
-            hint.frame = NSRect(x: trailing - width, y: 5, width: width, height: 17)
+            hint.frame = NSRect(x: trailing - width,
+                y: 5 + hint.firstBaselineOffsetFromTop - titleBaselineOffset, width: width, height: 17)
             if width > 0 { trailing = hint.frame.minX - gap }
         }
         let titleX: CGFloat = isPinned ? 26 : 8

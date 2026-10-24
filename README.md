@@ -88,7 +88,7 @@ optional and only affects repository-based session naming.
 | ↑ / ↓, Tab / Shift-Tab, ⌃P / ⌃N | Select a result |
 | Return / click | Switch or create |
 | Esc / Ctrl+[ / click outside | Dismiss without creating a session |
-| ⌘⇧Backspace | Close a selected session, **after confirmation** |
+| ⌘⇧Backspace | Immediately close a selected session and every program in it |
 
 Recent folders and Find folders are hidden when their provider is unavailable on
 every host, including This Mac. All is hidden when its sources add nothing beyond
@@ -125,8 +125,9 @@ before it is shown and positioned only once.
 Combined sources keep their loaded folder rows; session changes do not rerun
 filesystem providers or change the selected row's identity. Hiding resets the
 query, selection and initial source, not the catalog or provider capabilities.
-Sessions use most-recently-used order, based only on successful selections through
-resh (including `--connect` and `--last`). Unknown sessions keep Rex's original
+Sessions use most-recently-used order, based on successful selections through
+resh (including `--connect` and `--last`) and newly created sessions Rex actually shows.
+Unknown sessions keep Rex's original
 order. Unpinned search results rank by match quality, using recency to break ties; folder
 providers retain their own order. History lives only in the resident resh process's
 memory, separately for each calling Rex client and home server. Dismissing the picker,
@@ -149,6 +150,8 @@ The Rex action passes its session context. Native Cmd+S reads Rex's private
 unavailable, malformed or ambiguous focus data leaves the current session unknown,
 never inferred from MRU or attachments. CLI callers can supply `--current-session ID`
 alongside `--client`. resh never writes Rex's focus preference.
+Filesystem notifications also refresh this focus after session creation or removal,
+so the new current session is excluded from numbered shortcuts without reopening.
 
 Holding Cmd for 500 ms reveals result numbers and inline `Pin`/`Unpin` and `Close` hints
 on the selected session's row; there is no hint footer.
@@ -173,8 +176,10 @@ rex.bind("ctrl+[KeyA]>shift+[KeyL]", "resh_last")
 ```
 
 This is Ctrl+A followed by Shift+L, including with non-Latin keyboard layouts.
-Switching through Rex's sidebar or built-in session actions is not tracked:
-resh does not poll Rex's private preferences or infer focus from attachments.
+Switching through Rex's sidebar or built-in session actions does not update history:
+only newly created sessions and the replacement for a closed current session update
+history outside resh. Focus changes are read on preference-file notifications, not
+polled or inferred from attachments.
 
 Normal openings show the prepared session list immediately. During initial
 startup or recovery, the same panel can show an inline spinner while data arrives.
@@ -186,10 +191,12 @@ failures never produce user notifications. A failed source does not block other
 results. Missing providers hide their source buttons once absence is confirmed
 on every host; a failed capability check is not evidence of absence.
 
-Closing a session is quiet after confirmation. Already-closed sessions count as
+Closing a session is immediate, without a confirmation dialog; holding the shortcut
+does not repeatedly close sessions. Already-closed sessions count as
 success; failed registry cleanup is ignored. If closure cannot be confirmed, the
 row is retained until Rex supplies an updated snapshot, rather than removed
 optimistically. Session-changing commands are never automatically repeated.
+Closed sessions are removed from history.
 
 Configuration is loaded in the background and refreshed by filesystem notifications,
 including atomic saves. Session history updates in memory after successful switches
@@ -360,7 +367,7 @@ timeout = 5
 ```
 
 **Keymaps.** Bindings extend the defaults; `"none"` removes a binding. Actions:
-`next`, `previous`, `open`, `dismiss`, `delete` (still confirms), `reload`,
+`next`, `previous`, `open`, `dismiss`, `delete` (without confirmation), `reload`,
 `pin`, `open:1` through `open:9`, `next_source`, `previous_source`, and `source:ID`. Modifiers are `cmd`, `ctrl`,
 `alt`/`option`, and `shift`. Keys use US physical positions, so `ctrl+t` also
 works with the Russian layout. Modifiers match exactly. Shifted symbols are
