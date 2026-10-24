@@ -21,8 +21,8 @@ rex.action{
   run = function(ctx)
     local result, err = rex.exec({ executable, "--last", "--client", ctx.client_id },
       { timeout = 15 })
-    if not result then error(tostring(err), 0) end
-    if not result.ok then error(result.timed_out and "resh: session switch timed out" or result.stderr, 0) end
+    if not result then rex.log("debug", tostring(err))
+    elseif not result.ok then rex.log("debug", result.stderr) end
   end,
 }
 

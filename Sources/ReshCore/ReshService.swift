@@ -12,6 +12,7 @@ public actor ReshService {
     public nonisolated var target: RexTarget { client.target }
     public nonisolated func hosts() throws -> (hosts: [RexHost], warnings: [String]) { try RexHostCatalog(client: client).read() }
     public nonisolated func remote(_ host: RexHost) -> RexRemote { RexRemote(client: client.at(host)) }
+    public nonisolated func sessions(host: RexHost? = nil) throws -> [RexSession] { try (host.map(client.at) ?? client).sessions() }
 
     public nonisolated static func candidates(from sessions: [RexSession], host: RexHost? = nil) -> [Candidate] {
         // A Rex session has no global working directory. Do not inspect its tabs.
@@ -22,7 +23,7 @@ public actor ReshService {
 
     public func recentSessionIDs() throws -> [String] {
         let clientID = try client.target.clientID ?? client.resolveClient().id
-        return try history.load().filter { $0.belongs(to: clientID, server: client.target.server) }.map(\.candidateID)
+        return loadHistory().filter { $0.belongs(to: clientID, server: client.target.server) }.map(\.candidateID)
     }
 
     /// Paths are sent as JSON arguments, never interpolated into a shell command.
@@ -33,21 +34,17 @@ public actor ReshService {
     }
 
     private func connect(_ candidate: Candidate, clientID: String) throws -> String {
-        let lock = try FileLock(url: history.lockURL)
+        let lock = lockHistory()
         defer { withExtendedLifetime(lock) {} }
-        let visits = try history.load()
+        let visits = loadHistory()
         let sessionID = try open(candidate, clientID: clientID)
-        try history.record(sessionID, host: candidate.host, clientID: clientID, server: client.target.server, visits: visits)
+        if lock != nil { recordHistory(sessionID, host: candidate.host, clientID: clientID, visits: visits) }
         return sessionID
     }
 
     private func open(_ candidate: Candidate, clientID targetClient: String) throws -> String {
         if let sessionID = candidate.sessionID {
-            do { try client.select(sessionID, clientID: targetClient) }
-            catch {
-                guard let host = candidate.host else { throw error }
-                throw ReshError("Could not show ‘\(candidate.title)’ on \(host.label). Check that this host is connected in the calling Rex app and Remote Control is enabled.\n\(error.localizedDescription)")
-            }
+            try client.select(sessionID, clientID: targetClient)
             return sessionID
         }
         guard let rawPath = candidate.path else { throw ReshError("The selected folder has no path.") }
@@ -78,11 +75,11 @@ public actor ReshService {
 
     /// The first entry is the last selection made by resh, not inferred app focus.
     @discardableResult
-    public func connectLast() throws -> String {
+    public func connectLast() throws -> String? {
         let clientID = try client.resolveClient().id
-        let lock = try FileLock(url: history.lockURL)
+        guard let lock = lockHistory() else { return nil }
         defer { withExtendedLifetime(lock) {} }
-        var visits = try history.load()
+        var visits = loadHistory()
         let previous = visits.filter { $0.belongs(to: clientID, server: client.target.server) }.dropFirst()
         var catalog: [RexHost]?, snapshots: [String: [RexSession]] = [:]
         for visit in previous {
@@ -96,7 +93,7 @@ public actor ReshService {
                 }
             } else { host = nil }
             let key = host?.id ?? client.target.server
-            if snapshots[key] == nil { snapshots[key] = try (host.map(client.at) ?? client).sessions() }
+            if snapshots[key] == nil { snapshots[key] = try sessions(host: host) }
             guard let session = snapshots[key]?.first(where: { $0.sessionID == visit.sessionID }) else {
                 visits.removeAll { $0.belongs(to: clientID, server: client.target.server) && $0.candidateID == visit.candidateID }
                 continue
@@ -104,10 +101,25 @@ public actor ReshService {
             let candidate = Candidate(id: visit.candidateID, kind: .session, title: session.label,
                 sessionID: session.sessionID, host: host)
             let id = try open(candidate, clientID: clientID)
-            try history.record(id, host: host, clientID: clientID, server: client.target.server, visits: visits)
+            recordHistory(id, host: host, clientID: clientID, visits: visits)
             return id
         }
-        throw ReshError("No previous session in resh's history. Open two sessions through resh first.")
+        return nil
+    }
+
+    private func lockHistory() -> FileLock? {
+        do { return try FileLock(url: history.lockURL, wait: false) }
+        catch { DebugLog.shared.record(error, source: "history:lock"); return nil }
+    }
+
+    private func loadHistory() -> [SessionHistory.Visit] {
+        do { return try history.load() }
+        catch { DebugLog.shared.record(error, source: "history:read"); return [] }
+    }
+
+    private func recordHistory(_ sessionID: String, host: RexHost?, clientID: String, visits: [SessionHistory.Visit]) {
+        do { try history.record(sessionID, host: host, clientID: clientID, server: client.target.server, visits: visits) }
+        catch { DebugLog.shared.record(error, source: "history:write") }
     }
 
     private func create(path: String, clientID: String, name: String, startupCommand: String?,
@@ -139,17 +151,17 @@ public actor ReshService {
         records.append(SessionRecord(server: registryKey, path: path, sessionID: sessionID))
         try registry.save(records)
         do { try client.select(sessionID, clientID: clientID) }
-        catch { throw ReshError("Created ‘\(label)’, but could not switch Rex to it. Retrying will reuse it.\n\(error.localizedDescription)") }
+        catch {
+            throw ReshError("Created ‘\(label)’, but could not switch Rex to it. Retrying will reuse it.\n\(error.localizedDescription)",
+                userMessage: (error as? ReshError)?.userMessage)
+        }
         return sessionID
     }
 
-    /// Ensures the session is absent; returns a warning only if registry cleanup fails afterwards.
-    public func delete(sessionID: String, host: RexHost? = nil) throws -> String? {
+    /// A successful return confirms absence. Registry cleanup is optional.
+    public func delete(sessionID: String, host: RexHost? = nil) throws {
         let dataClient = host.map(client.at) ?? client
         let registryKey = host?.id ?? client.target.server
-        let lock = try FileLock(url: registry.directory.appendingPathComponent("create.lock"))
-        defer { withExtendedLifetime(lock) {} }
-        let records = try registry.load()
         do {
             _ = try dataClient.command(["kill", sessionID])
         } catch {
@@ -162,10 +174,12 @@ public actor ReshService {
             if sessions.contains(where: { $0.sessionID == sessionID }) { throw deletionError }
         }
         do {
+            let lock = try FileLock(url: registry.directory.appendingPathComponent("create.lock"), wait: false)
+            defer { withExtendedLifetime(lock) {} }
+            let records = try registry.load()
             try registry.save(records.filter { $0.server != registryKey || $0.sessionID != sessionID })
-            return nil
         } catch {
-            return "The session is closed, but its registry entry could not be removed.\n\(error.localizedDescription)"
+            DebugLog.shared.record(error, source: "registry:cleanup")
         }
     }
 }

@@ -14,7 +14,6 @@ final class SearchModel: ObservableObject {
     @Published private(set) var isOpening = false
     @Published private(set) var isConfigurationReady = true
     @Published var error: String?
-    @Published private(set) var diagnostic: String?
     @Published var theme: RexTheme
     @Published private(set) var results: [Candidate] = []
     @Published private(set) var attentionSessionIDs = Set<String>()
@@ -62,7 +61,11 @@ final class SearchModel: ObservableObject {
         self.snapshotProvider = snapshotProvider ?? RexDataConnection(tools: tools)
         self.readPreferences = readPreferences
         self.readTheme = readTheme
-        self.theme = try readTheme(tools.rexApp, Self.systemIsDark)
+        do { self.theme = try readTheme(tools.rexApp, Self.systemIsDark) }
+        catch {
+            self.theme = .fallback(systemIsDark: Self.systemIsDark)
+            DebugLog.shared.record(error, source: "theme")
+        }
         sessionSnapshot = ReshService.candidates(from: sessions)
         sessionRanks = Dictionary(recentSessionIDs.enumerated().map { ($0.element, $0.offset) }, uniquingKeysWith: min)
         scope = configuration.initialSource
@@ -79,10 +82,7 @@ final class SearchModel: ObservableObject {
     }
     var sessionCount: Int { allSessions.count }
     var showsHosts: Bool { !hosts.isEmpty }
-    var displayedError: String? {
-        let messages = [error, diagnostic].compactMap { $0 }
-        return messages.isEmpty ? nil : messages.joined(separator: "\n")
-    }
+    var displayedError: String? { error }
     var panelHeight: CGFloat { PanelLayout.height(resultCount: results.count, hasError: displayedError != nil) }
     var canRetry: Bool { configurationError == nil }
     var emptyMessage: String {
@@ -136,7 +136,7 @@ final class SearchModel: ObservableObject {
         sessionSnapshot = []; sessionRanks = [:]; search = FuzzyMatcher([])
         sourceSnapshots = [:]
         rexAppPID = nil
-        diagnostics = [:]; diagnostic = nil
+        diagnostics = [:]
         configurationError = nil
         isConfigurationReady = false
         isOpening = false
@@ -183,7 +183,10 @@ final class SearchModel: ObservableObject {
         }
         let entries = SourceLoader(tools: tools).availableEntries(scope,
             configuration: configuration, sessions: allSessions, snapshots: snapshots)
-        if entries != search.entries { search = FuzzyMatcher(entries, reusing: search) }
+        if entries != search.entries {
+            DebugLog.shared.record("\(scope.rawValue): \(entries.count) entries from \(hosts.count + 1) hosts", source: "results")
+            search = FuzzyMatcher(entries, reusing: search)
+        }
         updateResults()
         selection = selectedID.flatMap { id in results.firstIndex { $0.id == id } }
             ?? min(previousSelection, max(0, results.count - 1))
@@ -382,20 +385,20 @@ final class SearchModel: ObservableObject {
                 if refreshSessions {
                     let provider = snapshotProvider, rexAppPID = rexAppPID
                     let target = rexAppPID == nil ? service.target : RexTarget(server: service.target.server)
-                    let snapshot = try await Task.detached { try provider.snapshot(target: target, rexAppPID: rexAppPID) }.value
-                    guard generation == request else { return }
-                    service = ReshService(client: RexClient(tools: tools,
-                        target: RexTarget(clientID: snapshot.client, server: target.server)))
                     do {
+                        let snapshot = try await Task.detached { try provider.snapshot(target: target, rexAppPID: rexAppPID) }.value
+                        guard generation == request else { return }
+                        service = ReshService(client: RexClient(tools: tools,
+                            target: RexTarget(clientID: snapshot.client, server: target.server)))
                         let recent = try await service.recentSessionIDs()
                         guard generation == request else { return }
                         sessionRanks = Dictionary(recent.enumerated().map { ($0.element, $0.offset) }, uniquingKeysWith: min)
-                        reportDiagnostic(nil, source: "history")
+                        sessionSnapshot = ReshService.candidates(from: snapshot.sessions)
+                        reportDiagnostic(nil, source: "connection")
                     } catch {
                         guard generation == request else { return }
-                        reportDiagnostic(error, source: "history")
+                        reportDiagnostic(error, source: "connection")
                     }
-                    sessionSnapshot = ReshService.candidates(from: snapshot.sessions)
                     showAvailableEntries()
                 }
                 let loader = SourceLoader(tools: tools), sessions = sessionSnapshot
@@ -412,7 +415,7 @@ final class SearchModel: ObservableObject {
                 refreshEntries()
             } catch {
                 guard generation == request else { return }
-                if !(error is CancellationError) { self.error = error.localizedDescription }
+                if !(error is CancellationError) { reportDiagnostic(error, source: "source:\(scope.rawValue)") }
             }
             isLoading = false
         }
@@ -436,12 +439,26 @@ final class SearchModel: ObservableObject {
     func openSelection() {
         guard isConfigurationReady, !isConnecting, let candidate = selected else { return }
         isConnecting = true; error = nil
+        let request = generation, service = service
         Task {
             do {
                 try await service.connect(candidate)
+                guard generation == request else { return }
                 onDismiss?(true)
             } catch {
-                self.error = error.localizedDescription
+                guard generation == request else { return }
+                reportDiagnostic(error, source: "open:\(candidate.id)")
+                self.error = (error as? ReshError)?.userMessage
+                if self.error == nil {
+                    if candidate.sessionID != nil {
+                        do {
+                            let sessions = try await Task.detached { try service.sessions(host: candidate.host) }.value
+                            guard generation == request else { return }
+                            updateSessions(sessions, host: candidate.host)
+                        } catch { reportDiagnostic(error, source: "sessions:\(candidate.host?.id ?? "local")") }
+                    } else { load() }
+                }
+                guard generation == request else { return }
                 isConnecting = false
             }
         }
@@ -460,15 +477,19 @@ final class SearchModel: ObservableObject {
         isPresentingConfirmation = false
         guard response == .alertSecondButtonReturn else { return }
         isConnecting = true
+        let request = generation, service = service
         Task {
             do {
-                let warning = try await service.delete(sessionID: sessionID, host: selected.host)
+                try await service.delete(sessionID: sessionID, host: selected.host)
+                guard generation == request else { return }
                 if let host = selected.host { hostSessions[host.id]?.removeAll { $0.id == selected.id } }
                 else { sessionSnapshot.removeAll { $0.id == selected.id } }
                 refreshEntries()
-                isConnecting = false
-                reportDiagnostic(warning.map { ReshError($0) }, source: "registry")
-            } catch { self.error = error.localizedDescription; isConnecting = false }
+            } catch {
+                guard generation == request else { return }
+                reportDiagnostic(error, source: "close:\(selected.id)")
+            }
+            if generation == request { isConnecting = false }
         }
     }
     func refreshTheme() {
@@ -491,9 +512,10 @@ final class SearchModel: ObservableObject {
     }
 
     func reportDiagnostic(_ error: Error?, source: String) {
-        diagnostics[source] = error?.localizedDescription
-        let messages = diagnostics.keys.sorted().compactMap { diagnostics[$0] }
-        diagnostic = messages.isEmpty ? nil : messages.joined(separator: "\n")
+        let message = error?.localizedDescription
+        guard diagnostics[source] != message else { return }
+        diagnostics[source] = message
+        if let message { DebugLog.shared.record(message, source: source) }
     }
 
     func receiveAttention(_ result: Result<RexAttentionUpdate, Error>, host: RexHost? = nil) {
@@ -513,7 +535,9 @@ final class SearchModel: ObservableObject {
             reportDiagnostic(nil, source: key)
             updateSessions(sessions, host: host)
             if let host, hostFunctions[host.id] == nil, remoteTasks[host.id] == nil { loadRemoteSources() }
-        case .failure: break
+        case let .failure(error):
+            if let host { pendingHosts.remove(host.id); updateRemoteLoading() }
+            reportDiagnostic(error, source: key)
         }
     }
 

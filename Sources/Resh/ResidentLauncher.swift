@@ -13,9 +13,10 @@ struct ResidentLauncher {
     var domain: String { "gui/\(getuid())" }
     var job: String { "\(domain)/\(label)" }
 
-    func definition(executable: String, configurationPath: String?, environment: [String: String]) -> [String: Any] {
+    func definition(executable: String, configurationPath: String?, environment: [String: String], debug: Bool = false) -> [String: Any] {
         var arguments = [executable, "--standby"]
         if let configurationPath { arguments += ["--config", configurationPath] }
+        if debug { arguments.append("--debug") }
         // Do not persist arbitrary shell credentials or another pane's Rex IDs.
         let keys: Set<String> = ["PATH", "XDG_CONFIG_HOME", "RESH_REX_BIN", "RESH_REX_APP", "RESH_CONFIG"]
         return ["Label": label, "ProgramArguments": arguments,
@@ -27,7 +28,7 @@ struct ResidentLauncher {
 
     func start(executable: String, configurationPath: String?,
                environment: [String: String] = ProcessInfo.processInfo.environment,
-               restart: Bool = false) throws {
+               restart: Bool = false, debug: Bool = false) throws {
         let lock = try FileLock(url: directory.appendingPathComponent("launcher.lock"))
         defer { withExtendedLifetime(lock) {} }
         if restart { try stopHost() }
@@ -35,7 +36,7 @@ struct ResidentLauncher {
         let loaded = try command(["print", job]).status == 0
         // Only --start replaces this login session's startup arguments.
         if !loaded {
-            let definition = definition(executable: executable, configurationPath: configurationPath, environment: environment)
+            let definition = definition(executable: executable, configurationPath: configurationPath, environment: environment, debug: debug)
             let data = try PropertyListSerialization.data(fromPropertyList: definition, format: .xml, options: 0)
             try data.write(to: plistURL, options: .atomic)
             try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: plistURL.path)

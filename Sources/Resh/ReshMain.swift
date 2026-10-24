@@ -10,6 +10,7 @@ private struct Options {
     var last = false
     var name: String?
     var diagnose = false
+    var debug = false
     var help = false
     var standby = false
     var quit = false
@@ -34,6 +35,7 @@ private struct Options {
             case "--last": last = true
             case "--name": name = try value()
             case "--diagnose": diagnose = true
+            case "--debug": debug = true
             case "--standby": standby = true
             case "--quit": quit = true
             case "--status": status = true
@@ -85,6 +87,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
                 guard let self else { return }
                 if self.openingID != nil { self.dataConnection.stop() }
                 self.openingID = nil
+                DebugLog.shared.setEnabled(self.options.debug)
             }
             host = try LauncherHost()
             host?.onRequest = { [weak self] request in self?.handle(request) ?? ["error": "Host is stopping."] }
@@ -97,7 +100,10 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let self, !self.isStopping else { return }
             if available {
                 let connection = self.dataConnection
-                self.warmupTask = Task.detached { try? connection.warmup() }
+                self.warmupTask = Task.detached {
+                    do { try connection.warmup() }
+                    catch { DebugLog.shared.record(error, source: "connection:warmup") }
+                }
             } else {
                 self.warmupTask?.cancel(); self.warmupTask = nil
                 self.dataConnection.stop()
@@ -146,8 +152,10 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
     private func open(_ request: LauncherRequest) -> Bool {
         guard !isStopping, openingID == nil, let controller,
               !controller.model.isConnecting, !controller.model.isPresentingConfirmation else { return false }
+        DebugLog.shared.setEnabled(request.debug ?? options.debug)
+        DebugLog.shared.record("Opening panel", source: "panel")
         if controller.panel.isVisible, controller.model.displayedError == nil,
-           request.client == nil, request.server == nil, request.config == nil {
+           request.client == nil, request.server == nil, request.config == nil, request.debug == nil {
             controller.panel.makeKeyAndOrderFront(nil)
             return true
         }
@@ -206,6 +214,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
                 "nativeHotkeyStatus": hotkey?.registrationStatus ?? 0]
     }
     private func fail(_ error: Error) {
+        DebugLog.shared.record(error, source: "startup")
         let alert = NSAlert(error: error)
         alert.runModal()
         NSApp.terminate(nil)
@@ -231,20 +240,25 @@ struct ReshMain {
     static func main() {
         do {
             let options = try Options(Array(CommandLine.arguments.dropFirst()))
+            DebugLog.shared.setEnabled(options.debug)
+            if options.debug {
+                FileHandle.standardError.write(Data(("resh: Debug log: \(DebugLog.shared.url.path)\n").utf8))
+            }
             if options.help {
                 print("""
                 resh — native, sesh-inspired session/folder picker for Rex
 
-                resh [--client CLIENT_ID] [--server ADDRESS]
+                resh [--client CLIENT_ID] [--server ADDRESS] [--debug]
                 resh --connect DIRECTORY [--client CLIENT_ID]
                 resh --last [--client CLIENT_ID]
                 resh --name DIRECTORY
                 resh --diagnose
                 resh --status | --quit
-                resh --start [--config FILE]
+                resh --start [--config FILE] [--debug]
                 resh --check-config [--config FILE]
 
                 Config: ~/.config/resh/config.toml (or $RESH_CONFIG / --config FILE)
+                --debug: write diagnostics to ~/Library/Logs/resh/debug.log
 
                 ⌘1 Sessions · ⌘2 All · ⌘3 Recent folders · ⌘4 Find folders
                 ↑/↓ or Tab/Shift-Tab navigate · Return open · Esc or Ctrl+[ dismiss
@@ -260,7 +274,8 @@ struct ReshMain {
                 return
             }
             if !options.standby, options.connect == nil, !options.last, !options.diagnose, options.name == nil {
-                var request = LauncherRequest(client: options.client, server: options.server, config: configURL?.path)
+                var request = LauncherRequest(client: options.client, server: options.server, config: configURL?.path,
+                    debug: options.debug ? true : nil)
                 if options.quit {
                     try ResidentLauncher().stop()
                     print("{\"running\":false}")
@@ -268,7 +283,7 @@ struct ReshMain {
                 }
                 if options.status { request.operation = "status" }
                 if options.start {
-                    try LauncherIPC.launchHost(configurationPath: configURL?.path, restart: true)
+                    try LauncherIPC.launchHost(configurationPath: configURL?.path, restart: true, debug: options.debug)
                     request.operation = "status"
                 }
                 var response = try LauncherIPC.send(request)
@@ -297,7 +312,8 @@ struct ReshMain {
                     do {
                         let result: [String: Any]
                         if options.last {
-                            result = ["session_id": try await service.connectLast()]
+                            guard let id = try await service.connectLast() else { exit(0) }
+                            result = ["session_id": id]
                         } else if let path = options.connect {
                             let configuration = try ConfigurationFile.load(configURL)
                             let project = configuration.projects.first { $0.name == path } ?? configuration.project(at: path)
@@ -333,6 +349,7 @@ struct ReshMain {
         } catch { report(error); exit(1) }
     }
     nonisolated private static func report(_ error: Error) {
+        DebugLog.shared.record(error, source: "cli")
         FileHandle.standardError.write(Data(("resh: " + error.localizedDescription + "\n").utf8))
     }
 }

@@ -44,14 +44,6 @@ struct AttentionTests {
         #expect(try RexAttention.unseenSessionIDs(in: records, preferences: preferences()) == ["s", "another"])
     }
 
-    @Test func missingOrChangedPrivatePreferencesReportAnError() throws {
-        for preferences: [String: Any] in [[:], ["Workspace.programActivitySeen": "new-format"],
-            ["Workspace.programActivitySeen": ["receipts": [["date": "not-a-date"]]]]] {
-            #expect(throws: ReshError.self) { try RexAttention.unseenSessionIDs(in: [record()], preferences: preferences) }
-        }
-        #expect(try RexAttention.unseenSessionIDs(in: [], preferences: [:]).isEmpty)
-    }
-
     @Test func alertedIsNotAReadReceipt() throws {
         let date = try Date.ISO8601FormatStyle(includingFractionalSeconds: true).parse(time)
         let preferences: [String: Any] = ["Workspace.programActivitySeen": [

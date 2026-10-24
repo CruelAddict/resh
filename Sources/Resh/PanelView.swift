@@ -228,9 +228,7 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
         model.$query.sink { [weak self] query in
             if self?.searchField.stringValue != query { self?.searchField.stringValue = query }
         }.store(in: &subscriptions)
-        Publishers.CombineLatest(model.$error, model.$diagnostic).map { error, diagnostic in
-            [error, diagnostic].compactMap { $0 }.joined(separator: "\n")
-        }.removeDuplicates().sink { [weak self] message in
+        model.$error.map { $0 ?? "" }.removeDuplicates().sink { [weak self] message in
             guard let self else { return }
             errorLabel.stringValue = message
             errorScroll.isHidden = message.isEmpty

@@ -8,6 +8,7 @@ struct LauncherRequest: Codable {
     var client: String?
     var server: String?
     var config: String?
+    var debug: Bool?
 }
 
 /// A small Foundation-only sender talks to the already-running native panel.
@@ -28,9 +29,9 @@ enum LauncherIPC {
         return response
     }
 
-    static func launchHost(configurationPath: String?, restart: Bool = false) throws {
+    static func launchHost(configurationPath: String?, restart: Bool = false, debug: Bool = false) throws {
         try ResidentLauncher().start(executable: URL(fileURLWithPath: CommandLine.arguments[0]).standardizedFileURL.path,
-            configurationPath: configurationPath, restart: restart)
+            configurationPath: configurationPath, restart: restart, debug: debug)
     }
 }
 

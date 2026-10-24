@@ -117,16 +117,6 @@ struct ThemeTests {
         #expect(theme.background.hex == "#336699")
         #expect(!theme.isDark && !theme.usesGlass && theme.usesTint)
     }
-    @Test func malformedOrMissingThemeFailsInsteadOfSubstitutingAPalette() {
-        #expect(throws: (any Error).self) {
-            try RexTheme.resolve(preferences: ["Workspace.darkThemeID": "selected", "Workspace.customThemes": Data("bad".utf8)],
-                builtins: Data("broken".utf8), systemIsDark: true)
-        }
-        #expect(throws: ReshError.self) {
-            try RexTheme.resolve(preferences: ["Workspace.darkThemeID": "missing"], builtins: Data("[]".utf8), systemIsDark: true)
-        }
-        #expect(RGBA(hex: "#gggggg") == nil)
-    }
     @Test func usesRexUISemanticsNotTerminalAnsiBlue() throws {
         let data = Data("""
         [{"id":"native","source":{"background":"#161616","foreground":"#eeeeee","selectionBackground":"#3a3835",
@@ -317,9 +307,7 @@ struct ServiceTests {
         let temporary = try TemporaryDirectory(), runner = FakeRunner()
         runner.sessions = [("a", "A", "/a"), ("b", "B", "/b")]
         let first = service(runner, temporary)
-        await #expect(throws: ReshError.self) { try await first.connectLast() }
         try await first.connect(session("a"))
-        await #expect(throws: ReshError.self) { try await first.connectLast() }
         try await first.connect(session("b"))
         try await first.connect(session("b"))
         let reopened = service(runner, temporary)
@@ -365,7 +353,6 @@ struct ServiceTests {
         try await first.connect(session("c"))
         #expect(try await first.recentSessionIDs() == ["c", "a"])
         #expect(try await other.recentSessionIDs() == ["b"])
-        await #expect(throws: ReshError.self) { try await other.connectLast() }
     }
 
     @Test func previousSessionKeepsLocalAndRemoteIdentitiesSeparate() async throws {

@@ -21,17 +21,15 @@ private final class AttentionUpdates: @unchecked Sendable {
     private let lock = NSLock()
     private var updates: [[RexAttentionRecord]] = []
     private var sessionUpdates: [[RexSession]] = []
-    private var failures: [String] = []
     var values: [[RexAttentionRecord]] { lock.lock(); defer { lock.unlock() }; return updates }
     var sessions: [[RexSession]] { lock.lock(); defer { lock.unlock() }; return sessionUpdates }
-    var errors: [String] { lock.lock(); defer { lock.unlock() }; return failures }
     func append(_ result: Result<RexAttentionUpdate, Error>) {
         lock.lock(); defer { lock.unlock() }
         switch result {
         case let .success(.records(records)): updates.append(records)
         case let .success(.sessions(sessions)): sessionUpdates.append(sessions)
         case .success(.hostsChanged), .success(.capabilitiesChanged): break
-        case let .failure(error): updates.append([]); failures.append(error.localizedDescription)
+        case .failure: updates.append([])
         }
     }
     func waitForCount(_ count: Int) async throws {
@@ -97,66 +95,6 @@ struct DataConnectionTests {
         #expect(updates.values[count].first?.sessionID == "new-server")
     }
 
-    @Test func attentionStreamReportsMalformedDataAndRecoversFromEOF() async throws {
-        for ending in ["print('not json',flush=True);time.sleep(30)", "sys.exit(0)"] {
-            let stub = try StubRex(body: """
-            print('{"records":[{"session_id":"s","block_id":"b","state":"done","updated_at":"2026-10-22T17:59:59Z"}]}',flush=True)
-            time.sleep(.03)
-            \(ending)
-            """)
-            let connection = RexAttentionConnection(tools: stub.tools), updates = AttentionUpdates()
-            connection.start(target: RexTarget()) { updates.append($0) }
-            defer { connection.stop() }
-            try await updates.waitForCount(ending == "sys.exit(0)" ? 3 : 2)
-            #expect(updates.values.first?.first?.state == "done")
-            if ending == "sys.exit(0)" {
-                #expect(updates.values.last?.first?.state == "done")
-                #expect(updates.errors.isEmpty)
-            } else {
-                #expect(updates.values.last?.isEmpty == true)
-                #expect(updates.errors.count == 1)
-            }
-        }
-    }
-
-    @Test func unavailableAttentionConnectionReportsFailure() async throws {
-        let tools = Tools(rex: "/not/rex", zoxide: nil, fd: nil, rexApp: "/not/Rex.app")
-        let connection = RexAttentionConnection(tools: tools), updates = AttentionUpdates()
-        defer { connection.stop() }
-        connection.start(target: RexTarget()) { updates.append($0) }
-        try await updates.waitForCount(1)
-        #expect(updates.values == [[]])
-        #expect(updates.errors.count == 1)
-    }
-
-    @Test func activityAPIErrorsAreNotTurnedIntoEmptySuccessfulSnapshots() async throws {
-        let stub = try StubRex(body: """
-        print('{"error":"program_status API is unavailable"}',flush=True)
-        time.sleep(30)
-        """)
-        let updates = AttentionUpdates(), connection = RexAttentionConnection(tools: stub.tools)
-        defer { connection.stop() }
-        connection.start(target: RexTarget()) { updates.append($0) }
-        try await updates.waitForCount(1)
-        #expect(updates.errors == ["program_status API is unavailable"])
-    }
-
-    @Test func failedSnapshotIsNotRetriedThroughAnotherCommand() throws {
-        let stub = try StubRex(body: """
-        print('{"ready":true}',flush=True)
-        for line in sys.stdin:
-            print('{"error":"Cannot read sessions"}',flush=True)
-        """)
-        let connection = RexDataConnection(tools: stub.tools)
-        defer { connection.stop() }
-        do {
-            _ = try connection.snapshot(target: RexTarget(clientID: "client:test"))
-            Issue.record("Expected the snapshot error")
-        } catch {
-            #expect(error.localizedDescription == "Cannot read sessions")
-        }
-    }
-
     @Test @MainActor func liveUpdatesPreserveSearchAndSelectionAndAreClearedOnHide() async throws {
         let tools = Tools(rex: "/not/rex", zoxide: nil, fd: nil, rexApp: "/not/Rex.app")
         let service = ReshService(client: RexClient(tools: tools, target: RexTarget()))
@@ -177,10 +115,6 @@ struct DataConnectionTests {
         #expect(model.sessionCount == 3 && model.results.count == 3)
         #expect(model.selected?.id == "second" && model.selected?.title == "Session renamed")
         #expect(model.query == "session")
-        let updatedResults = model.results
-        model.receiveAttention(.failure(ReshError("Unavailable")))
-        #expect(model.results == updatedResults && model.selected?.id == "second" && model.query == "session")
-        #expect(model.attentionSessionIDs == ["first"] && model.displayedError == nil)
         model.receiveAttention(.success(.sessions([])))
         #expect(model.results.isEmpty && model.sessionCount == 0 && model.selection == 0)
         model.updateAttention([record])
@@ -237,11 +171,10 @@ struct DataConnectionTests {
         #expect(!model.isLoading)
     }
 
-    @Test @MainActor func reloadUsesTheSnapshotProviderAndReportsFailureWithoutAnotherTransport() async throws {
+    @Test @MainActor func reloadUsesTheSnapshotProvider() async throws {
         let tools = Tools(rex: "/not/rex", zoxide: nil, fd: nil, rexApp: "/not/Rex.app")
         let provider = SnapshotStub([
             .success(RexSnapshot(client: "client:test", rexAppPID: 1, sessions: [RexSession(sessionID: "new", label: "Fresh")])),
-            .failure(ReshError("Snapshot connection failed")),
         ])
         let model = try SearchModel(service: ReshService(client: RexClient(tools: tools, target: RexTarget(clientID: "client:test"))),
             tools: tools, snapshotProvider: provider, readTheme: { _, _ in .fixture })
@@ -251,9 +184,6 @@ struct DataConnectionTests {
         model.reload()
         await model.loadingTask?.value
         #expect(provider.calls == 1 && model.results.map(\.title) == ["Fresh"])
-        model.reload()
-        await model.loadingTask?.value
-        #expect(provider.calls == 2 && model.error == "Snapshot connection failed")
     }
 
     @Test func explicitClientAndAppPIDUseTheSameConnectionAndBundledScript() throws {
@@ -274,21 +204,6 @@ struct DataConnectionTests {
         #expect(native.rexAppPID == action.rexAppPID && native.sessions.isEmpty && action.sessions.isEmpty)
     }
 
-    @Test @MainActor func unreadFailuresAreVisibleWithoutPretendingStatusesAreUnread() async throws {
-        let tools = Tools(rex: "/not/rex", zoxide: nil, fd: nil, rexApp: "/not/Rex.app")
-        let model = try SearchModel(service: ReshService(client: RexClient(tools: tools, target: RexTarget())),
-            tools: tools, readTheme: { _, _ in .fixture }, readPreferences: { [:] })
-        model.updateAttention([RexAttentionRecord(sessionID: "s", blockID: "b", state: "done", updatedAt: "2026-10-22T17:59:59Z")])
-        await model.attentionTask?.value
-        #expect(model.attentionSessionIDs.isEmpty)
-        #expect(model.displayedError?.contains("read receipts are unavailable") == true)
-        let diagnostic = model.displayedError
-        model.receiveAttention(.failure(ReshError("program_status is unavailable")))
-        #expect(model.displayedError == diagnostic)
-        model.receiveAttention(.success(.records([])))
-        #expect(model.displayedError == nil)
-    }
-
     @Test func optionalIntegrationChecksHaveOneBoundedDeadline() throws {
         let stub = try StubRex(body: """
         if 'actions' in sys.argv:
@@ -302,7 +217,7 @@ struct DataConnectionTests {
         #expect(ProcessInfo.processInfo.systemUptime - start < 1)
     }
 
-    @Test @MainActor func hostUpdatesPreserveSelectionAndFailuresStayIsolated() async throws {
+    @Test @MainActor func hostUpdatesPreserveSelection() async throws {
         let stub = try StubRex(body: """
         if 'hosts' in sys.argv:
             print(json.dumps({'hosts':[{'host':{'id':'host:build','label':'build','endpoints':['https://build.example']}}]}))
@@ -332,21 +247,13 @@ struct DataConnectionTests {
         model.receiveAttention(.success(.records([RexAttentionRecord(sessionID: "remote", blockID: "b", state: "done", updatedAt: "2026-10-23T12:00:00Z")])), host: host)
         await model.attentionTask?.value
         #expect(model.attentionSessionIDs == [Candidate.identity("remote", host: host)])
-        let results = model.results, sources = model.visibleSources.map(\.id)
-        let loading = model.isRemoteLoading, diagnostic = model.displayedError
-        model.receiveAttention(.failure(ReshError("Host unavailable")), host: host)
-        #expect(model.results == results && model.query == "api build" && model.selected?.id == selectedID)
-        #expect(model.sessionCount == 3 && model.attentionSessionIDs == [Candidate.identity("remote", host: host)])
-        #expect(model.displayedError == diagnostic && model.isRemoteLoading == loading)
-        #expect(model.visibleSources.map(\.id) == sources)
-        #expect(model.showsHosts)
         model.receiveAttention(.success(.sessions([RexSession(sessionID: "new", label: "api")])), host: host)
         #expect(model.sessionCount == 3)
         for _ in 0..<200 where model.visibleSources.map(\.id) != [.sessions] { try await Task.sleep(for: .milliseconds(10)) }
         #expect(model.visibleSources.map(\.id) == [.sessions])
     }
 
-    @Test(arguments: ["none", "local", "remote", "projects", "unknown", "custom"])
+    @Test(arguments: ["none", "local", "remote", "projects", "custom"])
     @MainActor func sourceAvailability(_ scenario: String) async throws {
         let stub = try StubRex(body: """
         import pathlib
@@ -355,8 +262,6 @@ struct DataConnectionTests {
         elif 'actions' in sys.argv:
             print(json.dumps({'actions':[] if sys.argv[sys.argv.index('--server')+1]=='first' else [{'name':'resh_info','kind':'lua'},{'name':'resh_query','kind':'lua'}]}))
         elif 'resh_info' in sys.argv:
-            if '\(scenario)'=='unknown':
-                sys.stderr.write('Unavailable');sys.exit(1)
             enabled='\(scenario)'=='remote' and not pathlib.Path(__file__+'.disabled').exists()
             print(json.dumps({'version':1,'functions':['resolve','zoxide'] if enabled else []}))
         else:
@@ -375,13 +280,11 @@ struct DataConnectionTests {
         case "local": expected = [.sessions, .find]
         case "remote": expected = [.sessions, .all, .directories]
         case "projects": expected = [.sessions, .all, .configs]
-        case "unknown": expected = [.sessions, .all, .directories, .find]
         default: expected = [.sessions]
         }
         func waitForSources(_ sources: [SearchScope]) async throws {
             for _ in 0..<200 {
-                if model.visibleSources.map(\.id) == sources,
-                   scenario != "unknown" || model.diagnostic?.contains("Unavailable") == true { return }
+                if model.visibleSources.map(\.id) == sources { return }
                 try await Task.sleep(for: .milliseconds(10))
             }
             Issue.record("Source availability did not update")
@@ -395,7 +298,7 @@ struct DataConnectionTests {
             model.changeScope(.directories)
             await model.loadingTask?.value
             for _ in 0..<200 where model.isRemoteLoading { try await Task.sleep(for: .milliseconds(10)) }
-            #expect(model.results.isEmpty && model.visibleSources.map(\.id) == expected && model.displayedError == nil)
+            #expect(model.results.isEmpty && model.visibleSources.map(\.id) == expected)
             try "".write(to: stub.directory.appendingPathComponent("rex.disabled"), atomically: true, encoding: .utf8)
             let host = try #require(model.hosts.first { $0.label == "second" })
             model.receiveAttention(.success(.capabilitiesChanged), host: host)

@@ -8,22 +8,6 @@ import Testing
 @Suite("Native panel", .serialized)
 struct PanelTests {
     @Test(.enabled(if: ProcessInfo.processInfo.environment["RESH_UI_TESTS"] == "1"))
-    @MainActor func openingErrorDoesNotStartAnotherDataPath() throws {
-        _ = NSApplication.shared
-        let tools = Tools(rex: "/not/rex", zoxide: nil, fd: nil, rexApp: "/not/Rex.app")
-        let provider = SnapshotStub([])
-        let controller = try PanelController(service: ReshService(client: RexClient(tools: tools, target: RexTarget())),
-            tools: tools, snapshotProvider: provider, readTheme: { _, _ in .fixture })
-        defer { controller.dismiss(focusRex: false) }
-        var retries = 0
-        controller.present(error: ReshError("Opening failed")) { retries += 1 }
-        #expect(controller.model.error == "Opening failed")
-        #expect(controller.model.loadingTask == nil && provider.calls == 0)
-        controller.model.reload()
-        #expect(retries == 1 && provider.calls == 0)
-    }
-
-    @Test(.enabled(if: ProcessInfo.processInfo.environment["RESH_UI_TESTS"] == "1"))
     @MainActor func sessionAttentionDotLayoutAndReuse() {
         _ = NSApplication.shared
         let cell = SessionCellView(frame: NSRect(x: 0, y: 0, width: 200, height: 27))

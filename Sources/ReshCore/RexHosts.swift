@@ -56,7 +56,9 @@ public struct RexRemote: Sendable {
         struct Info: Decodable { let version: Int; let functions: [String] }
         let remaining = deadline - ProcessInfo.processInfo.systemUptime
         guard remaining > 0 else { throw ReshError("The resh integration check timed out.") }
-        let info = try JSONDecoder().decode(Info.self, from: client.command(["do", "resh_info", "--json"], timeout: remaining))
+        let data = try client.command(["do", "resh_info", "--json"], timeout: remaining)
+        DebugLog.shared.record(String(decoding: data, as: UTF8.self), source: "capabilities:\(client.target.server)")
+        let info = try JSONDecoder().decode(Info.self, from: data)
         guard info.version == 1 else { throw ReshError("Unsupported resh integration version: \(info.version). Expected 1.") }
         return Set(info.functions)
     }
@@ -100,6 +102,8 @@ public struct RexRemote: Sendable {
         var arguments = arguments
         arguments["fn"] = function
         let json = String(decoding: try JSONSerialization.data(withJSONObject: arguments), as: UTF8.self)
-        return try client.command(["do", "resh_query", "--args", json, "--json"], timeout: 5)
+        let data = try client.command(["do", "resh_query", "--args", json, "--json"], timeout: 5)
+        DebugLog.shared.record(String(decoding: data, as: UTF8.self), source: "source:\(client.target.server):\(function)")
+        return data
     }
 }

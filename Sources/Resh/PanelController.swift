@@ -58,8 +58,8 @@ final class PanelController: NSObject, NSWindowDelegate {
             self.updateRemoteConnections(hosts)
         }.store(in: &subscriptions)
         model.$theme.dropFirst().sink { [weak self] theme in self?.apply(theme: theme) }.store(in: &subscriptions)
-        Publishers.CombineLatest3(model.$results, model.$error, model.$diagnostic).dropFirst().sink { [weak self] entries, error, diagnostic in
-            self?.resize(resultCount: entries.count, hasError: error != nil || diagnostic != nil)
+        Publishers.CombineLatest(model.$results, model.$error).dropFirst().sink { [weak self] entries, error in
+            self?.resize(resultCount: entries.count, hasError: error != nil)
         }.store(in: &subscriptions)
         apply(theme: model.theme)
         if let picker { panel.makeFirstResponder(picker.searchField) }

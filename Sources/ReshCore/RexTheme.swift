@@ -39,6 +39,16 @@ public struct RexTheme: Codable, Equatable, Sendable {
     public var attentionColor: RGBA { info }
     public var panelBackground: RGBA { surface }
 
+    public static func fallback(systemIsDark: Bool) -> RexTheme {
+        let background = systemIsDark ? RGBA(red: 0.12, green: 0.12, blue: 0.12) : RGBA(red: 0.94, green: 0.94, blue: 0.94)
+        let foreground = systemIsDark ? RGBA(red: 0.95, green: 0.95, blue: 0.95) : RGBA(red: 0.1, green: 0.1, blue: 0.1)
+        let selection = systemIsDark ? RGBA(red: 0.3, green: 0.3, blue: 0.3) : RGBA(red: 0.78, green: 0.84, blue: 0.94)
+        let accent = RGBA(red: 0.04, green: 0.52, blue: 1)
+        return RexTheme(name: "System", isDark: systemIsDark, usesGlass: true, usesTint: false,
+            background: background, foreground: foreground,
+            selection: selection, accent: accent, surface: background, info: accent)
+    }
+
     public static func preferences(keys: [String]? = nil) -> [String: Any] {
         let domain = "com.superlogical.rex" as CFString
         CFPreferencesAppSynchronize(domain)

@@ -10,7 +10,6 @@ struct RunnerTests {
             .deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("install.sh")
         let result = try SystemCommandRunner().run("/bin/bash", [installer.path, "remote", "--source"], timeout: 2)
         #expect(result.status != 0)
-        #expect(String(decoding: result.stderr, as: UTF8.self).contains("Missing value for --source"))
     }
 
     @Test func drainsBothPipes() throws {

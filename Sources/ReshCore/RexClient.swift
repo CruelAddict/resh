@@ -30,13 +30,31 @@ public struct RexClient: Sendable {
     }
 
     public func command(_ arguments: [String], timeout: TimeInterval = 5) throws -> Data {
+        let operation = arguments.prefix { $0 != "--args" && !$0.hasPrefix("{") }.joined(separator: " ")
+        DebugLog.shared.record(operation, source: "rex:\(target.server)")
         let result = try runner.run(tools.rex,
             ["--autostart=false", "--timeout", "\(timeout)s", "--server", target.server] + arguments, timeout: timeout)
         guard result.status == 0 else {
             let message = String(decoding: result.stderr, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-            throw ReshError(message.isEmpty ? "Rex command failed (\(result.status))." : message)
+            let error = ReshError(message.isEmpty ? "Rex command failed (\(result.status))." : message,
+                userMessage: Self.userMessage(for: message, operation: operation))
+            DebugLog.shared.record(error, source: "rex:\(target.server):\(operation)")
+            throw error
         }
         return result.stdout
+    }
+
+    // Only recognized, actionable refusals belong in the picker, never arbitrary stderr.
+    private static func userMessage(for message: String, operation: String) -> String? {
+        let text = message.lowercased()
+        if operation.contains("do session.select"), text.contains("remote control"), text.contains("disabled") || text.contains("enable") {
+            return "Enable Remote Control in Rex Settings → Rex Server to switch sessions."
+        }
+        if operation == "api call session.create",
+           text.contains("too many sessions") || text.contains("session limit") || text.contains("maximum number of sessions") {
+            return "Rex’s session limit has been reached. Close a session before creating another."
+        }
+        return nil
     }
     public func api(_ method: String, _ arguments: [String: Any]) throws -> Data {
         let json = String(decoding: try JSONSerialization.data(withJSONObject: arguments), as: UTF8.self)

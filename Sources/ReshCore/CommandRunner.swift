@@ -16,7 +16,8 @@ public struct CommandResult: Sendable {
 
 public struct ReshError: LocalizedError, Sendable {
     public let message: String
-    public init(_ message: String) { self.message = message }
+    public let userMessage: String?
+    public init(_ message: String, userMessage: String? = nil) { self.message = message; self.userMessage = userMessage }
     public var errorDescription: String? { message }
 }
 

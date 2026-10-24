@@ -123,10 +123,13 @@ resh (including `--connect` and `--last`). Unknown sessions keep Rex's original
 order. Search still ranks by match quality, using recency to break ties; folder
 providers retain their own order. History is saved in `history.json` alongside
 `sessions.json`, separately for each calling Rex client and home server.
+History is best-effort: an unreadable or unwritable history never prevents a
+session from opening or turns a completed switch into a failure.
 
 `resh --last [--client CLIENT_ID]` switches back without opening the picker.
 Repeated calls toggle between the last two sessions opened through resh; closed
-sessions are skipped. Open at least two sessions through resh to start a history.
+sessions are skipped. With no available previous session, it does nothing and
+exits successfully without output.
 The installed Lua adapter provides the `resh_last` action, which can be bound in
 Rex's `init.lua`, for example:
 
@@ -140,7 +143,17 @@ resh does not poll Rex's private preferences or infer focus from attachments.
 
 The normal panel opens immediately, with an inline spinner while data arrives;
 there is no delayed loading presentation. Remote hosts never hold back local rows.
-Errors wrap and scroll in one compact, selectable field without expanding the panel.
+Configuration errors, failed initial connections and actionable Rex refusals
+(such as disabled Remote Control or a session limit) appear inside the panel.
+Optional-source, remote-transport, protocol, history, theme and unread-receipt
+failures never produce user notifications. A failed source does not block other
+results. Missing providers hide their source buttons once absence is confirmed
+on every host; a failed capability check is not evidence of absence.
+
+Closing a session is quiet after confirmation. Already-closed sessions count as
+success; failed registry cleanup is ignored. If closure cannot be confirmed, the
+row is retained until Rex supplies an updated snapshot, rather than removed
+optimistically. Session-changing commands are never automatically repeated.
 
 Configuration, filesystem providers and search-index preparation run in the
 background. Combined sources show available sessions/projects while providers
@@ -183,6 +196,24 @@ There is no separate warmup step or persistent custom-config selection in resh.
 `resh --status` reports the host PID, connection state, data CLI PID, shutdown state
 and native hotkey registration. It does not start a stopped host.
 
+### Debugging
+
+`resh --debug` opens the normal picker with diagnostics for that opening. No extra
+error UI is enabled. Diagnostics are written as JSON lines to
+`~/Library/Logs/resh/debug.log`, not the resident process's discarded stderr.
+The next opening without `--debug` returns to quiet mode.
+
+Use `resh --last --debug` or `resh --connect DIRECTORY --debug` to diagnose a CLI
+operation. To include startup and native-hotkey openings, add `--debug` to the
+existing `resh --start` command (preserving its `--config` argument, if any), then
+reload Rex's config. Remove it and reload again to stop startup-level logging.
+
+The log records operations, sources/hosts, protocol replies (limited to 8192
+characters per message), failures and result counts. It can contain session names
+and paths; review it before sharing. Without `--debug`, no debug log is opened or written.
+
+### Session activity
+
 Sessions with an unseen result, a request for user action, or an error show a small
 dot beside their name. Running agents and plain idle agents have no indicator;
 an idle agent whose completion Rex has announced keeps its unread dot. Activity arrives
@@ -194,10 +225,13 @@ Read receipts are read from Rex's local `Workspace.programActivitySeen` preferen
 so viewing activity in Rex removes the corresponding dot (within a second while
 the panel is open). resh never writes read receipts or marks activity read merely
 because the picker is open. This reads a private preference format, not an exported
-Rex unread-notifications API: unavailable or malformed receipts show an explicit error
-and no dots. A missing program-status API or failed activity stream is also reported.
+Rex unread-notifications API: unavailable or malformed receipts silently disable
+the dots. Failed activity streams preserve the last known state while recovering;
+technical failures are available only through `--debug`.
 Announced idle reports and read receipts are matched at Rex's millisecond precision. The dot is a native
 SF Symbol using Rex's theme `info` color, not a copied private Rex UI component.
+If theme reading fails, resh retains the last valid palette or uses a neutral
+system-light/dark fallback at startup; this never prevents the picker from opening.
 
 ## Naming and reuse
 
