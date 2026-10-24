@@ -40,15 +40,11 @@ public actor ReshService {
     @discardableResult
     public func connect(_ candidate: Candidate) throws -> String {
         let targetClient = try client.resolveClient().id
-        return try connect(candidate, clientID: targetClient)
-    }
-
-    private func connect(_ candidate: Candidate, clientID: String) throws -> String {
         let lock = lockHistory()
         defer { withExtendedLifetime(lock) {} }
         let visits = loadHistory()
-        let sessionID = try open(candidate, clientID: clientID)
-        if lock != nil { recordHistory(sessionID, host: candidate.host, clientID: clientID, visits: visits) }
+        let sessionID = try open(candidate, clientID: targetClient)
+        if lock != nil { recordHistory(sessionID, host: candidate.host, clientID: targetClient, visits: visits) }
         return sessionID
     }
 
@@ -74,13 +70,6 @@ public actor ReshService {
             startupCommand: candidate.startupCommand, dataClient: client, registryKey: client.target.server)
         if let zoxide = client.tools.zoxide { _ = try? client.runner.run(zoxide, ["add", path], timeout: 3) }
         return id
-    }
-
-    @discardableResult
-    public func connect(path: String, clientID requestedClient: String? = nil, name: String? = nil, startupCommand: String? = nil) throws -> String {
-        let clientID = try requestedClient ?? client.resolveClient().id
-        return try connect(Candidate(id: path, kind: name == nil ? .directory : .project,
-            title: name ?? "", path: path, startupCommand: startupCommand), clientID: clientID)
     }
 
     /// The first entry is the last selection made by resh, not inferred app focus.

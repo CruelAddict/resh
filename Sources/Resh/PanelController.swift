@@ -25,8 +25,8 @@ final class PanelController: NSObject, NSWindowDelegate {
 
     init(service: ReshService, tools: Tools, sessions: [RexSession] = [], configurationURL: URL? = nil,
          snapshotProvider: (any RexSnapshotProviding)? = nil,
-         readTheme: @escaping @Sendable (String, Bool) throws -> RexTheme = { try RexTheme.read(rexApp: $0, systemIsDark: $1) }) throws {
-        self.model = try SearchModel(service: service, tools: tools, sessions: sessions, configurationURL: configurationURL,
+         readTheme: @escaping @Sendable (String, Bool) throws -> RexTheme = { try RexTheme.read(rexApp: $0, systemIsDark: $1) }) {
+        self.model = SearchModel(service: service, tools: tools, sessions: sessions, configurationURL: configurationURL,
             snapshotProvider: snapshotProvider, readTheme: readTheme)
         self.attentionConnection = RexEventConnection(tools: tools)
         panel = LauncherPanel(contentRect: NSRect(x: 0, y: 0, width: PanelLayout.width,
@@ -130,7 +130,7 @@ final class PanelController: NSObject, NSWindowDelegate {
         isDismissing = false
         if let monitor { NSEvent.removeMonitor(monitor); self.monitor = nil }
         themeTimer?.invalidate()
-        resize(resultCount: model.results.count, hasError: model.displayedError != nil)
+        resize(resultCount: model.results.count, hasError: model.error != nil)
         if !panel.isVisible { position() }
         panel.makeKeyAndOrderFront(nil)
         if let picker { panel.makeFirstResponder(picker.searchField) }

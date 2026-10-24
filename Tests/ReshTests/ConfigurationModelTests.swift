@@ -11,7 +11,7 @@ struct ConfigurationModelTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let url = root.appendingPathComponent("config.toml")
         let tools = Tools(rex: "/not/rex", zoxide: nil, fd: nil, rexApp: "/not/Rex.app")
-        let model = try SearchModel(service: ReshService(client: RexClient(tools: tools, target: RexTarget())),
+        let model = SearchModel(service: ReshService(client: RexClient(tools: tools, target: RexTarget())),
             tools: tools, sessions: [RexSession(sessionID: "s", label: "Live session")], configurationURL: url,
             readTheme: { _, _ in .fixture })
         defer { model.clear() }
@@ -69,7 +69,7 @@ struct ConfigurationModelTests {
         timeout = 20
         """.write(to: url, atomically: true, encoding: .utf8)
         let tools = Tools(rex: "/not/rex", zoxide: nil, fd: nil, rexApp: "/not/Rex.app")
-        let model = try SearchModel(service: ReshService(client: RexClient(tools: tools, target: RexTarget())), tools: tools,
+        let model = SearchModel(service: ReshService(client: RexClient(tools: tools, target: RexTarget())), tools: tools,
             sessions: [RexSession(sessionID: "s", label: "Live")], configurationURL: url, readTheme: { _, _ in .fixture })
         model.loadInitial()
         for _ in 0..<200 {
@@ -118,7 +118,7 @@ struct ConfigurationModelTests {
         command = ["/bin/sh", "-c", "touch started; while [ ! -f ready ]; do sleep 0.01; done; cat folders.txt"]
         """.write(to: url, atomically: true, encoding: .utf8)
         let tools = Tools(rex: "/not/rex", zoxide: nil, fd: nil, rexApp: "/not/Rex.app")
-        let model = try SearchModel(service: ReshService(client: RexClient(tools: tools, target: RexTarget())), tools: tools,
+        let model = SearchModel(service: ReshService(client: RexClient(tools: tools, target: RexTarget())), tools: tools,
             sessions: [RexSession(sessionID: "s", label: "Test session")], configurationURL: url, readTheme: { _, _ in .fixture })
         defer { model.clear() }
         model.loadInitial()
@@ -151,10 +151,10 @@ struct ConfigurationModelTests {
         #expect(model.results.map(\.title) == ["Test project", "test-folder-two"])
     }
 
-    @Test @MainActor func recentSessionsKeepSearchRankingAndSelection() throws {
+    @Test @MainActor func recentSessionsKeepSearchRankingAndSelection() {
         let tools = Tools(rex: "/not/rex", zoxide: nil, fd: nil, rexApp: "/not/Rex.app")
         let service = ReshService(client: RexClient(tools: tools, target: RexTarget()))
-        let model = try SearchModel(service: service, tools: tools,
+        let model = SearchModel(service: service, tools: tools,
             sessions: [RexSession(sessionID: "a", label: "Session"), RexSession(sessionID: "b", label: "Session"),
                        RexSession(sessionID: "c", label: "Other"), RexSession(sessionID: "d", label: "Session")],
             recentSessionIDs: ["b", "a"], readTheme: { _, _ in .fixture })

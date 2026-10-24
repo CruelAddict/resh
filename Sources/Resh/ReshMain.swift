@@ -88,7 +88,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         do {
-            controller = try PanelController(service: service, tools: tools,
+            controller = PanelController(service: service, tools: tools,
                 configurationURL: options.config.map { URL(fileURLWithPath: $0) },
                 snapshotProvider: dataConnection)
             controller?.onDismiss = { [weak self] in
@@ -161,7 +161,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         DebugLog.shared.setEnabled(request.debug ?? options.debug)
         DebugLog.shared.record("Opening panel", source: "panel")
         let started = ProcessInfo.processInfo.systemUptime
-        if controller.panel.isVisible, controller.model.displayedError == nil,
+        if controller.panel.isVisible, controller.model.error == nil,
            request.client == nil, request.server == nil, request.config == nil, request.debug == nil {
             controller.panel.makeKeyAndOrderFront(nil)
             return true
@@ -225,7 +225,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
                  "dataProcessID": controller.model.catalog.processID as Any? ?? NSNull(),
                  "sessions": controller.model.sessionCount,
                 "configPath": (controller.model.configurationURL ?? ConfigurationFile.url()).path,
-                "panelError": controller.model.displayedError as Any? ?? NSNull(),
+                "panelError": controller.model.error as Any? ?? NSNull(),
                 "nativeHotkeyRegistered": hotkey?.isRegistered ?? false,
                 "nativeHotkeyStatus": hotkey?.registrationStatus ?? 0]
     }

@@ -95,11 +95,11 @@ struct DataConnectionTests {
         #expect(updates.values[count].first?.sessionID == "new-server")
     }
 
-    @Test @MainActor func liveUpdatesPreserveSearchAndSelection() async throws {
+    @Test @MainActor func liveUpdatesPreserveSearchAndSelection() async {
         let tools = Tools(rex: "/not/rex", zoxide: nil, fd: nil, rexApp: "/not/Rex.app")
         let service = ReshService(client: RexClient(tools: tools, target: RexTarget()))
         let sessions = [RexSession(sessionID: "first", label: "Session one"), RexSession(sessionID: "second", label: "Session two")]
-        let model = try SearchModel(service: service, tools: tools, sessions: sessions,
+        let model = SearchModel(service: service, tools: tools, sessions: sessions,
             readTheme: { _, _ in .fixture }, readPreferences: { ["Workspace.programActivitySeen": [:]] })
         model.query = "session"; model.selection = 1
         let results = model.results
@@ -173,7 +173,7 @@ struct DataConnectionTests {
         try "".write(to: config, atomically: true, encoding: .utf8)
         let service = ReshService(client: RexClient(tools: stub.tools, target: RexTarget(clientID: "client:test")),
             registry: SessionRegistry(directory: stub.directory))
-        let model = try SearchModel(service: service, tools: stub.tools, configurationURL: config,
+        let model = SearchModel(service: service, tools: stub.tools, configurationURL: config,
             readTheme: { _, _ in .fixture })
         defer { model.clear() }
         model.startBackground()
@@ -198,12 +198,12 @@ struct DataConnectionTests {
         #expect(!model.isLoading)
     }
 
-    @Test @MainActor func reloadUsesTheSnapshotProvider() async throws {
+    @Test @MainActor func reloadUsesTheSnapshotProvider() async {
         let tools = Tools(rex: "/not/rex", zoxide: nil, fd: nil, rexApp: "/not/Rex.app")
         let provider = SnapshotStub([
             .success(RexSnapshot(client: "client:test", rexAppPID: 1, sessions: [RexSession(sessionID: "new", label: "Fresh")])),
         ])
-        let model = try SearchModel(service: ReshService(client: RexClient(tools: tools, target: RexTarget(clientID: "client:test"))),
+        let model = SearchModel(service: ReshService(client: RexClient(tools: tools, target: RexTarget(clientID: "client:test"))),
             tools: tools, snapshotProvider: provider, readTheme: { _, _ in .fixture })
         model.loadInitial()
         await model.loadingTask?.value
@@ -255,7 +255,7 @@ struct DataConnectionTests {
         """)
         let service = ReshService(client: RexClient(tools: stub.tools, target: RexTarget()))
         let local = RexSession(sessionID: "local", label: "api")
-        let model = try SearchModel(service: service, tools: stub.tools, sessions: [local],
+        let model = SearchModel(service: service, tools: stub.tools, sessions: [local],
             recentSessionIDs: ["host:build/remote", "local"],
             readTheme: { _, _ in .fixture }, readPreferences: { ["Workspace.programActivitySeen": [:]] })
         defer { model.clear() }
@@ -299,7 +299,7 @@ struct DataConnectionTests {
             : scenario == "custom" ? "source_order = ['find']\ninitial_source = 'find'\n" : ""
         try text.write(to: config, atomically: true, encoding: .utf8)
         let tools = Tools(rex: stub.tools.rex, zoxide: nil, fd: scenario == "local" ? "/usr/bin/true" : nil, rexApp: stub.tools.rexApp)
-        let model = try SearchModel(service: ReshService(client: RexClient(tools: tools, target: RexTarget())),
+        let model = SearchModel(service: ReshService(client: RexClient(tools: tools, target: RexTarget())),
             tools: tools, configurationURL: config, readTheme: { _, _ in .fixture })
         defer { model.clear() }
         let expected: [SearchScope]

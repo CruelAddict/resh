@@ -25,7 +25,7 @@ struct PanelTests {
         let tools = Tools(rex: rex.path, zoxide: nil, fd: nil, rexApp: "/not/Rex.app")
         let sessions = ["First", "Second", "Third"].map { RexSession(sessionID: $0, label: $0) }
         _ = NSApplication.shared
-        let controller = try PanelController(service: ReshService(client: RexClient(tools: tools, target: RexTarget())),
+        let controller = PanelController(service: ReshService(client: RexClient(tools: tools, target: RexTarget())),
             tools: tools, sessions: sessions, configurationURL: config, readTheme: { _, _ in .fixture })
         defer {
             controller.dismiss(focusRex: false)
@@ -96,7 +96,7 @@ struct PanelTests {
         try "".write(to: config, atomically: true, encoding: .utf8)
         defer { try? FileManager.default.removeItem(at: config) }
         _ = NSApplication.shared
-        let controller = try PanelController(service: ReshService(client: client), tools: tools, sessions: sessions, configurationURL: config)
+        let controller = PanelController(service: ReshService(client: client), tools: tools, sessions: sessions, configurationURL: config)
         defer { controller.dismiss(focusRex: false) }
         controller.show()
         await controller.model.loadingTask?.value
@@ -148,7 +148,7 @@ struct PanelTests {
         }
         let tools = Tools(rex: rex.path, zoxide: nil, fd: nil, rexApp: "/not/Rex.app")
         _ = NSApplication.shared
-        let model = try SearchModel(service: ReshService(client: RexClient(tools: tools, target: RexTarget())),
+        let model = SearchModel(service: ReshService(client: RexClient(tools: tools, target: RexTarget())),
             tools: tools, sessions: sessions, configurationURL: config, readTheme: { _, _ in .fixture },
             readPreferences: { ["Workspace.programActivitySeen": [:]] })
         defer { model.clear() }

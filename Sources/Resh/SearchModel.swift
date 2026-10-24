@@ -60,7 +60,7 @@ final class SearchModel: ObservableObject {
     init(service: ReshService, tools: Tools, sessions: [RexSession] = [], recentSessionIDs: [String] = [], configurationURL: URL? = nil,
          snapshotProvider: (any RexSnapshotProviding)? = nil,
          readTheme: @escaping @Sendable (String, Bool) throws -> RexTheme = { try RexTheme.read(rexApp: $0, systemIsDark: $1) },
-         readPreferences: @escaping @Sendable () -> [String: Any] = { RexTheme.preferences(keys: ["Workspace.programActivitySeen"]) }) throws {
+         readPreferences: @escaping @Sendable () -> [String: Any] = { RexTheme.preferences(keys: ["Workspace.programActivitySeen"]) }) {
         self.service = service; self.tools = tools
         self.catalog = SessionStore(tools: tools, service: service)
         self.configurationURL = configurationURL
@@ -95,8 +95,7 @@ final class SearchModel: ObservableObject {
     }
     var sessionCount: Int { allSessions.count }
     var showsHosts: Bool { !hosts.isEmpty }
-    var displayedError: String? { error }
-    var panelHeight: CGFloat { PanelLayout.height(resultCount: results.count, hasError: displayedError != nil) }
+    var panelHeight: CGFloat { PanelLayout.height(resultCount: results.count, hasError: error != nil) }
     var canRetry: Bool { configurationError == nil }
     var emptyMessage: String {
         if isOpening { return "Loading sessions…" }

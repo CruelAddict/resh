@@ -218,9 +218,9 @@ struct ServiceTests {
         let temporary = try TemporaryDirectory(), runner = FakeRunner()
         let folder = try temporary.folder("project")
         let service = service(runner, temporary)
-        let first = try await service.connect(path: folder)
+        let first = try await service.connect(directory(folder))
         runner.sessions[0].path = "/a/different/current/directory"
-        let second = try await service.connect(path: folder)
+        let second = try await service.connect(directory(folder))
         #expect(first == second)
         #expect(runner.creations == 1 && runner.selections.count == 2)
     }
@@ -229,16 +229,16 @@ struct ServiceTests {
         let folder = try temporary.folder("project")
         let service = service(runner, temporary)
         runner.rejectSelection = true
-        await #expect(throws: ReshError.self) { try await service.connect(path: folder) }
+        await #expect(throws: ReshError.self) { try await service.connect(directory(folder)) }
         runner.rejectSelection = false
-        _ = try await service.connect(path: folder)
+        _ = try await service.connect(directory(folder))
         #expect(runner.creations == 1)
     }
     @Test func nameCollisionDoesNotSelectWrongDirectory() async throws {
         let temporary = try TemporaryDirectory(), runner = FakeRunner()
         let folder = try temporary.folder("work/api")
         runner.sessions = [("session:other", "api", "/another/api")]
-        let id = try await service(runner, temporary).connect(path: folder)
+        let id = try await service(runner, temporary).connect(directory(folder))
         #expect(id != "session:other")
         #expect(runner.sessions.last?.label == "work/api")
     }
@@ -246,20 +246,20 @@ struct ServiceTests {
         let temporary = try TemporaryDirectory(), runner = FakeRunner()
         let folder = try temporary.folder("project")
         runner.sessions = [("session:existing", "project", folder)]
-        #expect(try await service(runner, temporary).connect(path: folder) != "session:existing")
+        #expect(try await service(runner, temporary).connect(directory(folder)) != "session:existing")
         #expect(runner.creations == 1)
     }
     @Test func unsafeCharactersStayData() async throws {
         let temporary = try TemporaryDirectory(), runner = FakeRunner()
         let folder = try temporary.folder("project; 'quoted' $HOME")
-        _ = try await service(runner, temporary).connect(path: folder)
+        _ = try await service(runner, temporary).connect(directory(folder))
         #expect(runner.sessions.last?.path == folder)
         #expect(runner.sessions.last?.label == "project; 'quoted' $HOME")
     }
     @Test func missingDirectoryDoesNotCreateSession() async throws {
         let temporary = try TemporaryDirectory(), runner = FakeRunner()
         await #expect(throws: ReshError.self) {
-            try await service(runner, temporary).connect(path: temporary.url.appendingPathComponent("missing").path)
+            try await service(runner, temporary).connect(directory(temporary.url.appendingPathComponent("missing").path))
         }
         #expect(runner.creations == 0)
     }
@@ -297,6 +297,10 @@ struct ServiceTests {
         _ = try await service.delete(sessionID: first, host: host)
         #expect(runner.serverSessions[host.server]?.isEmpty == true)
         #expect(runner.sessions.map(\.id) == ["session:local"])
+    }
+
+    private func directory(_ path: String) -> Candidate {
+        Candidate(id: path, kind: .directory, title: "", path: path)
     }
 
     private func session(_ id: String, host: RexHost? = nil) -> Candidate {

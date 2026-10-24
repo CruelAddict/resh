@@ -476,9 +476,10 @@ not the terminal's ANSI blue or text-selection color. Colors and style refresh w
 the panel is open. Glass uses native `NSGlassEffectView` on macOS 26+, with an
 `NSVisualEffectView` fallback on macOS 15. Classic or Reduce Transparency uses
 a solid theme background. This is a matching companion, not a copy of Rex's
-private material renderer. Missing or incompatible theme data is an error, not a
-substitute palette. A failed refresh keeps the last successfully read theme and
-shows the error; resh never changes Rex's settings. Unchanged refreshes reuse the
+private material renderer. Missing or incompatible theme data does not block the
+picker. Startup falls back to a neutral palette matching the system appearance.
+A failed refresh keeps the last valid palette. Theme failures appear only in
+`--debug` logs. resh never changes Rex's settings. Unchanged refreshes reuse the
 selected palette instead of rereading and parsing the full theme catalog. Cache
 inputs include Rex preferences and theme-file metadata; refresh tasks do not pile up.
 

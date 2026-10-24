@@ -153,9 +153,9 @@ private struct Document: Decodable {
     let source_order: [String]?
     let initial_source: String?
     let default_session: Defaults?
-    enum CodingKeys: String, CodingKey { case keymap, sources, session, source_order, initial_source, default_session }
+    enum CodingKeys: String, CodingKey, CaseIterable { case keymap, sources, session, source_order, initial_source, default_session }
     init(from decoder: Decoder) throws {
-        try rejectUnknown(decoder, ["keymap", "sources", "session", "source_order", "initial_source", "default_session"])
+        try rejectUnknown(decoder, CodingKeys.allCases.map(\.rawValue))
         let c = try decoder.container(keyedBy: CodingKeys.self)
         keymap = try c.decodeIfPresent([String:String].self, forKey: .keymap)
         sources = try c.decodeIfPresent([RawSource].self, forKey: .sources)
@@ -175,9 +175,9 @@ private struct RawSource: Decodable {
     let format: String?
     let sources: [String]?
     let timeout: Double?
-    enum CodingKeys: String, CodingKey { case id, title, type, paths, command, cwd, format, sources, timeout }
+    enum CodingKeys: String, CodingKey, CaseIterable { case id, title, type, paths, command, cwd, format, sources, timeout }
     init(from decoder: Decoder) throws {
-        try rejectUnknown(decoder, ["id", "title", "type", "paths", "command", "cwd", "format", "sources", "timeout"])
+        try rejectUnknown(decoder, CodingKeys.allCases.map(\.rawValue))
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decode(String.self, forKey: .id); title = try c.decodeIfPresent(String.self, forKey: .title)
         type = try c.decode(SourceDefinition.Kind.self, forKey: .type)
@@ -190,9 +190,9 @@ private struct RawProject: Decodable {
     let name: String
     let path: String
     let startup_command: String?
-    enum CodingKeys: String, CodingKey { case name, path, startup_command }
+    enum CodingKeys: String, CodingKey, CaseIterable { case name, path, startup_command }
     init(from decoder: Decoder) throws {
-        try rejectUnknown(decoder, ["name", "path", "startup_command"])
+        try rejectUnknown(decoder, CodingKeys.allCases.map(\.rawValue))
         let c = try decoder.container(keyedBy: CodingKeys.self)
         name = try c.decode(String.self, forKey: .name); path = try c.decode(String.self, forKey: .path)
         startup_command = try c.decodeIfPresent(String.self, forKey: .startup_command)
@@ -200,9 +200,9 @@ private struct RawProject: Decodable {
 }
 private struct Defaults: Decodable {
     let startup_command: String?
-    enum CodingKeys: String, CodingKey { case startup_command }
+    enum CodingKeys: String, CodingKey, CaseIterable { case startup_command }
     init(from decoder: Decoder) throws {
-        try rejectUnknown(decoder, ["startup_command"])
+        try rejectUnknown(decoder, CodingKeys.allCases.map(\.rawValue))
         startup_command = try decoder.container(keyedBy: CodingKeys.self).decodeIfPresent(String.self, forKey: .startup_command)
     }
 }
