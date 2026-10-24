@@ -161,4 +161,32 @@ struct ConfigurationModelTests {
         await model.loadingTask?.value
         #expect(model.results.map(\.title) == ["Test project", "test-folder-two"])
     }
+
+    @Test @MainActor func recentSessionsKeepSearchRankingAndSelection() throws {
+        let tools = Tools(rex: "/not/rex", zoxide: nil, fd: nil, rexApp: "/not/Rex.app")
+        let service = ReshService(client: RexClient(tools: tools, target: RexTarget()))
+        let model = try SearchModel(service: service, tools: tools,
+            sessions: [RexSession(sessionID: "a", label: "Session"), RexSession(sessionID: "b", label: "Session"),
+                       RexSession(sessionID: "c", label: "Other"), RexSession(sessionID: "d", label: "Session")],
+            recentSessionIDs: ["b", "a"], readTheme: { _, _ in .fixture })
+        defer { model.clear() }
+        #expect(model.results.map(\.id) == ["b", "a", "c", "d"])
+        model.query = "session"
+        #expect(model.results.map(\.id) == ["b", "a", "d"])
+        model.selection = 1
+        model.receiveAttention(.success(.sessions([
+            RexSession(sessionID: "d", label: "Session"), RexSession(sessionID: "a", label: "Session"),
+            RexSession(sessionID: "b", label: "Session"), RexSession(sessionID: "new", label: "Session"),
+        ])))
+        #expect(model.results.map(\.id) == ["b", "a", "d", "new"])
+        #expect(model.selected?.id == "a")
+        model.query = "other"
+        model.receiveAttention(.success(.sessions([
+            RexSession(sessionID: "a", label: "Other"), RexSession(sessionID: "b", label: "Session other"),
+        ])))
+        #expect(model.results.first?.id == "a")
+        model.prepare(service: service, sessions: [RexSession(sessionID: "a", label: "A"), RexSession(sessionID: "b", label: "B")],
+            recentSessionIDs: ["a", "b"])
+        #expect(model.results.map(\.id) == ["a", "b"])
+    }
 }

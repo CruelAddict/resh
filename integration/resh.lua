@@ -13,4 +13,17 @@ rex.action{
   end,
 }
 
+rex.action{
+  name = "resh_last",
+  title = "resh: Previous Session",
+  description = "Toggle between the last two sessions opened through resh.",
+  category = "Session",
+  run = function(ctx)
+    local result, err = rex.exec({ executable, "--last", "--client", ctx.client_id },
+      { timeout = 15 })
+    if not result then error(tostring(err), 0) end
+    if not result.ok then error(result.timed_out and "resh: session switch timed out" or result.stderr, 0) end
+  end,
+}
+
 -- Startup belongs to Rex's init.lua, alongside any --config argument.

@@ -118,6 +118,26 @@ While the panel is open, the existing activity stream also updates the session l
 on creation, removal and renaming. Combined sources keep their loaded folder rows;
 session changes do not rerun filesystem providers or change the selected row's identity.
 Hiding clears session and folder data and the query.
+Sessions use most-recently-used order, based only on successful selections through
+resh (including `--connect` and `--last`). Unknown sessions keep Rex's original
+order. Search still ranks by match quality, using recency to break ties; folder
+providers retain their own order. History is saved in `history.json` alongside
+`sessions.json`, separately for each calling Rex client and home server.
+
+`resh --last [--client CLIENT_ID]` switches back without opening the picker.
+Repeated calls toggle between the last two sessions opened through resh; closed
+sessions are skipped. Open at least two sessions through resh to start a history.
+The installed Lua adapter provides the `resh_last` action, which can be bound in
+Rex's `init.lua`, for example:
+
+```lua
+rex.bind("ctrl+[KeyA]>shift+[KeyL]", "resh_last")
+```
+
+This is Ctrl+A followed by Shift+L, including with non-Latin keyboard layouts.
+Switching through Rex's sidebar or built-in session actions is not tracked:
+resh does not poll Rex's private preferences or infer focus from attachments.
+
 The normal panel opens immediately, with an inline spinner while data arrives;
 there is no delayed loading presentation. Remote hosts never hold back local rows.
 Errors wrap and scroll in one compact, selectable field without expanding the panel.
@@ -431,8 +451,8 @@ dist/resh/resh --name "$PWD"
 dist/resh/resh --connect "$PWD" --client client:…
 ```
 
-`--diagnose` and `--name` do not create sessions; `--connect` is deliberately
-state-changing. The opt-in AppKit tests check session-title layout, unread indicators
+`--diagnose` and `--name` do not create sessions; `--connect` and `--last` are
+deliberately state-changing. The opt-in AppKit tests check session-title layout, unread indicators
 and view reuse. Synthetic rendering tests do not connect to Rex or read its preferences.
 
 Override CLI discovery with `RESH_REX_BIN`; override the Rex application bundle
@@ -459,7 +479,8 @@ To also unload the stopped session job, run
 Logout also unloads the job; the cached plist does not enable automatic login startup.
 Then remove `resh`, `resh.lua`, `resh_Resh.bundle`, `LICENSE` and `THIRD_PARTY_NOTICES.md`
 from `~/Library/Application Support/resh`. Keep `sessions.json` to retain folder/session
-identities. User configuration remains in `~/.config/resh/config.toml`.
+identities and `history.json` to retain MRU order. Remove any `resh_last` key bindings
+from Rex as well. User configuration remains in `~/.config/resh/config.toml`.
 
 ## License
 

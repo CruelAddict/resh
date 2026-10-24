@@ -314,6 +314,7 @@ struct DataConnectionTests {
         let service = ReshService(client: RexClient(tools: stub.tools, target: RexTarget()))
         let local = RexSession(sessionID: "local", label: "api")
         let model = try SearchModel(service: service, tools: stub.tools, sessions: [local],
+            recentSessionIDs: ["host:build/remote", "local"],
             readTheme: { _, _ in .fixture }, readPreferences: { ["Workspace.programActivitySeen": [:]] })
         defer { model.clear() }
         model.loadInitial()
@@ -322,6 +323,7 @@ struct DataConnectionTests {
         let host = try #require(model.hosts.first)
         model.receiveAttention(.success(.sessions([RexSession(sessionID: "remote", label: "api")])), host: host)
         #expect(model.results.count == 2 && model.showsHosts)
+        #expect(model.results.map(\.id) == ["host:build/remote", "local"])
         model.query = "api build"
         #expect(model.results.count == 1 && model.selected?.host == host && model.showsHosts)
         let selectedID = model.selected?.id

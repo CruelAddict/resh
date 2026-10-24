@@ -65,10 +65,10 @@ final class PanelController: NSObject, NSWindowDelegate {
         if let picker { panel.makeFirstResponder(picker.searchField) }
     }
 
-    func prepare(service: ReshService, snapshot: RexSnapshot, configurationURL: URL? = nil) {
+    func prepare(service: ReshService, snapshot: RexSnapshot, recentSessionIDs: [String] = [], configurationURL: URL? = nil) {
         let pendingQuery = model.isOpening ? model.query : nil
         rexAppPID = snapshot.rexAppPID
-        model.prepare(service: service, sessions: snapshot.sessions,
+        model.prepare(service: service, sessions: snapshot.sessions, recentSessionIDs: recentSessionIDs,
             configurationURL: configurationURL ?? defaultConfigurationURL, rexAppPID: snapshot.rexAppPID)
         if let pendingQuery { model.query = pendingQuery }
     }

@@ -3,8 +3,10 @@ import Foundation
 public actor ReshService {
     private let client: RexClient
     private let registry: SessionRegistry
+    private let history: SessionHistory
     public init(client: RexClient, registry: SessionRegistry = SessionRegistry()) {
         self.client = client; self.registry = registry
+        self.history = SessionHistory(directory: registry.directory)
     }
 
     public nonisolated var target: RexTarget { client.target }
@@ -18,10 +20,28 @@ public actor ReshService {
 
     public func resolveClient() throws -> (id: String, rexAppPID: Int32?) { try client.resolveClient() }
 
+    public func recentSessionIDs() throws -> [String] {
+        let clientID = try client.target.clientID ?? client.resolveClient().id
+        return try history.load().filter { $0.belongs(to: clientID, server: client.target.server) }.map(\.candidateID)
+    }
+
     /// Paths are sent as JSON arguments, never interpolated into a shell command.
     @discardableResult
     public func connect(_ candidate: Candidate) throws -> String {
         let targetClient = try client.resolveClient().id
+        return try connect(candidate, clientID: targetClient)
+    }
+
+    private func connect(_ candidate: Candidate, clientID: String) throws -> String {
+        let lock = try FileLock(url: history.lockURL)
+        defer { withExtendedLifetime(lock) {} }
+        let visits = try history.load()
+        let sessionID = try open(candidate, clientID: clientID)
+        try history.record(sessionID, host: candidate.host, clientID: clientID, server: client.target.server, visits: visits)
+        return sessionID
+    }
+
+    private func open(_ candidate: Candidate, clientID targetClient: String) throws -> String {
         if let sessionID = candidate.sessionID {
             do { try client.select(sessionID, clientID: targetClient) }
             catch {
@@ -30,30 +50,64 @@ public actor ReshService {
             }
             return sessionID
         }
-        guard let path = candidate.path else { throw ReshError("The selected folder has no path.") }
+        guard let rawPath = candidate.path else { throw ReshError("The selected folder has no path.") }
         if let host = candidate.host {
             let remote = client.at(host)
-            let directory = try RexRemote(client: remote).directory(path)
+            let directory = try RexRemote(client: remote).directory(rawPath)
             return try create(path: directory.path, clientID: targetClient, name: directory.name,
                               startupCommand: nil, dataClient: remote, registryKey: host.id)
         }
-        return try connect(path: path, clientID: targetClient, name: candidate.kind == .project ? candidate.title : nil,
-                           startupCommand: candidate.startupCommand)
+        let path = PathIdentity.canonical(rawPath)
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory), isDirectory.boolValue else {
+            throw ReshError("This folder no longer exists: \(path)")
+        }
+        let id = try create(path: path, clientID: targetClient,
+            name: candidate.kind == .project ? candidate.title : SessionNamer(runner: client.runner, git: client.tools.git).name(for: path),
+            startupCommand: candidate.startupCommand, dataClient: client, registryKey: client.target.server)
+        if let zoxide = client.tools.zoxide { _ = try? client.runner.run(zoxide, ["add", path], timeout: 3) }
+        return id
     }
 
     @discardableResult
     public func connect(path: String, clientID requestedClient: String? = nil, name: String? = nil, startupCommand: String? = nil) throws -> String {
         let clientID = try requestedClient ?? client.resolveClient().id
-        let path = PathIdentity.canonical(path)
-        var isDirectory: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory), isDirectory.boolValue else {
-            throw ReshError("This folder no longer exists: \(path)")
+        return try connect(Candidate(id: path, kind: name == nil ? .directory : .project,
+            title: name ?? "", path: path, startupCommand: startupCommand), clientID: clientID)
+    }
+
+    /// The first entry is the last selection made by resh, not inferred app focus.
+    @discardableResult
+    public func connectLast() throws -> String {
+        let clientID = try client.resolveClient().id
+        let lock = try FileLock(url: history.lockURL)
+        defer { withExtendedLifetime(lock) {} }
+        var visits = try history.load()
+        let previous = visits.filter { $0.belongs(to: clientID, server: client.target.server) }.dropFirst()
+        var catalog: [RexHost]?, snapshots: [String: [RexSession]] = [:]
+        for visit in previous {
+            let host: RexHost?
+            if let saved = visit.host {
+                if catalog == nil { catalog = try hosts().hosts }
+                host = catalog?.first { $0.id == saved.id }
+                if host == nil {
+                    visits.removeAll { $0.belongs(to: clientID, server: client.target.server) && $0.candidateID == visit.candidateID }
+                    continue
+                }
+            } else { host = nil }
+            let key = host?.id ?? client.target.server
+            if snapshots[key] == nil { snapshots[key] = try (host.map(client.at) ?? client).sessions() }
+            guard let session = snapshots[key]?.first(where: { $0.sessionID == visit.sessionID }) else {
+                visits.removeAll { $0.belongs(to: clientID, server: client.target.server) && $0.candidateID == visit.candidateID }
+                continue
+            }
+            let candidate = Candidate(id: visit.candidateID, kind: .session, title: session.label,
+                sessionID: session.sessionID, host: host)
+            let id = try open(candidate, clientID: clientID)
+            try history.record(id, host: host, clientID: clientID, server: client.target.server, visits: visits)
+            return id
         }
-        let id = try create(path: path, clientID: clientID,
-            name: name ?? SessionNamer(runner: client.runner, git: client.tools.git).name(for: path),
-            startupCommand: startupCommand, dataClient: client, registryKey: client.target.server)
-        if let zoxide = client.tools.zoxide { _ = try? client.runner.run(zoxide, ["add", path], timeout: 3) }
-        return id
+        throw ReshError("No previous session in resh's history. Open two sessions through resh first.")
     }
 
     private func create(path: String, clientID: String, name: String, startupCommand: String?,

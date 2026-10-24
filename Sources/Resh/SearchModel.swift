@@ -24,6 +24,7 @@ final class SearchModel: ObservableObject {
     private(set) var configurationError: String?
     private var search = FuzzyMatcher([])
     private var sessionSnapshot: [Candidate] = []
+    private var sessionRanks: [String: Int] = [:]
     private var sourceSnapshots: [SearchScope: [Candidate]] = [:]
     private var hostSessions: [String: [Candidate]] = [:]
     private var hostSources: [String: [SearchScope: [Candidate]]] = [:]
@@ -52,7 +53,7 @@ final class SearchModel: ObservableObject {
     var isPresentingConfirmation = false
     private var generation = 0
 
-    init(service: ReshService, tools: Tools, sessions: [RexSession] = [], configurationURL: URL? = nil,
+    init(service: ReshService, tools: Tools, sessions: [RexSession] = [], recentSessionIDs: [String] = [], configurationURL: URL? = nil,
          snapshotProvider: (any RexSnapshotProviding)? = nil,
          readTheme: @escaping @Sendable (String, Bool) throws -> RexTheme = { try RexTheme.read(rexApp: $0, systemIsDark: $1) },
          readPreferences: @escaping @Sendable () -> [String: Any] = { RexTheme.preferences(keys: ["Workspace.programActivitySeen"]) }) throws {
@@ -63,13 +64,19 @@ final class SearchModel: ObservableObject {
         self.readTheme = readTheme
         self.theme = try readTheme(tools.rexApp, Self.systemIsDark)
         sessionSnapshot = ReshService.candidates(from: sessions)
+        sessionRanks = Dictionary(recentSessionIDs.enumerated().map { ($0.element, $0.offset) }, uniquingKeysWith: min)
         scope = configuration.initialSource
         showAvailableEntries()
         isLoading = false
     }
     static var systemIsDark: Bool { UserDefaults.standard.string(forKey: "AppleInterfaceStyle") == "Dark" }
     var selected: Candidate? { results.indices.contains(selection) ? results[selection] : nil }
-    private var allSessions: [Candidate] { sessionSnapshot + hosts.flatMap { hostSessions[$0.id] ?? [] } }
+    private var allSessions: [Candidate] {
+        (sessionSnapshot + hosts.flatMap { hostSessions[$0.id] ?? [] }).enumerated().sorted {
+            let left = sessionRanks[$0.element.id] ?? Int.max, right = sessionRanks[$1.element.id] ?? Int.max
+            return left == right ? $0.offset < $1.offset : left < right
+        }.map(\.element)
+    }
     var sessionCount: Int { allSessions.count }
     var showsHosts: Bool { !hosts.isEmpty }
     var displayedError: String? {
@@ -95,7 +102,7 @@ final class SearchModel: ObservableObject {
         isLoading = true
     }
 
-    func prepare(service: ReshService, sessions: [RexSession], configurationURL: URL? = nil, rexAppPID: Int32? = nil) {
+    func prepare(service: ReshService, sessions: [RexSession], recentSessionIDs: [String] = [], configurationURL: URL? = nil, rexAppPID: Int32? = nil) {
         clear()
         if configurationURL != self.configurationURL {
             self.configurationURL = configurationURL
@@ -105,6 +112,7 @@ final class SearchModel: ObservableObject {
         self.service = service
         self.rexAppPID = rexAppPID
         sessionSnapshot = ReshService.candidates(from: sessions)
+        sessionRanks = Dictionary(recentSessionIDs.enumerated().map { ($0.element, $0.offset) }, uniquingKeysWith: min)
         scope = configuration.initialSource
         showAvailableEntries()
         isLoading = false
@@ -125,7 +133,7 @@ final class SearchModel: ObservableObject {
         attentionTask?.cancel(); attentionTask = nil
         themeTask?.cancel(); themeTask = nil; themeTaskID = nil
         attentionRecords = []; attentionSessionIDs = []
-        sessionSnapshot = []; search = FuzzyMatcher([])
+        sessionSnapshot = []; sessionRanks = [:]; search = FuzzyMatcher([])
         sourceSnapshots = [:]
         rexAppPID = nil
         diagnostics = [:]; diagnostic = nil
@@ -378,6 +386,15 @@ final class SearchModel: ObservableObject {
                     guard generation == request else { return }
                     service = ReshService(client: RexClient(tools: tools,
                         target: RexTarget(clientID: snapshot.client, server: target.server)))
+                    do {
+                        let recent = try await service.recentSessionIDs()
+                        guard generation == request else { return }
+                        sessionRanks = Dictionary(recent.enumerated().map { ($0.element, $0.offset) }, uniquingKeysWith: min)
+                        reportDiagnostic(nil, source: "history")
+                    } catch {
+                        guard generation == request else { return }
+                        reportDiagnostic(error, source: "history")
+                    }
                     sessionSnapshot = ReshService.candidates(from: snapshot.sessions)
                     showAvailableEntries()
                 }

@@ -7,6 +7,7 @@ private struct Options {
     var client: String?
     var server: String?
     var connect: String?
+    var last = false
     var name: String?
     var diagnose = false
     var help = false
@@ -30,6 +31,7 @@ private struct Options {
             case "--client": client = try value()
             case "--server": server = try value()
             case "--connect": connect = try value()
+            case "--last": last = true
             case "--name": name = try value()
             case "--diagnose": diagnose = true
             case "--standby": standby = true
@@ -165,8 +167,14 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
                 let snapshot = try await Task.detached { try connection.snapshot(target: target, rexAppPID: rexAppPID) }.value
                 guard openingID == id, !controller.model.isConnecting, !controller.model.isPresentingConfirmation else { return }
                 let selected = RexTarget(clientID: snapshot.client, server: target.server)
-                controller.prepare(service: ReshService(client: RexClient(tools: tools, target: selected)), snapshot: snapshot,
+                let service = ReshService(client: RexClient(tools: tools, target: selected))
+                var recent: [String] = [], historyError: Error?
+                do { recent = try await service.recentSessionIDs() }
+                catch { historyError = error }
+                guard openingID == id else { return }
+                controller.prepare(service: service, snapshot: snapshot, recentSessionIDs: recent,
                     configurationURL: request.config.map { URL(fileURLWithPath: $0) })
+                controller.model.reportDiagnostic(historyError, source: "history")
                 controller.model.reportDiagnostic(nil, source: "connection")
                 controller.show()
             } catch {
@@ -229,6 +237,7 @@ struct ReshMain {
 
                 resh [--client CLIENT_ID] [--server ADDRESS]
                 resh --connect DIRECTORY [--client CLIENT_ID]
+                resh --last [--client CLIENT_ID]
                 resh --name DIRECTORY
                 resh --diagnose
                 resh --status | --quit
@@ -250,7 +259,7 @@ struct ReshMain {
                 print("Config: \((configURL ?? ConfigurationFile.url()).path)\nSources: \(config.visibleSources.map(\.id.rawValue).joined(separator: ", "))\nProjects: \(config.projects.count)\nValid")
                 return
             }
-            if !options.standby, options.connect == nil, !options.diagnose, options.name == nil {
+            if !options.standby, options.connect == nil, !options.last, !options.diagnose, options.name == nil {
                 var request = LauncherRequest(client: options.client, server: options.server, config: configURL?.path)
                 if options.quit {
                     try ResidentLauncher().stop()
@@ -283,11 +292,13 @@ struct ReshMain {
             let target = RexTarget(clientID: options.client, server: options.server)
             let client = RexClient(tools: tools, target: target)
             let service = ReshService(client: client)
-            if options.connect != nil || options.diagnose {
+            if options.connect != nil || options.last || options.diagnose {
                 Task.detached {
                     do {
                         let result: [String: Any]
-                        if let path = options.connect {
+                        if options.last {
+                            result = ["session_id": try await service.connectLast()]
+                        } else if let path = options.connect {
                             let configuration = try ConfigurationFile.load(configURL)
                             let project = configuration.projects.first { $0.name == path } ?? configuration.project(at: path)
                             let directory = project?.path ?? PathIdentity.canonical(path)
