@@ -1,4 +1,3 @@
--- Rex action adapter. Opening and data loading belong to the resident helper.
 local executable = os.getenv("HOME") .. "/Library/Application Support/resh/resh"
 
 rex.action{
@@ -25,5 +24,3 @@ rex.action{
     elseif not result.ok then rex.log("debug", result.stderr) end
   end,
 }
-
--- Startup belongs to Rex's init.lua, alongside any --config argument.
