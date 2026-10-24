@@ -1,8 +1,8 @@
 import Foundation
 
-/// Successful resh selections only. Rex's attachment list is not a focus history.
-struct SessionHistory: Sendable {
-    struct Visit: Codable, Sendable {
+/// Process-owned successful selections, shared by every client-facing service.
+final class SessionHistory: @unchecked Sendable {
+    struct Visit: Sendable {
         let clientID: String
         let server: String
         let sessionID: String
@@ -14,28 +14,20 @@ struct SessionHistory: Sendable {
         }
     }
 
-    let directory: URL
-    var lockURL: URL { directory.appendingPathComponent("history.lock") }
-    private var url: URL { directory.appendingPathComponent("history.json") }
+    private let lock = NSLock()
+    private var visits: [Visit] = []
 
-    func load() throws -> [Visit] {
-        guard FileManager.default.fileExists(atPath: url.path) else { return [] }
-        do { return try JSONDecoder().decode([Visit].self, from: Data(contentsOf: url)) }
-        catch { throw ReshError("resh's session history is unreadable: \(url.path).") }
+    /// Keep a switch and its history update ordered across client handles.
+    func withVisits<T>(_ operation: (inout [Visit]) throws -> T) rethrows -> T {
+        lock.lock(); defer { lock.unlock() }
+        return try operation(&visits)
     }
 
-    func record(_ sessionID: String, host: RexHost?, clientID: String, server: String, visits: [Visit]) throws {
+    static func record(_ sessionID: String, host: RexHost?, clientID: String, server: String, visits: inout [Visit]) {
         let visit = Visit(clientID: clientID, server: server, sessionID: sessionID, host: host)
-        var updated = visits.filter {
-            !$0.belongs(to: clientID, server: server) || $0.candidateID != visit.candidateID
+        visits.removeAll {
+            $0.belongs(to: clientID, server: server) && $0.candidateID == visit.candidateID
         }
-        updated.insert(visit, at: 0)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        do {
-            try JSONEncoder().encode(updated).write(to: url, options: [.atomic])
-            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
-        } catch {
-            throw ReshError("Switched Rex to the session, but could not save resh's history: \(url.path).\n\(error.localizedDescription)")
-        }
+        visits.insert(visit, at: 0)
     }
 }

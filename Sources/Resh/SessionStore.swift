@@ -19,7 +19,6 @@ final class SessionStore {
     private var running = false
     private var generation = 0
     private var historyTask: Task<Void, Never>?
-    private var historyWatcher: FileWatcher?
 
     var processID: pid_t? { connection.processID }
 
@@ -36,11 +35,6 @@ final class SessionStore {
         running = true
         generation += 1
         let request = generation
-        if historyWatcher == nil {
-            historyWatcher = FileWatcher(url: service.historyURL) { [weak self] in
-                Task { @MainActor [weak self] in self?.refreshHistory() }
-            }
-        }
         refreshHistory()
         connection.start(target: target) { [weak self] result in
             Task { @MainActor [weak self] in
@@ -63,7 +57,7 @@ final class SessionStore {
         guard target.server != self.target.server else { return }
         stop()
         self.target = RexTarget(server: target.server)
-        service = ReshService(client: RexClient(tools: tools, target: self.target))
+        service = service.at(self.target)
         sessions = nil; clients = []; hosts = []; recentSessionIDs = [:]
         start()
     }
@@ -100,17 +94,19 @@ final class SessionStore {
         }
     }
 
-    func refreshHistory() {
+    @discardableResult
+    func refreshHistory() -> Task<Void, Never> {
         historyTask?.cancel()
-        let service = service, request = generation, watcher = historyWatcher
-        historyTask = Task {
+        let service = service, request = generation
+        let task = Task {
             let updated = await Task.detached {
-                watcher?.waitUntilReady()
-                return service.recentSessionIDsByClient()
+                service.recentSessionIDsByClient()
             }.value
             guard !Task.isCancelled, generation == request else { return }
             if updated != recentSessionIDs { recentSessionIDs = updated }
         }
+        historyTask = task
+        return task
     }
 
     @discardableResult
@@ -118,7 +114,6 @@ final class SessionStore {
         generation += 1
         running = false; isConnected = false
         historyTask?.cancel(); historyTask = nil
-        historyWatcher?.stop(); historyWatcher = nil
         let connections = [connection] + remoteConnections.values.map { $0.1 }
         remoteConnections = [:]
         for connection in connections { connection.stop() }

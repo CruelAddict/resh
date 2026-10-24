@@ -6,7 +6,15 @@ public actor ReshService {
     private let history: SessionHistory
     public init(client: RexClient, registry: SessionRegistry = SessionRegistry()) {
         self.client = client; self.registry = registry
-        self.history = SessionHistory(directory: registry.directory)
+        self.history = SessionHistory()
+    }
+
+    private init(client: RexClient, registry: SessionRegistry, history: SessionHistory) {
+        self.client = client; self.registry = registry; self.history = history
+    }
+
+    public nonisolated func at(_ target: RexTarget) -> ReshService {
+        ReshService(client: RexClient(tools: client.tools, target: target, runner: client.runner), registry: registry, history: history)
     }
 
     public nonisolated var target: RexTarget { client.target }
@@ -23,29 +31,41 @@ public actor ReshService {
 
     public func recentSessionIDs() throws -> [String] {
         let clientID = try client.target.clientID ?? client.resolveClient().id
-        return loadHistory().filter { $0.belongs(to: clientID, server: client.target.server) }.map(\.candidateID)
+        return history.withVisits { visits in
+            visits.filter { $0.belongs(to: clientID, server: client.target.server) }.map(\.candidateID)
+        }
     }
 
-    public nonisolated var historyURL: URL { history.directory.appendingPathComponent("history.json") }
-
     public nonisolated func recentSessionIDsByClient() -> [String: [String]] {
-        var result: [String: [String]] = [:]
-        for visit in loadHistory() where visit.server == client.target.server {
-            result[visit.clientID, default: []].append(visit.candidateID)
+        history.withVisits { visits in
+            var result: [String: [String]] = [:]
+            for visit in visits where visit.server == client.target.server {
+                result[visit.clientID, default: []].append(visit.candidateID)
+            }
+            return result
         }
-        return result
+    }
+
+    public func connect(_ path: String, configuration: ReshConfiguration, cwd: String) throws -> (sessionID: String, path: String) {
+        let expanded = (path as NSString).expandingTildeInPath
+        let absolute = expanded.hasPrefix("/") ? expanded : URL(fileURLWithPath: cwd).appendingPathComponent(expanded).path
+        let directory = PathIdentity.canonical(absolute)
+        let project = configuration.projects.first { $0.name == path } ?? configuration.project(at: directory)
+        let candidate = project?.candidate ?? Candidate(id: directory, kind: .directory,
+            title: directory, path: directory, startupCommand: configuration.defaultStartupCommand)
+        let sessionID = try connect(candidate)
+        return (sessionID, project?.path ?? directory)
     }
 
     /// Paths are sent as JSON arguments, never interpolated into a shell command.
     @discardableResult
     public func connect(_ candidate: Candidate) throws -> String {
-        let targetClient = try client.resolveClient().id
-        let lock = lockHistory()
-        defer { withExtendedLifetime(lock) {} }
-        let visits = loadHistory()
-        let sessionID = try open(candidate, clientID: targetClient)
-        if lock != nil { recordHistory(sessionID, host: candidate.host, clientID: targetClient, visits: visits) }
-        return sessionID
+        try history.withVisits { visits in
+            let targetClient = try client.resolveClient().id
+            let sessionID = try open(candidate, clientID: targetClient)
+            SessionHistory.record(sessionID, host: candidate.host, clientID: targetClient, server: client.target.server, visits: &visits)
+            return sessionID
+        }
     }
 
     private func open(_ candidate: Candidate, clientID targetClient: String) throws -> String {
@@ -75,50 +95,34 @@ public actor ReshService {
     /// The first entry is the last selection made by resh, not inferred app focus.
     @discardableResult
     public func connectLast() throws -> String? {
-        let clientID = try client.resolveClient().id
-        guard let lock = lockHistory() else { return nil }
-        defer { withExtendedLifetime(lock) {} }
-        var visits = loadHistory()
-        let previous = visits.filter { $0.belongs(to: clientID, server: client.target.server) }.dropFirst()
-        var catalog: [RexHost]?, snapshots: [String: [RexSession]] = [:]
-        for visit in previous {
-            let host: RexHost?
-            if let saved = visit.host {
-                if catalog == nil { catalog = try hosts().hosts }
-                host = catalog?.first { $0.id == saved.id }
-                if host == nil {
+        try history.withVisits { visits in
+            let clientID = try client.resolveClient().id
+            let previous = visits.filter { $0.belongs(to: clientID, server: client.target.server) }.dropFirst()
+            var catalog: [RexHost]?, snapshots: [String: [RexSession]] = [:]
+            for visit in previous {
+                let host: RexHost?
+                if let saved = visit.host {
+                    if catalog == nil { catalog = try hosts().hosts }
+                    host = catalog?.first { $0.id == saved.id }
+                    if host == nil {
+                        visits.removeAll { $0.belongs(to: clientID, server: client.target.server) && $0.candidateID == visit.candidateID }
+                        continue
+                    }
+                } else { host = nil }
+                let key = host?.id ?? client.target.server
+                if snapshots[key] == nil { snapshots[key] = try sessions(host: host) }
+                guard let session = snapshots[key]?.first(where: { $0.sessionID == visit.sessionID }) else {
                     visits.removeAll { $0.belongs(to: clientID, server: client.target.server) && $0.candidateID == visit.candidateID }
                     continue
                 }
-            } else { host = nil }
-            let key = host?.id ?? client.target.server
-            if snapshots[key] == nil { snapshots[key] = try sessions(host: host) }
-            guard let session = snapshots[key]?.first(where: { $0.sessionID == visit.sessionID }) else {
-                visits.removeAll { $0.belongs(to: clientID, server: client.target.server) && $0.candidateID == visit.candidateID }
-                continue
+                let candidate = Candidate(id: visit.candidateID, kind: .session, title: session.label,
+                    sessionID: session.sessionID, host: host)
+                let id = try open(candidate, clientID: clientID)
+                SessionHistory.record(id, host: host, clientID: clientID, server: client.target.server, visits: &visits)
+                return id
             }
-            let candidate = Candidate(id: visit.candidateID, kind: .session, title: session.label,
-                sessionID: session.sessionID, host: host)
-            let id = try open(candidate, clientID: clientID)
-            recordHistory(id, host: host, clientID: clientID, visits: visits)
-            return id
+            return nil
         }
-        return nil
-    }
-
-    private func lockHistory() -> FileLock? {
-        do { return try FileLock(url: history.lockURL, wait: false) }
-        catch { DebugLog.shared.record(error, source: "history:lock"); return nil }
-    }
-
-    private nonisolated func loadHistory() -> [SessionHistory.Visit] {
-        do { return try history.load() }
-        catch { DebugLog.shared.record(error, source: "history:read"); return [] }
-    }
-
-    private func recordHistory(_ sessionID: String, host: RexHost?, clientID: String, visits: [SessionHistory.Visit]) {
-        do { try history.record(sessionID, host: host, clientID: clientID, server: client.target.server, visits: visits) }
-        catch { DebugLog.shared.record(error, source: "history:write") }
     }
 
     private func create(path: String, clientID: String, name: String, startupCommand: String?,

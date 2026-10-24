@@ -3,13 +3,39 @@ import Darwin
 import Foundation
 import ReshCore
 
-struct LauncherRequest: Codable {
+struct LauncherRequest: Codable, Sendable {
     var operation = "show"
     var client: String?
     var currentSessionID: String?
     var server: String?
     var config: String?
     var debug: Bool?
+    var path: String?
+    var cwd: String?
+
+    var changesSession: Bool { operation == "connect" || operation == "last" }
+}
+
+struct LauncherCommands {
+    let service: ReshService
+    let configurationURL: URL?
+
+    func run(_ request: LauncherRequest) async throws -> [String: Any] {
+        let service = service.at(RexTarget(clientID: request.client, server: request.server ?? service.target.server))
+        switch request.operation {
+        case "last":
+            guard let id = try await service.connectLast() else { return [:] }
+            return ["session_id": id]
+        case "connect":
+            guard let path = request.path, let cwd = request.cwd else { throw ReshError("The folder and calling directory are required.") }
+            let url = request.config.map { URL(fileURLWithPath: $0) } ?? configurationURL
+            let configuration = try await Task.detached { try ConfigurationFile.load(url) }.value
+            let result = try await service.connect(path, configuration: configuration, cwd: cwd)
+            return ["session_id": result.sessionID, "path": result.path]
+        default:
+            throw ReshError("Unknown session command: \(request.operation)")
+        }
+    }
 }
 
 /// A small Foundation-only sender talks to the already-running native panel.
@@ -17,12 +43,15 @@ struct LauncherRequest: Codable {
 enum LauncherIPC {
     static var name: CFString { "io.github.CruelAddict.resh.panel.\(getuid())" as CFString }
 
-    static func send(_ request: LauncherRequest) throws -> [String: Any]? {
+    static func send(_ request: LauncherRequest, name: CFString = LauncherIPC.name) throws -> [String: Any]? {
         guard let port = CFMessagePortCreateRemote(nil, name) else { return nil }
         var reply: Unmanaged<CFData>?
         let status = CFMessagePortSendRequest(port, 1, try JSONEncoder().encode(request) as CFData,
-            1, 3, CFRunLoopMode.defaultMode.rawValue, &reply)
+            1, request.changesSession ? 60 : 3, CFRunLoopMode.defaultMode.rawValue, &reply)
         guard status == kCFMessagePortSuccess, let data = reply?.takeRetainedValue() else {
+            if request.changesSession {
+                throw ReshError("The resh service did not return the session command's result (\(status)). It may have completed; the command was not retried.")
+            }
             throw ReshError("The resh panel did not acknowledge the request (\(status)).")
         }
         let response = try JSONSerialization.jsonObject(with: data as Data) as? [String: Any] ?? [:]
@@ -36,34 +65,50 @@ enum LauncherIPC {
     }
 }
 
+private final class LauncherReply: @unchecked Sendable {
+    private let ready = DispatchSemaphore(value: 0)
+    private var data: Data?
+
+    func finish(_ response: [String: Any]) {
+        data = try? JSONSerialization.data(withJSONObject: response)
+        ready.signal()
+    }
+
+    func wait() -> Data? { ready.wait(); return data }
+}
+
 @MainActor
 final class LauncherHost {
     private var port: CFMessagePort?
-    private var source: CFRunLoopSource?
-    var onRequest: ((LauncherRequest) -> [String: Any])?
+    private let queue = DispatchQueue(label: "resh.launcher")
+    var onRequest: ((LauncherRequest) async -> [String: Any])?
 
-    init() throws {
+    init(name: CFString = LauncherIPC.name) throws {
         var context = CFMessagePortContext(version: 0, info: Unmanaged.passUnretained(self).toOpaque(),
             retain: nil, release: nil, copyDescription: nil)
-        port = CFMessagePortCreateLocal(nil, LauncherIPC.name, { _, _, data, info in
+        port = CFMessagePortCreateLocal(nil, name, { _, _, data, info in
             guard let data, let info else { return nil }
             let host = Unmanaged<LauncherHost>.fromOpaque(info).takeUnretainedValue()
-            let response: [String: Any]
-            do {
-                let request = try JSONDecoder().decode(LauncherRequest.self, from: data as Data)
-                response = MainActor.assumeIsolated { host.onRequest?(request) ?? ["error": "Panel is not ready."] }
-            } catch { response = ["error": error.localizedDescription] }
-            guard let reply = try? JSONSerialization.data(withJSONObject: response) else { return nil }
-            return Unmanaged.passRetained(reply as CFData)
+            let reply = LauncherReply()
+            let payload = data as Data
+            Task { @MainActor in
+                let response: [String: Any]
+                do {
+                    let request = try JSONDecoder().decode(LauncherRequest.self, from: payload)
+                    response = await host.onRequest?(request) ?? ["error": "Panel is not ready."]
+                } catch { response = ["error": error.localizedDescription] }
+                reply.finish(response)
+            }
+            guard let data = reply.wait() else { return nil }
+            return Unmanaged.passRetained(data as CFData)
         }, &context, nil)
         guard let port else { throw ReshError("Another resh host is already running.") }
-        source = CFMessagePortCreateRunLoopSource(nil, port, 0)
-        CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
+        // Waiting for a command's result must not block the AppKit run loop.
+        CFMessagePortSetDispatchQueue(port, queue)
     }
 
     func stop() {
-        if let source { CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes) }
         if let port { CFMessagePortInvalidate(port) }
-        source = nil; port = nil
+        port = nil
     }
 }

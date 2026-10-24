@@ -154,7 +154,7 @@ final class SearchModel: ObservableObject {
         guard changedServer || changedConfiguration else { return }
         if changedServer {
             clear()
-            service = ReshService(client: RexClient(tools: tools, target: target))
+            service = service.at(target)
             catalog.configure(target: target)
         }
         if changedConfiguration {
@@ -536,8 +536,7 @@ final class SearchModel: ObservableObject {
                     do {
                         let snapshot = try await Task.detached { try provider.snapshot(target: target, rexAppPID: rexAppPID) }.value
                         guard generation == request else { return }
-                        service = ReshService(client: RexClient(tools: tools,
-                            target: RexTarget(clientID: snapshot.client, server: target.server)))
+                        service = service.at(RexTarget(clientID: snapshot.client, server: target.server))
                         let recent = try await service.recentSessionIDs()
                         guard generation == request else { return }
                         sessionRanks = Dictionary(recent.enumerated().map { ($0.element, $0.offset) }, uniquingKeysWith: min)
@@ -591,7 +590,8 @@ final class SearchModel: ObservableObject {
             do {
                 try await service.connect(candidate)
                 guard generation == request else { return }
-                catalog.refreshHistory()
+                await catalog.refreshHistory().value
+                guard generation == request else { return }
                 onDismiss?(true)
             } catch {
                 guard generation == request else { return }

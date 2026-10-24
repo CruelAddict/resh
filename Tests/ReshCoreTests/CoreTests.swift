@@ -273,10 +273,16 @@ struct ServiceTests {
         let temporary = try TemporaryDirectory(), runner = FakeRunner()
         let folder = try temporary.folder("project's folder")
         let service = service(runner, temporary)
-        let candidate = Candidate(id: folder, kind: .project, title: "My project", path: folder, startupCommand: "printf '%s' {}")
-        let first = try await service.connect(candidate)
-        let second = try await service.connect(candidate)
-        #expect(first == second && runner.creations == 1)
+        let configuration = try ReshConfiguration.parse("""
+        [[session]]
+        name = "My project"
+        path = "project's folder"
+        startup_command = "printf '%s' {}"
+        """, directory: temporary.url)
+        let first = try await service.connect("project's folder", configuration: configuration, cwd: temporary.url.path)
+        let second = try await service.connect("My project", configuration: configuration, cwd: "/")
+        #expect(first.sessionID == second.sessionID && runner.creations == 1)
+        #expect(first.path == folder && second.path == folder)
         #expect(runner.sessions.first?.label == "My project")
         #expect(runner.startupInputs == ["printf '%s' '" + folder.replacingOccurrences(of: "'", with: "'\\''") + "'\n"])
     }
@@ -307,18 +313,21 @@ struct ServiceTests {
         Candidate(id: Candidate.identity(id, host: host), kind: .session, title: "Session", sessionID: id, host: host)
     }
 
-    @Test func recentSelectionsAndPreviousSessionSharePersistentHistory() async throws {
+    @Test func recentSelectionsAndPreviousSessionShareResidentHistory() async throws {
         let temporary = try TemporaryDirectory(), runner = FakeRunner()
         runner.sessions = [("a", "A", "/a"), ("b", "B", "/b")]
         let first = service(runner, temporary)
         try await first.connect(session("a"))
         try await first.connect(session("b"))
         try await first.connect(session("b"))
-        let reopened = service(runner, temporary)
+        let reopened = first.at(first.target)
         #expect(try await reopened.recentSessionIDs() == ["b", "a"])
         #expect(try await reopened.connectLast() == "a")
         #expect(try await reopened.recentSessionIDs() == ["a", "b"])
         #expect(try await reopened.connectLast() == "b")
+        let restarted = service(runner, temporary)
+        #expect(try await restarted.recentSessionIDs().isEmpty)
+        #expect(try await restarted.connectLast() == nil)
         #expect(runner.creations == 0)
     }
 
@@ -347,16 +356,20 @@ struct ServiceTests {
         #expect(try await service.connectLast() == "c")
     }
 
-    @Test func sessionHistoryBelongsToTheCallingClient() async throws {
+    @Test func sessionHistoryBelongsToTheCallingClientAndServer() async throws {
         let temporary = try TemporaryDirectory(), runner = FakeRunner()
         runner.clientIDs = ["client:test", "client:other"]
         runner.sessions = [("a", "A", "/a"), ("b", "B", "/b"), ("c", "C", "/c")]
-        let first = service(runner, temporary), other = service(runner, temporary, clientID: "client:other")
+        let first = service(runner, temporary)
+        let other = first.at(RexTarget(clientID: "client:other", server: "test"))
+        let remote = first.at(RexTarget(clientID: "client:test", server: "other"))
         try await first.connect(session("a"))
         try await other.connect(session("b"))
         try await first.connect(session("c"))
+        try await remote.connect(session("b"))
         #expect(try await first.recentSessionIDs() == ["c", "a"])
         #expect(try await other.recentSessionIDs() == ["b"])
+        #expect(try await remote.recentSessionIDs() == ["b"])
         #expect(first.recentSessionIDsByClient() == ["client:test": ["c", "a"], "client:other": ["b"]])
     }
 

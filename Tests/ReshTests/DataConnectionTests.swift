@@ -1,4 +1,5 @@
 import Foundation
+import CoreFoundation
 import ReshCore
 import Testing
 @testable import Resh
@@ -78,8 +79,68 @@ struct DataConnectionTests {
         model.openResult(2)
         for _ in 0..<300 where !connected { try await Task.sleep(for: .milliseconds(10)) }
         #expect(connected)
+        #expect(model.catalog.recentSessionIDs["client:test"] == ["a"])
         let selected = stub.directory.appendingPathComponent("rex.selected")
         #expect(try String(contentsOf: selected, encoding: .utf8) == "a")
+    }
+
+    @Test @MainActor func launcherCommandsUseResidentHistory() async throws {
+        let stub = try StubRex(body: """
+        import pathlib
+        root=pathlib.Path(__file__).parent.resolve()
+        if 'client' in sys.argv:
+            print('{"clients":[{"client_id":"client:test","info":{"kind":"app","platform":"macos"}}]}')
+        elif 'ls' in sys.argv:
+            sessions=[{'session_id':'a','label':'First'}]
+            if (root/'created').exists(): sessions.append({'session_id':'b','label':'Project'})
+            print(json.dumps({'sessions':sessions}))
+        elif 'session.create' in sys.argv:
+            args=json.loads(sys.argv[-1])
+            options=args['initial_windows'][0]['layout']['block']['options']
+            assert args['label']=='Project' and pathlib.Path(options['cwd']).resolve()==root/'project'
+            assert options['initial_input']=='true\\n'
+            (root/'created').touch()
+            print('{"session_id":"b"}')
+        elif 'session.select' in sys.argv:
+            print('{}')
+        else:
+            raise Exception('Unexpected command')
+        """)
+        let folder = stub.directory.appendingPathComponent("project")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let config = stub.directory.appendingPathComponent("config.toml")
+        try """
+        [[session]]
+        name = "Project"
+        path = "project"
+        startup_command = "true"
+        """.write(to: config, atomically: true, encoding: .utf8)
+        let service = ReshService(client: RexClient(tools: stub.tools, target: RexTarget(clientID: "client:test")),
+            registry: SessionRegistry(directory: stub.directory))
+        let commands = LauncherCommands(service: service, configurationURL: config)
+        let name = "resh-tests." + UUID().uuidString
+        let host = try LauncherHost(name: name as CFString)
+        defer { host.stop() }
+        host.onRequest = { request in
+            do { return try await commands.run(request) }
+            catch { return ["error": error.localizedDescription] }
+        }
+        func send(_ request: LauncherRequest) async throws -> [String: Any] {
+            try #require(await Task.detached { try LauncherIPC.send(request, name: name as CFString) }.value)
+        }
+        let last = LauncherRequest(operation: "last", client: "client:test")
+        try await service.connect(Candidate(id: "a", kind: .session, title: "First", sessionID: "a"))
+        #expect(try await send(last).isEmpty)
+        let connected = try await send(LauncherRequest(operation: "connect", client: "client:test", path: ".", cwd: folder.path))
+        #expect(connected["session_id"] as? String == "b")
+        #expect(connected["path"] as? String == folder.resolvingSymlinksInPath().path)
+        #expect(try await service.recentSessionIDs() == ["b", "a"])
+        #expect(try await send(last)["session_id"] as? String == "a")
+        #expect(try await service.recentSessionIDs() == ["a", "b"])
+        await #expect(throws: ReshError.self) {
+            try await send(LauncherRequest(operation: "connect", client: "client:test", path: "missing", cwd: folder.path))
+        }
+        #expect(try await service.recentSessionIDs() == ["a", "b"])
     }
 
     @Test func snapshotRecoversAfterDisconnect() throws {

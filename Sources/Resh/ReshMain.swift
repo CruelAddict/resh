@@ -74,6 +74,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
     private let dataConnection: RexDataConnection
     private var rexMonitor: RexAppMonitor?
     private var isStopping = false
+    private var isExecutingCommand = false
 
     init(service: ReshService, tools: Tools, options: Options) {
         self.service = service; self.tools = tools; self.options = options
@@ -100,7 +101,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
                 DebugLog.shared.setEnabled(self.options.debug)
             }
             host = try LauncherHost()
-            host?.onRequest = { [weak self] request in self?.handle(request) ?? ["error": "Host is stopping."] }
+            host?.onRequest = { [weak self] request in await self?.handle(request) ?? ["error": "Host is stopping."] }
         } catch { fail(error); return }
         installMenu()
         hotkey = RexHotkey()
@@ -158,7 +159,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         controller?.model.stopBackground()
     }
     private func open(_ request: LauncherRequest) -> Bool {
-        guard !isStopping, openingID == nil, let controller,
+        guard !isStopping, !isExecutingCommand, openingID == nil, let controller,
               !controller.model.isConnecting, !controller.model.isPresentingConfirmation else { return false }
         DebugLog.shared.setEnabled(request.debug ?? options.debug)
         DebugLog.shared.record("Opening panel", source: "panel")
@@ -178,7 +179,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         controller.model.startBackground()
         if let snapshot = controller.model.catalog.snapshot(clientID: target.clientID, rexAppPID: rexAppPID) {
             let selected = RexTarget(clientID: snapshot.client, server: target.server)
-            let service = ReshService(client: RexClient(tools: tools, target: selected))
+            let service = service.at(selected)
             controller.prepare(service: service, snapshot: snapshot,
                 recentSessionIDs: controller.model.catalog.recentSessionIDs[snapshot.client] ?? [], currentSessionID: currentSessionID)
             controller.show()
@@ -198,7 +199,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
                 guard openingID == id, !controller.model.isConnecting, !controller.model.isPresentingConfirmation else { return }
                 let snapshot = controller.model.catalog.snapshot(clientID: target.clientID, rexAppPID: rexAppPID) ?? fetched
                 let selected = RexTarget(clientID: snapshot.client, server: target.server)
-                let service = ReshService(client: RexClient(tools: tools, target: selected))
+                let service = service.at(selected)
                 controller.prepare(service: service, snapshot: snapshot,
                     recentSessionIDs: controller.model.catalog.recentSessionIDs[snapshot.client] ?? [], currentSessionID: currentSessionID)
                 controller.model.reportDiagnostic(nil, source: "connection")
@@ -210,11 +211,38 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         return true
     }
-    private func handle(_ request: LauncherRequest) -> [String: Any] {
+    private func handle(_ request: LauncherRequest) async -> [String: Any] {
         guard let controller else { return ["error": "Panel is not ready."] }
         if request.operation == "quit" {
             DispatchQueue.main.async { NSApp.terminate(nil) }
             return ["stopping": true]
+        }
+        if request.changesSession {
+            guard !isStopping, !isExecutingCommand, openingID == nil, !controller.model.isConnecting,
+                  !controller.model.isPresentingConfirmation else {
+                return ["error": "A session operation is still in progress."]
+            }
+            isExecutingCommand = true
+            controller.model.isConnecting = true
+            DebugLog.shared.setEnabled(request.debug ?? options.debug)
+            defer {
+                isExecutingCommand = false
+                controller.model.isConnecting = false
+                DebugLog.shared.setEnabled(options.debug)
+            }
+            do {
+                let commands = LauncherCommands(service: service, configurationURL: options.config.map { URL(fileURLWithPath: $0) })
+                let result = try await commands.run(request)
+                await controller.model.catalog.refreshHistory().value
+                if result["session_id"] != nil, controller.panel.isVisible { controller.dismiss(focusRex: false) }
+                return result
+            } catch {
+                DebugLog.shared.record(error, source: "command:\(request.operation)")
+                return ["error": error.localizedDescription]
+            }
+        }
+        guard request.operation == "show" || request.operation == "status" else {
+            return ["error": "Unknown resh command: \(request.operation)"]
         }
         if request.operation == "show", !open(request) {
             return ["error": "A session operation is still in progress."]
@@ -293,10 +321,17 @@ struct ReshMain {
                 print("Config: \((configURL ?? ConfigurationFile.url()).path)\nSources: \(config.visibleSources.map(\.id.rawValue).joined(separator: ", "))\nProjects: \(config.projects.count)\nValid")
                 return
             }
-            if !options.serve, options.connect == nil, !options.last, !options.diagnose, options.name == nil {
+            if let path = options.name { print(SessionNamer().name(for: path)); return }
+            if !options.serve, !options.diagnose {
                 var request = LauncherRequest(client: options.client, server: options.server, config: configURL?.path,
                     debug: options.debug ? true : nil)
                 request.currentSessionID = options.currentSessionID
+                if options.last { request.operation = "last" }
+                else if let path = options.connect {
+                    request.operation = "connect"
+                    request.path = path
+                    request.cwd = FileManager.default.currentDirectoryPath
+                }
                 if options.serviceOperation == .stop {
                     try ServiceLauncher().stop()
                     print("{\"running\":false}")
@@ -310,7 +345,7 @@ struct ReshMain {
                     request.operation = "status"
                 }
                 var response = try LauncherIPC.send(request)
-                if response == nil, request.operation == "show" || startsService {
+                if response == nil, request.operation == "show" || request.changesSession || startsService {
                     if !startsService { try LauncherIPC.launchHost(configurationPath: configURL?.path) }
                     for _ in 0..<200 {
                         usleep(10_000)
@@ -322,41 +357,29 @@ struct ReshMain {
                 if options.serviceOperation == .status {
                     let data = try JSONSerialization.data(withJSONObject: response ?? ["running": false])
                     FileHandle.standardOutput.write(data); print("")
+                } else if request.changesSession, let response, !response.isEmpty {
+                    let data = try JSONSerialization.data(withJSONObject: response, options: [.prettyPrinted, .sortedKeys])
+                    FileHandle.standardOutput.write(data); print("")
                 }
                 return
             }
             let tools = try Tools.discover()
-            if let path = options.name { print(SessionNamer().name(for: path)); return }
             let target = RexTarget(clientID: options.client, server: options.server)
             let client = RexClient(tools: tools, target: target)
             let service = ReshService(client: client)
-            if options.connect != nil || options.last || options.diagnose {
+            if options.diagnose {
                 Task.detached {
                     do {
-                        let result: [String: Any]
-                        if options.last {
-                            guard let id = try await service.connectLast() else { exit(0) }
-                            result = ["session_id": id]
-                        } else if let path = options.connect {
-                            let configuration = try ConfigurationFile.load(configURL)
-                            let project = configuration.projects.first { $0.name == path } ?? configuration.project(at: path)
-                            let directory = project?.path ?? PathIdentity.canonical(path)
-                            let candidate = project?.candidate ?? Candidate(id: directory, kind: .directory,
-                                title: directory, path: directory, startupCommand: configuration.defaultStartupCommand)
-                            let id = try await service.connect(candidate)
-                            result = ["session_id": id, "path": directory]
-                        } else {
-                            let app = try await service.resolveClient()
-                            let connection = RexDataConnection(tools: tools)
-                            defer { connection.stop() }
-                            let snapshot = try connection.snapshot(target: RexTarget(clientID: app.id, server: target.server))
-                            let folders = try SourceLoader(tools: tools).load(.directories, configuration: .defaults, sessions: [])
-                            let theme = try RexTheme.read(rexApp: tools.rexApp,
-                                systemIsDark: UserDefaults.standard.string(forKey: "AppleInterfaceStyle") == "Dark")
-                            result = ["rex": tools.rex, "client": app.id, "server": target.server,
-                                "sessions": snapshot.sessions.count, "directories": folders.entries.count,
-                                "theme": theme.name, "glass": theme.usesGlass, "warnings": folders.warnings]
-                        }
+                        let app = try await service.resolveClient()
+                        let connection = RexDataConnection(tools: tools)
+                        defer { connection.stop() }
+                        let snapshot = try connection.snapshot(target: RexTarget(clientID: app.id, server: target.server))
+                        let folders = try SourceLoader(tools: tools).load(.directories, configuration: .defaults, sessions: [])
+                        let theme = try RexTheme.read(rexApp: tools.rexApp,
+                            systemIsDark: UserDefaults.standard.string(forKey: "AppleInterfaceStyle") == "Dark")
+                        let result: [String: Any] = ["rex": tools.rex, "client": app.id, "server": target.server,
+                            "sessions": snapshot.sessions.count, "directories": folders.entries.count,
+                            "theme": theme.name, "glass": theme.usesGlass, "warnings": folders.warnings]
                         let data = try JSONSerialization.data(withJSONObject: result, options: [.prettyPrinted, .sortedKeys])
                         FileHandle.standardOutput.write(data); print("")
                         exit(0)

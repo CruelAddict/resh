@@ -128,10 +128,11 @@ query, selection and initial source, not the catalog or provider capabilities.
 Sessions use most-recently-used order, based only on successful selections through
 resh (including `--connect` and `--last`). Unknown sessions keep Rex's original
 order. Unpinned search results rank by match quality, using recency to break ties; folder
-providers retain their own order. History is saved in `history.json` alongside
-`sessions.json`, separately for each calling Rex client and home server.
-History is best-effort: an unreadable or unwritable history never prevents a
-session from opening or turns a completed switch into a failure.
+providers retain their own order. History lives only in the resident resh process's
+memory, separately for each calling Rex client and home server. Dismissing the picker,
+sleeping, and reconnecting to Rex keep it; restarting resh clears it. Legacy
+`history.json` and `history.lock` files are no longer used and can be removed.
+Folder/session identities remain persistent in `sessions.json`.
 
 Pinned sessions precede the current session and the remaining MRU-ordered sessions.
 Pins belong to the resident resh process: dismissing the picker keeps them, restarting
@@ -180,7 +181,7 @@ startup or recovery, the same panel can show an inline spinner while data arrive
 Remote hosts never hold back local rows.
 Configuration errors, failed initial connections and actionable Rex refusals
 (such as disabled Remote Control or a session limit) appear inside the panel.
-Optional-source, remote-transport, protocol, history, theme and unread-receipt
+Optional-source, remote-transport, protocol, theme and unread-receipt
 failures never produce user notifications. A failed source does not block other
 results. Missing providers hide their source buttons once absence is confirmed
 on every host; a failed capability check is not evidence of absence.
@@ -190,8 +191,9 @@ success; failed registry cleanup is ignored. If closure cannot be confirmed, the
 row is retained until Rex supplies an updated snapshot, rather than removed
 optimistically. Session-changing commands are never automatically repeated.
 
-Configuration and session history are loaded in the background and refreshed by
-filesystem notifications, including atomic saves. Filesystem providers and
+Configuration is loaded in the background and refreshed by filesystem notifications,
+including atomic saves. Session history updates in memory after successful switches
+from either the picker or CLI. Filesystem providers and
 search-index preparation also run in the background. Combined sources show available sessions/projects while providers
 load; returning to Sessions is immediate. Search normalizes each list once,
 then reuses it for keystrokes until the source changes.
@@ -529,7 +531,13 @@ dist/resh/resh --connect "$PWD" --client client:…
 ```
 
 `--diagnose` and `--name` do not create sessions; `--connect` and `--last` are
-deliberately state-changing. The opt-in AppKit tests check session-title layout, unread indicators
+deliberately state-changing. These two commands send requests to the resident service,
+starting it without showing the picker when needed, and wait for the actual result.
+The service owns project configuration, session creation, switching and shared history.
+Relative `--connect` paths use the calling terminal's working directory, not the service's.
+Commands are never resent after a response timeout. `--help`, `--check-config`, `--name`
+and `--diagnose` remain standalone so they also work when the service is stopped.
+The opt-in AppKit tests check session-title layout, unread indicators
 and view reuse. Synthetic rendering tests do not connect to Rex or read its preferences.
 
 Override CLI discovery with `RESH_REX_BIN`; override the Rex application bundle
@@ -556,7 +564,8 @@ To also unload the stopped session job, run
 Logout also unloads the job; the cached plist does not enable automatic login startup.
 Then remove `resh`, `resh.lua`, `resh_Resh.bundle`, `LICENSE` and `THIRD_PARTY_NOTICES.md`
 from `~/Library/Application Support/resh`. Keep `sessions.json` to retain folder/session
-identities and `history.json` to retain MRU order. Remove any `resh_last` key bindings
+identities. Old `history.json` and `history.lock` files can be removed; MRU order is
+memory-only. Remove any `resh_last` key bindings
 from Rex as well. User configuration remains in `~/.config/resh/config.toml`.
 
 ## License
