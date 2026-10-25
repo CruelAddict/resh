@@ -19,18 +19,23 @@ struct LauncherRequest: Codable, Sendable {
 struct LauncherCommands {
     let service: ReshService
     let configurationURL: URL?
+    var sessions: [Candidate] = []
 
     func run(_ request: LauncherRequest) async throws -> [String: Any] {
         let service = service.at(RexTarget(clientID: request.client, server: request.server ?? service.target.server))
+        var current: Candidate?
+        if let id = request.currentSessionID {
+            current = try await Task.detached { try service.session(id, candidates: sessions) }.value
+        }
         switch request.operation {
         case "last":
-            guard let id = try await service.connectLast() else { return [:] }
+            guard let id = try await service.connectLast(from: current) else { return [:] }
             return ["session_id": id]
         case "connect":
             guard let path = request.path, let cwd = request.cwd else { throw ReshError("The folder and calling directory are required.") }
             let url = request.config.map { URL(fileURLWithPath: $0) } ?? configurationURL
             let configuration = try await Task.detached { try ConfigurationFile.load(url) }.value
-            let result = try await service.connect(path, configuration: configuration, cwd: cwd)
+            let result = try await service.connect(path, configuration: configuration, cwd: cwd, from: current)
             return ["session_id": result.sessionID, "path": result.path]
         default:
             throw ReshError("Unknown session command: \(request.operation)")

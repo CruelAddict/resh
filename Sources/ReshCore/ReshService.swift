@@ -20,7 +20,7 @@ public actor ReshService {
     public nonisolated var target: RexTarget { client.target }
     public nonisolated func hosts() throws -> (hosts: [RexHost], warnings: [String]) { try RexHostCatalog(client: client).read() }
     public nonisolated func remote(_ host: RexHost) -> RexRemote { RexRemote(client: client.at(host)) }
-    public nonisolated func sessions(host: RexHost? = nil) throws -> [RexSession] { try (host.map(client.at) ?? client).sessions() }
+    public nonisolated func sessions(host: RexHost? = nil, timeout: TimeInterval = 5) throws -> [RexSession] { try (host.map(client.at) ?? client).sessions(timeout: timeout) }
 
     public nonisolated static func candidates(from sessions: [RexSession], host: RexHost? = nil) -> [Candidate] {
         // A Rex session has no global working directory. Do not inspect its tabs.
@@ -46,37 +46,56 @@ public actor ReshService {
         }
     }
 
-    public func recordVisit(sessionID: String, host: RexHost? = nil, clientID: String) {
+    public func recordVisit(sessionID: String, host: RexHost? = nil, clientID: String, from current: Candidate? = nil,
+                            onlyIfNew: Bool = false, expectedRecentSessionIDs: [String]? = nil) {
         history.withVisits { visits in
-            SessionHistory.record(sessionID, host: host, clientID: clientID, server: client.target.server, visits: &visits)
+            let recent = visits.filter { $0.belongs(to: clientID, server: client.target.server) }
+            // Delayed focus notifications must not reorder a newer successful switch.
+            if onlyIfNew, recent.contains(where: { $0.matches(sessionID, host: host) }) { return }
+            if let expectedRecentSessionIDs, recent.map(\.candidateID) != expectedRecentSessionIDs { return }
+            SessionHistory.record(sessionID, host: host, clientID: clientID, server: client.target.server, from: current, visits: &visits)
         }
+    }
+
+    public nonisolated func session(_ sessionID: String, candidates: [Candidate] = []) throws -> Candidate {
+        let matches = candidates.filter { $0.sessionID == sessionID }
+        if matches.count == 1 { return matches[0] }
+        guard matches.isEmpty else { throw ReshError("Cannot identify the current Rex session's host.") }
+        if let session = try sessions().first(where: { $0.sessionID == sessionID }) {
+            return Self.candidates(from: [session])[0]
+        }
+        for host in try hosts().hosts {
+            if let session = try? sessions(host: host).first(where: { $0.sessionID == sessionID }) {
+                return Self.candidates(from: [session], host: host)[0]
+            }
+        }
+        throw ReshError("Cannot identify the current Rex session's host.")
     }
 
     public func forgetSession(sessionID: String, host: RexHost? = nil) {
-        let candidateID = Candidate.identity(sessionID, host: host)
         history.withVisits { visits in
-            visits.removeAll { $0.server == client.target.server && $0.candidateID == candidateID }
+            visits.removeAll { $0.server == client.target.server && $0.matches(sessionID, host: host) }
         }
     }
 
-    public func connect(_ path: String, configuration: ReshConfiguration, cwd: String) throws -> (sessionID: String, path: String) {
+    public func connect(_ path: String, configuration: ReshConfiguration, cwd: String, from current: Candidate? = nil) throws -> (sessionID: String, path: String) {
         let expanded = (path as NSString).expandingTildeInPath
         let absolute = expanded.hasPrefix("/") ? expanded : URL(fileURLWithPath: cwd).appendingPathComponent(expanded).path
         let directory = PathIdentity.canonical(absolute)
         let project = configuration.projects.first { $0.name == path } ?? configuration.project(at: directory)
         let candidate = project?.candidate ?? Candidate(id: directory, kind: .directory,
             title: directory, path: directory, startupCommand: configuration.defaultStartupCommand)
-        let sessionID = try connect(candidate)
+        let sessionID = try connect(candidate, from: current)
         return (sessionID, project?.path ?? directory)
     }
 
     /// Paths are sent as JSON arguments, never interpolated into a shell command.
     @discardableResult
-    public func connect(_ candidate: Candidate) throws -> String {
+    public func connect(_ candidate: Candidate, from current: Candidate? = nil) throws -> String {
         try history.withVisits { visits in
             let targetClient = try client.resolveClient().id
             let sessionID = try open(candidate, clientID: targetClient)
-            SessionHistory.record(sessionID, host: candidate.host, clientID: targetClient, server: client.target.server, visits: &visits)
+            SessionHistory.record(sessionID, host: candidate.host, clientID: targetClient, server: client.target.server, from: current, visits: &visits)
             return sessionID
         }
     }
@@ -117,25 +136,33 @@ public actor ReshService {
         return id
     }
 
-    /// The first entry is the last selection made by resh, not inferred app focus.
+    /// An explicit calling session takes precedence over the last recorded selection.
     @discardableResult
-    public func connectLast() throws -> String? {
+    public func connectLast(from current: Candidate? = nil) throws -> String? {
         try history.withVisits { visits in
             let clientID = try client.resolveClient().id
-            let previous = visits.filter { $0.belongs(to: clientID, server: client.target.server) }.dropFirst()
-            var catalog: [RexHost]?, snapshots: [String: [RexSession]] = [:]
+            let recent = visits.filter { $0.belongs(to: clientID, server: client.target.server) }
+            let previous = recent.filter { visit in
+                if let current, let id = current.sessionID { return !visit.matches(id, host: current.host) }
+                return visit.candidateID != recent.first?.candidateID
+            }
+            var catalog: (hosts: [RexHost], warnings: [String])?, snapshots: [String: [RexSession]] = [:]
             for visit in previous {
-                let host: RexHost?
+                var host: RexHost?
                 if let saved = visit.host {
-                    if catalog == nil { catalog = try hosts().hosts }
-                    host = catalog?.first { $0.id == saved.id }
+                    if catalog == nil { catalog = try hosts() }
+                    host = catalog?.hosts.first { $0.id == saved.id }
+                    if host == nil, let alias = catalog?.hosts.first(where: { !Set(saved.endpoints).isDisjoint(with: $0.endpoints) }) {
+                        host = RexHost(id: saved.id, label: alias.label, endpoints: alias.endpoints)
+                    }
                     if host == nil {
+                        guard catalog?.warnings.isEmpty == true else { throw ReshError("Cannot confirm whether the previous session's host was removed.") }
                         visits.removeAll { $0.belongs(to: clientID, server: client.target.server) && $0.candidateID == visit.candidateID }
                         continue
                     }
                 } else { host = nil }
                 let key = host?.id ?? client.target.server
-                if snapshots[key] == nil { snapshots[key] = try sessions(host: host) }
+                if snapshots[key] == nil { snapshots[key] = try sessions(host: host, timeout: host == nil ? 5 : 2) }
                 guard let session = snapshots[key]?.first(where: { $0.sessionID == visit.sessionID }) else {
                     visits.removeAll { $0.belongs(to: clientID, server: client.target.server) && $0.candidateID == visit.candidateID }
                     continue
@@ -143,7 +170,7 @@ public actor ReshService {
                 let candidate = Candidate(id: visit.candidateID, kind: .session, title: session.label,
                     sessionID: session.sessionID, host: host)
                 let id = try open(candidate, clientID: clientID)
-                SessionHistory.record(id, host: host, clientID: clientID, server: client.target.server, visits: &visits)
+                SessionHistory.record(id, host: host, clientID: clientID, server: client.target.server, from: current, visits: &visits)
                 return id
             }
             return nil

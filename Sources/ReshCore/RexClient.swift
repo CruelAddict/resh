@@ -60,8 +60,8 @@ public struct RexClient: Sendable {
         let json = String(decoding: try JSONSerialization.data(withJSONObject: arguments), as: UTF8.self)
         return try command(["api", "call", method, json])
     }
-    public func sessions() throws -> [RexSession] {
-        let reply = try JSONDecoder().decode([String: [RexSession]?].self, from: command(["ls", "--json"]))
+    public func sessions(timeout: TimeInterval = 5) throws -> [RexSession] {
+        let reply = try JSONDecoder().decode([String: [RexSession]?].self, from: command(["ls", "--json"], timeout: timeout))
         guard let sessions = reply["sessions"] else { throw ReshError("Rex returned an invalid session list.") }
         return sessions ?? []
     }

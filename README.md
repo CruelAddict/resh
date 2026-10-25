@@ -129,7 +129,7 @@ Combined sources keep their loaded folder rows; session changes do not rerun
 filesystem providers or change the selected row's identity. Hiding resets the
 query, selection and initial source, not the catalog or provider capabilities.
 Sessions use most-recently-used order, based on successful selections through
-resh (including `--connect` and `--last`) and newly created sessions Rex actually shows.
+resh (including `--connect` and `--last`), their calling sessions and newly created sessions Rex actually shows.
 Unknown sessions keep Rex's original
 order. Unpinned search results rank by match quality, using recency to break ties; folder
 providers retain their own order. History lives only in the resident resh process's
@@ -177,10 +177,14 @@ unpinning reverses the transition. The unread dot stays immediately after the ti
 while result numbers and host labels keep their right-hand columns. Unread changes
 and modifier presses do not move the title's starting position or resize the panel.
 
-`resh --last [--client CLIENT_ID]` switches back without opening the picker.
-Repeated calls toggle between the last two sessions opened through resh; closed
+`resh --last [--client CLIENT_ID] [--current-session SESSION_ID]` switches back without opening the picker.
+Successful switches remember both the session left and the session opened, including the first switch after starting resh.
+The Lua action passes the actual calling session; CLI commands can pass it explicitly or use the frontmost matching Rex app's focus.
+When focus is unavailable, `--last` falls back to the last recorded selection.
+Repeated calls toggle between the last two sessions; closed
 sessions are skipped. With no available previous session, it does nothing and
 exits successfully without output.
+Checking a previous session on a remote host has a two-second timeout; an unavailable host does not erase its history.
 The installed Lua adapter provides the `resh_last` action, which can be bound in
 Rex's `init.lua`, for example:
 
@@ -189,9 +193,9 @@ rex.bind("ctrl+[KeyA]>shift+[KeyL]", "resh_last")
 ```
 
 This is Ctrl+A followed by Shift+L, including with non-Latin keyboard layouts.
-Switching through Rex's sidebar or built-in session actions does not update history:
-only newly created sessions and the replacement for a closed current session update
-history outside resh. Focus changes are read on preference-file notifications, not
+Switching through Rex's sidebar does not itself reorder history, but the next resh switch remembers its actual source.
+The initial focus, newly created sessions and the replacement for a closed current session update
+history outside resh, even before opening the picker. Focus changes are read on preference-file and app-activation notifications, not
 polled or inferred from attachments.
 
 Normal openings show the prepared session list immediately. During initial

@@ -12,6 +12,12 @@ final class SessionHistory: @unchecked Sendable {
         func belongs(to clientID: String, server: String) -> Bool {
             self.clientID == clientID && self.server == server
         }
+        func matches(_ sessionID: String, host: RexHost?) -> Bool {
+            guard self.sessionID == sessionID else { return false }
+            if self.host?.id == host?.id { return true }
+            guard let saved = self.host, let host else { return false }
+            return !Set(saved.endpoints).isDisjoint(with: host.endpoints)
+        }
     }
 
     private let lock = NSLock()
@@ -23,10 +29,13 @@ final class SessionHistory: @unchecked Sendable {
         return try operation(&visits)
     }
 
-    static func record(_ sessionID: String, host: RexHost?, clientID: String, server: String, visits: inout [Visit]) {
+    static func record(_ sessionID: String, host: RexHost?, clientID: String, server: String, from current: Candidate? = nil, visits: inout [Visit]) {
         let visit = Visit(clientID: clientID, server: server, sessionID: sessionID, host: host)
+        if let current, let sourceID = current.sessionID, !visit.matches(sourceID, host: current.host) {
+            record(sourceID, host: current.host, clientID: clientID, server: server, visits: &visits)
+        }
         visits.removeAll {
-            $0.belongs(to: clientID, server: server) && $0.candidateID == visit.candidateID
+            $0.belongs(to: clientID, server: server) && $0.matches(sessionID, host: host)
         }
         visits.insert(visit, at: 0)
     }

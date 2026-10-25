@@ -23,8 +23,12 @@ rex.action{
   description = "Toggle between the last two sessions opened through resh.",
   category = "Session",
   run = function(ctx)
-    local result, err = rex.exec({ executable, "--last", "--client", ctx.client_id },
-      { timeout = 15 })
+    local arguments = { executable, "--last", "--client", ctx.client_id }
+    if ctx.session_id then
+      table.insert(arguments, "--current-session")
+      table.insert(arguments, ctx.session_id)
+    end
+    local result, err = rex.exec(arguments, { timeout = 15 })
     if not result then rex.log("debug", tostring(err))
     elseif not result.ok then rex.log("debug", result.stderr) end
   end,

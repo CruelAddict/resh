@@ -146,6 +146,7 @@ private final class FakeRunner: CommandRunning, @unchecked Sendable {
     var selections: [String] = []
     var selectionServers: [String] = []
     var rejectSelection = false
+    var unavailableServers = Set<String>()
     var clientIDs = ["client:test"]
     var calls: [(String, [String])] = []
     func run(_ executable: String, _ arguments: [String], timeout: TimeInterval, directory: String?) throws -> CommandResult {
@@ -172,6 +173,7 @@ private final class FakeRunner: CommandRunning, @unchecked Sendable {
             return try json(["results": sourcePaths])
         }
         if arguments.contains("ls") {
+            if unavailableServers.contains(server) { return CommandResult(status: 1, stderr: Data("Connection timed out".utf8)) }
             return try json(["sessions": (serverSessions[server] ?? sessions).map { ["session_id": $0.id, "label": $0.label] }])
         }
         if let index = arguments.firstIndex(of: "kill") {
@@ -317,9 +319,8 @@ struct ServiceTests {
         let temporary = try TemporaryDirectory(), runner = FakeRunner()
         runner.sessions = [("a", "A", "/a"), ("b", "B", "/b")]
         let first = service(runner, temporary)
-        try await first.connect(session("a"))
-        try await first.connect(session("b"))
-        try await first.connect(session("b"))
+        try await first.connect(session("b"), from: session("a"))
+        try await first.connect(session("b"), from: session("b"))
         let reopened = first.at(first.target)
         #expect(try await reopened.recentSessionIDs() == ["b", "a"])
         #expect(try await reopened.connectLast() == "a")
@@ -338,16 +339,28 @@ struct ServiceTests {
         try await service.connect(session("a"))
         try await service.connect(session("b"))
         runner.rejectSelection = true
-        await #expect(throws: ReshError.self) { try await service.connect(session("c")) }
-        await #expect(throws: ReshError.self) { try await service.connectLast() }
+        await #expect(throws: ReshError.self) { try await service.connect(session("c"), from: session("a")) }
+        await #expect(throws: ReshError.self) { try await service.connectLast(from: session("c")) }
         #expect(try await service.recentSessionIDs() == ["b", "a"])
         runner.rejectSelection = false
         #expect(try await service.connectLast() == "a")
     }
 
-    @Test func previousSessionSkipsClosedSessions() async throws {
+    @Test(arguments: ["a", "b", "c"])
+    func previousSessionUsesCallingSession(_ current: String) async throws {
         let temporary = try TemporaryDirectory(), runner = FakeRunner()
         runner.sessions = [("a", "A", "/a"), ("b", "B", "/b"), ("c", "C", "/c")]
+        let service = service(runner, temporary)
+        try await service.connect(session("b"), from: session("a"))
+        let previous = current == "b" ? "a" : "b"
+        #expect(try await service.connectLast(from: session(current)) == previous)
+        #expect(try await service.connectLast(from: session(previous)) == current)
+        #expect(runner.selections.suffix(2) == [previous, current])
+    }
+
+    @Test func previousSessionSkipsClosedSessions() async throws {
+        let temporary = try TemporaryDirectory(), runner = FakeRunner()
+        runner.sessions = [("a", "A", "/a"), ("b", "B", "/b"), ("c", "C", "/c"), ("d", "D", "/d")]
         let service = service(runner, temporary)
         for id in ["a", "b", "c"] { try await service.connect(session(id)) }
         runner.sessions.removeAll { $0.id == "b" }
@@ -356,6 +369,8 @@ struct ServiceTests {
         #expect(try await service.connectLast() == "c")
         try await service.delete(sessionID: "c")
         #expect(try await service.recentSessionIDs() == ["a"])
+        #expect(try await service.connectLast(from: session("d")) == "a")
+        #expect(try await service.connectLast(from: session("a")) == "d")
     }
 
     @Test func sessionHistoryBelongsToTheCallingClientAndServer() async throws {
@@ -390,6 +405,31 @@ struct ServiceTests {
         try await service.connectLast()
         #expect(try await service.recentSessionIDs() == ["host:build/same", "same"])
         #expect(runner.selectionServers == ["test", "test", "test", "test"])
+    }
+
+    @Test(arguments: ["sessions", "catalog"])
+    func unavailablePreviousSessionKeepsHistory(_ failure: String) async throws {
+        let temporary = try TemporaryDirectory(), runner = FakeRunner()
+        let host = RexHost(id: "host:build", label: "build", endpoints: ["https://build.example"])
+        runner.catalogHosts = [host]
+        runner.sessions = [("local", "Local", "/local")]
+        runner.serverSessions[host.server] = [("remote", "Remote", "/remote")]
+        let service = service(runner, temporary)
+        let remote = try service.session("remote")
+        try await service.connect(session("local"), from: remote)
+        if failure == "sessions" { runner.unavailableServers.insert(host.server) }
+        else { runner.catalogHosts = []; runner.catalogWarnings = ["Home is unavailable"] }
+        await #expect(throws: ReshError.self) { try await service.connectLast(from: session("local")) }
+        #expect(try await service.recentSessionIDs() == ["local", "host:build/remote"])
+        #expect(runner.selections == ["local"])
+        runner.unavailableServers = []; runner.catalogHosts = [host]; runner.catalogWarnings = []
+        #expect(try await service.connectLast(from: session("local")) == "remote")
+        let alias = RexHost(id: "host:alias", label: "alias", endpoints: host.endpoints)
+        runner.catalogHosts = [alias, host]
+        runner.serverSessions[alias.server] = runner.serverSessions[host.server]
+        #expect(try await service.connectLast(from: session("remote", host: alias)) == "local")
+        #expect(try await service.connectLast(from: session("local")) == "remote")
+        #expect(try await service.recentSessionIDs() == ["host:alias/remote", "local"])
     }
 }
 

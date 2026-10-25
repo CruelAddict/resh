@@ -140,7 +140,7 @@ struct DataConnectionTests {
         model.openResult(2)
         for _ in 0..<300 where !connected { try await Task.sleep(for: .milliseconds(10)) }
         #expect(connected)
-        #expect(model.catalog.recentSessionIDs["client:test"] == ["a"])
+        #expect(model.catalog.recentSessionIDs["client:test"] == ["a", "b"])
         let selected = stub.directory.appendingPathComponent("rex.selected")
         #expect(try String(contentsOf: selected, encoding: .utf8) == "a")
     }
@@ -158,6 +158,10 @@ struct DataConnectionTests {
             print(json.dumps({'hosts':[{'host':{'id':'host:build','label':'build','endpoints':['https://build.example']}}]}))
         elif 'actions' in sys.argv:
             print('{"actions":[]}')
+        elif 'ls' in sys.argv:
+            sessions=[{'session_id':'local' if server=='home' else 'remote','label':'Work'}]
+            if server=='\(activeHost == "remote" ? "build" : "home")': sessions.append({'session_id':'new','label':'Scratch'})
+            print(json.dumps({'sessions':sessions}))
         elif 'session.create' in sys.argv:
             assert server=='\(activeHost == "remote" ? "build" : "home")'
             args=json.loads(sys.argv[-1])
@@ -183,8 +187,9 @@ struct DataConnectionTests {
         let service = ReshService(client: RexClient(tools: stub.tools, target: RexTarget(clientID: "client:test", server: "home")),
             registry: SessionRegistry(directory: stub.directory))
         let sessions = [RexSession(sessionID: "local", label: "Work")]
+        var focus: String?
         let model = SearchModel(service: service, tools: stub.tools, sessions: sessions, configurationURL: config,
-            readTheme: { _, _ in .fixture }, readFocusedSession: { _ in nil })
+            readTheme: { _, _ in .fixture }, readFocusedSession: { _ in focus })
         defer { model.clear() }
         model.loadInitial()
         await model.loadingTask?.value
@@ -192,7 +197,7 @@ struct DataConnectionTests {
         let host = try #require(model.hosts.first)
         model.receive(.success(.sessions([RexSession(sessionID: "remote", label: "Build")])), host: host)
         for _ in 0..<300 where model.isRemoteLoading { try await Task.sleep(for: .milliseconds(10)) }
-        model.prepare(service: service, sessions: sessions, currentSessionID: activeHost == "none" ? nil : activeHost)
+        model.prepare(service: service, sessions: sessions, rexAppPID: 42, currentSessionID: activeHost == "none" ? nil : activeHost)
         let expectedHost = activeHost == "remote" ? host : nil
         #expect(model.newSessionHost == expectedHost)
         if activeHost != "none" { #expect(model.selected?.host != expectedHost) }
@@ -209,9 +214,22 @@ struct DataConnectionTests {
             for _ in 0..<300 where !connected { try await Task.sleep(for: .milliseconds(10)) }
         }
         #expect(connected)
-        #expect(model.catalog.recentSessionIDs["client:test"] == [Candidate.identity("new", host: expectedHost)])
+        let expectedHistory = [Candidate.identity("new", host: expectedHost)]
+            + (activeHost == "none" ? [] : [Candidate.identity(activeHost, host: expectedHost)])
+        #expect(model.catalog.recentSessionIDs["client:test"] == expectedHistory)
         #expect(try String(contentsOf: stub.directory.appendingPathComponent("selected"), encoding: .utf8) == "new")
         #expect(try String(contentsOf: stub.directory.appendingPathComponent("creations"), encoding: .utf8) == "1")
+        if activeHost != "none" {
+            let created = Candidate(id: Candidate.identity("new", host: expectedHost), kind: .session,
+                title: "Scratch", sessionID: "new", host: expectedHost)
+            #expect(try await service.connectLast(from: created) == activeHost)
+            focus = "new"
+            model.receive(.success(.created("new")), host: expectedHost)
+            let previous = expectedHost == nil ? sessions : [RexSession(sessionID: "remote", label: "Build")]
+            model.receive(.success(.sessions(previous + [RexSession(sessionID: "new", label: "Scratch")])), host: expectedHost)
+            await model.catalog.refreshHistory().value
+            #expect(try await service.recentSessionIDs() == Array(expectedHistory.reversed()))
+        }
     }
 
     @Test @MainActor func creationWaitsForTheActiveHost() async throws {
@@ -279,7 +297,8 @@ struct DataConnectionTests {
         #expect(controller.panel.isVisible)
     }
 
-    @Test @MainActor func launcherCommandsUseResidentHistory() async throws {
+    @Test(arguments: [false, true])
+    @MainActor func launcherCommandsUseResidentHistory(_ cached: Bool) async throws {
         let stub = try StubRex(body: """
         import pathlib
         root=pathlib.Path(__file__).parent.resolve()
@@ -312,7 +331,8 @@ struct DataConnectionTests {
         """.write(to: config, atomically: true, encoding: .utf8)
         let service = ReshService(client: RexClient(tools: stub.tools, target: RexTarget(clientID: "client:test")),
             registry: SessionRegistry(directory: stub.directory))
-        let commands = LauncherCommands(service: service, configurationURL: config)
+        let commands = LauncherCommands(service: service, configurationURL: config,
+            sessions: cached ? ReshService.candidates(from: [RexSession(sessionID: "a", label: "First")]) : [])
         let name = "resh-tests." + UUID().uuidString
         let host = try LauncherHost(name: name as CFString)
         defer { host.stop() }
@@ -323,19 +343,22 @@ struct DataConnectionTests {
         func send(_ request: LauncherRequest) async throws -> [String: Any] {
             try #require(await Task.detached { try LauncherIPC.send(request, name: name as CFString) }.value)
         }
-        let last = LauncherRequest(operation: "last", client: "client:test")
-        try await service.connect(Candidate(id: "a", kind: .session, title: "First", sessionID: "a"))
+        var last = LauncherRequest(operation: "last", client: "client:test", currentSessionID: "a")
         #expect(try await send(last).isEmpty)
-        let connected = try await send(LauncherRequest(operation: "connect", client: "client:test", path: ".", cwd: folder.path))
+        let connected = try await send(LauncherRequest(operation: "connect", client: "client:test", currentSessionID: "a", path: ".", cwd: folder.path))
         #expect(connected["session_id"] as? String == "b")
         #expect(connected["path"] as? String == folder.resolvingSymlinksInPath().path)
         #expect(try await service.recentSessionIDs() == ["b", "a"])
+        last.currentSessionID = "b"
         #expect(try await send(last)["session_id"] as? String == "a")
         #expect(try await service.recentSessionIDs() == ["a", "b"])
+        last.currentSessionID = "a"
+        #expect(try await send(last)["session_id"] as? String == "b")
+        #expect(try await service.recentSessionIDs() == ["b", "a"])
         await #expect(throws: ReshError.self) {
             try await send(LauncherRequest(operation: "connect", client: "client:test", path: "missing", cwd: folder.path))
         }
-        #expect(try await service.recentSessionIDs() == ["a", "b"])
+        #expect(try await service.recentSessionIDs() == ["b", "a"])
     }
 
     @Test func snapshotRecoversAfterDisconnect() throws {
@@ -451,7 +474,8 @@ struct DataConnectionTests {
         #expect(ProcessInfo.processInfo.systemUptime - start < 2)
     }
 
-    @Test @MainActor func catalogStaysCurrentBetweenPresentations() async throws {
+    @Test(arguments: [false, true], [false, true])
+    @MainActor func catalogStaysCurrentBetweenPresentations(presented: Bool, events: Bool) async throws {
         let stub = try StubRex(body: """
         import pathlib
         root=pathlib.Path(__file__).parent
@@ -464,18 +488,18 @@ struct DataConnectionTests {
             print('{"type":"clients","clients":[{"client":"client:test","rex_app_pid":42}]}',flush=True)
             print('{"type":"sessions","sessions":[{"session_id":"s","label":"First"}]}',flush=True)
             while not (root/'changed').exists(): time.sleep(.01)
-            print('{"type":"created","session_id":"new"}',flush=True)
+            if \(events ? "True" : "False"): print('{"type":"created","session_id":"new"}',flush=True)
             print('{"type":"sessions","sessions":[{"session_id":"s","label":"Renamed"},{"session_id":"new","label":"New"}]}',flush=True)
             while not (root/'closed').exists(): time.sleep(.01)
-            print('{"type":"destroyed","session_id":"new"}',flush=True)
+            if \(events ? "True" : "False"): print('{"type":"destroyed","session_id":"new"}',flush=True)
             print('{"type":"sessions","sessions":[{"session_id":"s","label":"Renamed"}]}',flush=True)
             time.sleep(30)
         """)
         let config = stub.directory.appendingPathComponent("config.toml")
         try "".write(to: config, atomically: true, encoding: .utf8)
-        let service = ReshService(client: RexClient(tools: stub.tools, target: RexTarget(clientID: "client:test")),
+        let service = ReshService(client: RexClient(tools: stub.tools, target: RexTarget()),
             registry: SessionRegistry(directory: stub.directory))
-        await service.recordVisit(sessionID: "s", clientID: "client:test")
+        let selectedService = service.at(RexTarget(clientID: "client:test"))
         var focus = "s"
         let model = SearchModel(service: service, tools: stub.tools, configurationURL: config,
             readTheme: { _, _ in .fixture }, readFocusedSession: { _ in focus })
@@ -483,7 +507,7 @@ struct DataConnectionTests {
         model.startBackground()
         await model.loadingTask?.value
         for _ in 0..<300 {
-            if model.results.first?.title == "First" { break }
+            if model.results.first?.title == "First", model.catalog.recentSessionIDs["client:test"] == ["s"] { break }
             try await Task.sleep(for: .milliseconds(10))
         }
         #expect(model.results.map(\.title) == ["First"])
@@ -497,36 +521,46 @@ struct DataConnectionTests {
         }
         let snapshot = try #require(model.catalog.snapshot(clientID: nil, rexAppPID: 42))
         #expect(snapshot.client == "client:test" && snapshot.sessions.map(\.label) == ["Renamed", "New"])
-        #expect(try await service.recentSessionIDs() == ["s"])
+        #expect(try await selectedService.recentSessionIDs() == ["s"])
         focus = "new"
-        model.prepare(service: service, sessions: snapshot.sessions, rexAppPID: 42, currentSessionID: focus)
+        if presented { model.prepare(service: selectedService, sessions: snapshot.sessions, rexAppPID: 42, currentSessionID: focus) }
+        else { model.refreshFocus() }
         for _ in 0..<300 where model.catalog.recentSessionIDs["client:test"] != ["new", "s"] {
             try await Task.sleep(for: .milliseconds(10))
         }
-        #expect(model.results.map(\.title) == ["New", "Renamed"])
-        #expect(model.numberedRows.map { model.results[$0].id } == ["s"])
+        #expect(model.catalog.recentSessionIDs["client:test"] == ["new", "s"])
+        if presented {
+            #expect(model.results.map(\.title) == ["New", "Renamed"])
+            #expect(model.numberedRows.map { model.results[$0].id } == ["s"])
+        }
         #expect(!model.isLoading)
-        model.selection = 0
-        model.deleteSelection()
+        if presented { model.selection = 0; model.deleteSelection() }
+        else {
+            try "".write(to: stub.directory.appendingPathComponent("closed"), atomically: true, encoding: .utf8)
+            for _ in 0..<300 where model.sessionCount != 1 { try await Task.sleep(for: .milliseconds(10)) }
+        }
         for _ in 0..<300 where model.isConnecting { try await Task.sleep(for: .milliseconds(10)) }
         #expect(model.results.map(\.id) == ["s"] && model.currentCandidateID == nil)
         focus = "s"
         model.refreshFocus()
         for _ in 0..<300 {
-            if !model.isConnecting, model.currentCandidateID == "s", model.catalog.recentSessionIDs["client:test"] == ["s"] { break }
+            if !model.isConnecting, model.catalog.recentSessionIDs["client:test"] == ["s"] { break }
             try await Task.sleep(for: .milliseconds(10))
         }
-        #expect(model.results.map(\.id) == ["s"] && model.currentCandidateID == "s")
-        #expect(model.numberedRows.isEmpty && !model.isConnecting)
-        #expect(try await service.recentSessionIDs() == ["s"])
+        #expect(model.results.map(\.id) == ["s"] && !model.isConnecting)
+        if presented { #expect(model.currentCandidateID == "s" && model.numberedRows.isEmpty) }
+        #expect(try await selectedService.recentSessionIDs() == ["s"])
     }
 
-    @Test @MainActor func retryAfterFailedSelection() async throws {
+    @Test(arguments: [false, true])
+    @MainActor func retryAfterFailedSelection(_ currentMissing: Bool) async throws {
         let stub = try StubRex(body: """
         if 'hosts' in sys.argv:
             print('{"hosts":[]}')
         elif 'client' in sys.argv:
             print('{"clients":[{"client_id":"client:test","info":{"kind":"app","platform":"macos"}}]}')
+        elif 'ls' in sys.argv:
+            print('{"sessions":[{"session_id":"current","label":"Current"}]}')
         elif 'session.select' in sys.argv:
             print('Remote Control disabled',file=sys.stderr)
             sys.exit(1)
@@ -544,6 +578,9 @@ struct DataConnectionTests {
         defer { model.clear() }
         model.loadInitial()
         await model.loadingTask?.value
+        if currentMissing {
+            model.prepare(service: service, sessions: [RexSession(sessionID: "old", label: "Session")], currentSessionID: "current")
+        }
         model.query = "session"
         model.openSelection()
         for _ in 0..<300 where model.isConnecting { try await Task.sleep(for: .milliseconds(10)) }

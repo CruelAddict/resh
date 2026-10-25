@@ -231,8 +231,15 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
                 DebugLog.shared.setEnabled(options.debug)
             }
             do {
-                let commands = LauncherCommands(service: service, configurationURL: options.config.map { URL(fileURLWithPath: $0) })
-                let result = try await commands.run(request)
+                var command = request
+                let sameServer = controller.model.service.target.server == (request.server ?? service.target.server)
+                if command.currentSessionID == nil, sameServer {
+                    let clients = controller.model.catalog.clients.filter { request.client == nil || $0.client == request.client }
+                    if clients.count == 1 { command.currentSessionID = RexAppMonitor.focusedSessionID(rexAppPID: clients[0].rexAppPID) }
+                }
+                let commands = LauncherCommands(service: service, configurationURL: options.config.map { URL(fileURLWithPath: $0) },
+                    sessions: sameServer ? controller.model.sessionCandidates : [])
+                let result = try await commands.run(command)
                 await controller.model.catalog.refreshHistory().value
                 if result["session_id"] != nil, controller.panel.isVisible { controller.dismiss(focusRex: false) }
                 return result
@@ -296,8 +303,8 @@ struct ReshMain {
                 resh — native, sesh-inspired session/folder picker for Rex
 
                 resh [--client CLIENT_ID] [--current-session SESSION_ID] [--server ADDRESS] [--debug]
-                resh --connect DIRECTORY [--client CLIENT_ID]
-                resh --last [--client CLIENT_ID]
+                resh --connect DIRECTORY [--client CLIENT_ID] [--current-session SESSION_ID]
+                resh --last [--client CLIENT_ID] [--current-session SESSION_ID]
                 resh --name DIRECTORY
                 resh --diagnose
                 resh service start|stop|restart|status [--config FILE] [--debug]
