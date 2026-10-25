@@ -52,8 +52,7 @@ private final class AttentionUpdates: @unchecked Sendable {
     }
 }
 
-@Suite("Session data connections")
-struct DataConnectionTests {
+extension IntegrationTests {
     /// Read-only compatibility check against a running local Rex app and server.
     @Test(.enabled(if: ProcessInfo.processInfo.environment["RESH_REX_SMOKE"] == "1",
         "Set RESH_REX_SMOKE=1 to check a running Rex."))

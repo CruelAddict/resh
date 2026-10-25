@@ -1,6 +1,11 @@
 import Foundation
 import ReshCore
+import Testing
 @testable import Resh
+
+// Serialize independent integration scenarios, not their background work.
+@Suite("Rex integration", .serialized)
+struct IntegrationTests {}
 
 extension RexTheme {
     static var fixture: RexTheme {
