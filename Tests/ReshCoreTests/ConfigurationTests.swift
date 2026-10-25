@@ -9,12 +9,14 @@ struct ConfigurationTests {
     @Test func defaultSourcesAndShortcuts() throws {
         let config = ReshConfiguration.defaults
         #expect(config.visibleSources.map(\.id) == [.sessions, .all, .directories, .find])
+        #expect(config.visibleSources.map(\.title) == ["Sessions", "All", "Recent", "Find"])
         #expect(config.keymap.action(for: try KeyChord("cmd+e")) == .scope(.sessions))
         #expect(config.keymap.action(for: try KeyChord("cmd+a")) == .scope(.all))
         #expect(config.keymap.action(for: try KeyChord("cmd+shift+p")) == .pin)
         #expect(config.keymap.action(for: try KeyChord("cmd+shift+n")) == .create)
+        #expect(config.keymap.action(for: try KeyChord("cmd+shift+d")) == .delete)
         #expect(config.keymap.label(for: .create) == "⇧⌘N")
-        #expect(config.keymap.label(for: .delete) == "⇧⌘⌫")
+        #expect(config.keymap.label(for: .delete) == "⇧⌘D")
         for number in 1...9 {
             #expect(config.keymap.action(for: try KeyChord("cmd+\(number)")) == .openResult(number))
         }
@@ -70,6 +72,7 @@ struct ConfigurationTests {
     @Test(arguments: [
         "source_order = []", "initial_source = 'missing'", "source_order = ['sessions', 'sessions']",
         "typo = true", "[keymap]\n'ctrl+w' = 'source:missing'", "[keymap]\n'ctrl+w' = 'explode'",
+        "[keymap]\n'ctrl+r' = 'reload'",
         "[keymap]\n'ctrl+1' = 'open:0'", "[keymap]\n'ctrl+1' = 'open:10'",
         "[keymap]\n'ctrl+n' = 'next'\n'control+n' = 'previous'",
         "[[sources]]\nid = 'a'\ntype = 'union'\nsources = ['a']",
@@ -90,7 +93,7 @@ struct ConfigurationTests {
     }
     @Test func physicalKeysAndExactModifiersKeepNativeEditing() throws {
         let map = try Keymap(overrides: ["ctrl+t":"source:sessions", "ctrl+tab":"next_source",
-            "ctrl+1":"open:1", "ctrl+shift+p":"pin", "ctrl+shift+n":"create"])
+            "ctrl+1":"open:1", "ctrl+shift+p":"pin", "ctrl+shift+n":"create", "ctrl+shift+d":"delete"])
         #expect(map.action(for: KeyChord(code: 17, control: true)) == .scope(.sessions))
         #expect(map.action(for: KeyChord(code: 17, control: true, shift: true)) == nil)
         #expect(map.action(for: try KeyChord("ctrl+tab")) == .nextSource)
@@ -99,8 +102,11 @@ struct ConfigurationTests {
         #expect(map.label(for: .pin, modifiers: 2) == "⌃⇧P")
         #expect(map.action(for: try KeyChord("ctrl+shift+n")) == .create)
         #expect(map.label(for: .create, modifiers: 2) == "⌃⇧N")
+        #expect(map.action(for: try KeyChord("ctrl+shift+d")) == .delete)
+        #expect(map.label(for: .delete, modifiers: 2) == "⌃⇧D")
         #expect(map.label(for: .openResult(1), modifiers: 0).isEmpty)
-        for key in ["cmd+c", "cmd+v", "cmd+x", "cmd+z", "ctrl+a", "ctrl+f"] {
+        for key in ["cmd+c", "cmd+v", "cmd+x", "cmd+z", "ctrl+a", "ctrl+f", "cmd+d", "ctrl+d",
+                    "cmd+shift+backspace", "ctrl+shift+backspace"] {
             #expect(map.action(for: try KeyChord(key)) == nil)
         }
         #expect(throws: ReshError.self) { try KeyChord("ctrl+ctrl+a") }

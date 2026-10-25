@@ -213,7 +213,6 @@ final class PanelController: NSObject, NSWindowDelegate {
         case .dismiss: if !model.isConnecting { dismiss(focusRex: true) }
         case .delete: if !event.isARepeat { model.deleteSelection() }
         case .ignore: break
-        case .reload: model.reload()
         case .nextSource: model.cycleSource(1)
         case .previousSource: model.cycleSource(-1)
         }

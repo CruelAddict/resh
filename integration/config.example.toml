@@ -12,8 +12,7 @@
 "ctrl+p" = "previous"
 "ctrl+j" = "next"
 "ctrl+k" = "previous"
-"ctrl+d" = "delete" # asks for confirmation
-"ctrl+r" = "reload"
+"ctrl+shift+d" = "delete" # closes immediately, without confirmation
 "ctrl+tab" = "next_source"
 "ctrl+shift+tab" = "previous_source"
 "ctrl+shift+p" = "pin"

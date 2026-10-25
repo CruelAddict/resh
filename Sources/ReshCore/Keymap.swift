@@ -55,7 +55,7 @@ public struct Keymap: Equatable, Sendable {
         let defaults: [String: PanelShortcut] = [
             "cmd+e":.scope(.sessions), "cmd+a":.scope(.all), "cmd+r":.scope(.directories),
             "cmd+f":.scope(.find), "cmd+p":.scope(.configs), "cmd+shift+n":.create, "cmd+shift+p":.pin,
-            "cmd+s":.ignore, "cmd+shift+backspace":.delete,
+            "cmd+s":.ignore, "cmd+shift+d":.delete,
             "ctrl+n":.move(1), "ctrl+p":.move(-1), "down":.move(1), "up":.move(-1),
             "tab":.move(1), "shift+tab":.move(-1), "enter":.open, "keypadenter":.open, "escape":.dismiss,
             "ctrl+[":.dismiss,
@@ -78,7 +78,6 @@ public struct Keymap: Equatable, Sendable {
             case "pin": action = .pin
             case "dismiss": action = .dismiss
             case "delete": action = .delete
-            case "reload": action = .reload
             case "next_source": action = .nextSource
             case "previous_source": action = .previousSource
             default:

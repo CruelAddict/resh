@@ -59,8 +59,8 @@ public struct ReshConfiguration: Equatable, Sendable {
         var sources: [SourceDefinition] = [
             .init(id: .sessions, title: "Sessions", kind: .sessions),
             .init(id: .all, title: "All", kind: .union, members: [.sessions, .configs, .directories]),
-            .init(id: .directories, title: "Recent folders", kind: .zoxide),
-            .init(id: .find, title: "Find folders", kind: .find, timeout: 12),
+            .init(id: .directories, title: "Recent", kind: .zoxide),
+            .init(id: .find, title: "Find", kind: .find, timeout: 12),
             .init(id: .configs, title: "Projects", kind: .projects),
         ]
         var declared = Set<SearchScope>()

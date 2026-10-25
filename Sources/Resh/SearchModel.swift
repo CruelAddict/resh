@@ -269,7 +269,7 @@ final class SearchModel: ObservableObject {
         updateResults()
     }
 
-    func reload() {
+    func retry() {
         if let onRetryOpening { onRetryOpening(); return }
         load(reloadConfiguration: true, refreshSessions: true)
     }

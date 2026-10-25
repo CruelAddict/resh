@@ -680,5 +680,5 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
         model.selection = table.clickedRow
         model.openSelection()
     }
-    @objc private func retryClicked() { model.reload() }
+    @objc private func retryClicked() { model.retry() }
 }

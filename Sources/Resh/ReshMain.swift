@@ -307,11 +307,11 @@ struct ReshMain {
                 Config: ~/.config/resh/config.toml (or $RESH_CONFIG / --config FILE)
                 --debug: write diagnostics to ~/Library/Logs/resh/debug.log
 
-                ⌘E Sessions · ⌘A All · ⌘R Recent folders · ⌘F Find folders · ⌘P Projects
+                ⌘E Sessions · ⌘A All · ⌘R Recent · ⌘F Find · ⌘P Projects
                 ⌘1…9 open a result · ⌘⇧P pin/unpin a session (memory only)
                 ⌘⇧N create a session named after the search text
                 ↑/↓ or Tab/Shift-Tab navigate · Return open · Esc or Ctrl+[ dismiss
-                ⌘⇧Backspace immediately close a selected session
+                ⌘⇧D immediately close a selected session
                 """)
                 return
             }

@@ -89,9 +89,9 @@ optional and only affects repository-based session naming.
 | ↑ / ↓, Tab / Shift-Tab, ⌃P / ⌃N | Select a result |
 | Return / click | Switch or create |
 | Esc / Ctrl+[ / click outside | Dismiss without creating a session |
-| ⌘⇧Backspace | Immediately close a selected session and every program in it |
+| ⌘⇧D | Immediately close a selected session and every program in it |
 
-Recent folders and Find folders are hidden when their provider is unavailable on
+Recent and Find are hidden when their provider is unavailable on
 every host, including This Mac. All is hidden when its sources add nothing beyond
 Sessions; configured projects keep it available. Pending or failed capability
 checks do not count as confirmed absence, and empty results do not hide an available
@@ -349,7 +349,6 @@ initial_source = "sessions"
 "ctrl+p" = "previous"
 "ctrl+tab" = "next_source"
 "ctrl+shift+tab" = "previous_source"
-"ctrl+r" = "reload"
 # "cmd+1" = "none"  # remove a default binding
 
 [[session]]
@@ -378,7 +377,7 @@ timeout = 5
 ```
 
 **Keymaps.** Bindings extend the defaults; `"none"` removes a binding. Actions:
-`next`, `previous`, `open`, `dismiss`, `delete` (without confirmation), `reload`,
+`next`, `previous`, `open`, `dismiss`, `delete` (without confirmation),
 `create`, `pin`, `open:1` through `open:9`, `next_source`, `previous_source`, and `source:ID`. Modifiers are `cmd`, `ctrl`,
 `alt`/`option`, and `shift`. Keys use US physical positions, so `ctrl+t` also
 works with the Russian layout. Modifiers match exactly. Shifted symbols are

@@ -492,19 +492,37 @@ struct DataConnectionTests {
         #expect(try await service.recentSessionIDs() == ["s"])
     }
 
-    @Test @MainActor func reloadUsesTheSnapshotProvider() async {
-        let tools = Tools(rex: "/not/rex", zoxide: nil, fd: nil, rexApp: "/not/Rex.app")
+    @Test @MainActor func retryAfterFailedSelection() async throws {
+        let stub = try StubRex(body: """
+        if 'hosts' in sys.argv:
+            print('{"hosts":[]}')
+        elif 'client' in sys.argv:
+            print('{"clients":[{"client_id":"client:test","info":{"kind":"app","platform":"macos"}}]}')
+        elif 'session.select' in sys.argv:
+            print('Remote Control disabled',file=sys.stderr)
+            sys.exit(1)
+        else:
+            raise Exception('Unexpected command')
+        """)
         let provider = SnapshotStub([
-            .success(RexSnapshot(client: "client:test", rexAppPID: 1, sessions: [RexSession(sessionID: "new", label: "Fresh")])),
+            .success(RexSnapshot(client: "client:test", rexAppPID: 1, sessions: [RexSession(sessionID: "new", label: "Fresh session")])),
         ])
-        let model = SearchModel(service: ReshService(client: RexClient(tools: tools, target: RexTarget(clientID: "client:test"))),
-            tools: tools, snapshotProvider: provider, readTheme: { _, _ in .fixture })
+        let service = ReshService(client: RexClient(tools: stub.tools, target: RexTarget(clientID: "client:test")),
+            registry: SessionRegistry(directory: stub.directory))
+        let model = SearchModel(service: service, tools: stub.tools,
+            sessions: [RexSession(sessionID: "old", label: "Session")],
+            snapshotProvider: provider, readTheme: { _, _ in .fixture })
+        defer { model.clear() }
         model.loadInitial()
         await model.loadingTask?.value
-        #expect(provider.calls == 0 && model.results.isEmpty)
-        model.reload()
+        model.query = "session"
+        model.openSelection()
+        for _ in 0..<300 where model.isConnecting { try await Task.sleep(for: .milliseconds(10)) }
+        #expect(model.error != nil && model.canRetry)
+        model.retry()
         await model.loadingTask?.value
-        #expect(provider.calls == 1 && model.results.map(\.title) == ["Fresh"])
+        #expect(model.error == nil && model.query == "session")
+        #expect(model.results.map(\.title) == ["Fresh session"])
     }
 
     @Test func explicitClientAndAppPIDUseTheSameConnectionAndBundledScript() throws {
