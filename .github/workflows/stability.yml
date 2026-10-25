@@ -9,31 +9,33 @@ permissions:
 
 jobs:
   stress:
-    name: Cold test diagnostic (${{ matrix.arch }})
+    name: 20 parallel runs (${{ matrix.arch }}, batch ${{ matrix.batch }})
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 20
     strategy:
       fail-fast: false
+      max-parallel: 4
       matrix:
+        arch: [arm64, x86_64]
+        batch: [1, 2, 3, 4, 5]
         include:
-          - runner: macos-15
-            arch: arm64
-          - runner: macos-15-intel
-            arch: x86_64
+          - arch: arm64
+            runner: macos-15
+          - arch: x86_64
+            runner: macos-15-intel
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
-      STRESS_RUNS: 1
-      STRESS_SAMPLE_AFTER: 3
+      STRESS_RUNS: 20
     steps:
       - uses: actions/checkout@v7
       - name: Build tests once
         run: swift build --build-tests
-      - name: Capture one cold parallel run with thread samples
+      - name: Run 20 fresh test processes and check cleanup
         run: python3 .github/verify-stability.py
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: stability-${{ matrix.arch }}
+          name: stability-${{ matrix.arch }}-${{ matrix.batch }}
           path: ${{ runner.temp }}/resh-stability-results
           if-no-files-found: error
           retention-days: 14

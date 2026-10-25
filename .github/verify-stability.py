@@ -108,18 +108,41 @@ for index in range(1, requested_runs + 1):
     (run / "processes.json").write_text(json.dumps({"seen": seen, "samples": samples, "at_250ms": at_250ms,
                                                    "after_grace": remaining}, indent=2))
     events = []
+    functions = set()
     events_path = run / "events.jsonl"
     if events_path.exists():
-        events = [json.loads(row)["payload"] for row in events_path.read_text().splitlines()
-                  if row.strip() and json.loads(row).get("kind") == "event"]
+        records = [json.loads(row) for row in events_path.read_text().splitlines() if row.strip()]
+        events = [record["payload"] for record in records if record["kind"] == "event"]
+        functions = {record["payload"]["id"] for record in records
+                     if record["kind"] == "test" and record["payload"]["kind"] == "function"}
     kinds = collections.Counter(event["kind"] for event in events)
     names = {event.get("testID", "") for event in events if event["kind"] == "testStarted"}
-    complete = (kinds["runEnded"] == 1 and kinds["testStarted"] >= 70
+    starts = [event.get("testID") for event in events
+              if event["kind"] == "testStarted" and event.get("testID") in functions]
+    ends = [event.get("testID") for event in events
+            if event["kind"] == "testEnded" and event.get("testID") in functions]
+    skips = [event.get("testID", "") for event in events if event["kind"] == "testSkipped"]
+    active = collections.Counter()
+    maxima = collections.Counter()
+    for event in events:
+        identity = event.get("testID", "")
+        if identity in functions and event["kind"] in ("testStarted", "testEnded"):
+            suite = identity.split("/", 1)[0]
+            active[suite] += 1 if event["kind"] == "testStarted" else -1
+            maxima[suite] = max(maxima[suite], active[suite])
+    serialized = all(maxima[suite] == 1 for suite in
+                     ["ReshTests.IntegrationTests", "ReshCoreTests.RunnerTests"])
+    complete = (kinds["runStarted"] == kinds["runEnded"] == 1 and len(functions) == 79
+                and len(starts) == len(set(starts)) == len(ends) == len(set(ends)) == 78
+                and set(starts) == set(ends) and serialized
+                and kinds["testCaseStarted"] == kinds["testCaseEnded"] == 71
+                and len(skips) == 1 and "/rexCompatibility()/" in skips[0]
                 and kinds["testStarted"] == kinds["testEnded"]
                 and all(any(name in identity for identity in names) for name in required))
-    passed = code == 0 and complete and kinds["issueRecorded"] == 0 and not remaining and not timed_out
+    passed = code == 0 and complete and kinds["issueRecorded"] == 0 and not at_250ms and not remaining and not timed_out
     result = {"run": index, "passed": passed, "exit_code": code, "seconds": round(elapsed, 3),
-              "events": dict(kinds), "complete": complete, "survivors": remaining, "timed_out": timed_out}
+              "events": dict(kinds), "complete": complete, "max_active_by_suite": dict(maxima),
+              "residuals_at_250ms": len(at_250ms), "survivors": remaining, "timed_out": timed_out}
     results.append(result)
     (root / "results.json").write_text(json.dumps(results, indent=2))
     print(json.dumps(result), flush=True)
