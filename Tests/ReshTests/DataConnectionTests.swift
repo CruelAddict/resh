@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import CoreFoundation
 import ReshCore
@@ -248,6 +249,34 @@ struct DataConnectionTests {
         focus = "local"
         model.refreshFocus()
         #expect(model.canCreateSession && model.offersNewSession && model.newSessionHost == nil)
+    }
+
+    @Test(arguments: ["ready", "loading", "error"])
+    @MainActor func launcherTogglesPanel(_ state: String) {
+        _ = NSApplication.shared
+        let tools = Tools(rex: "/not/rex", zoxide: nil, fd: nil, rexApp: "/not/Rex.app")
+        let service = ReshService(client: RexClient(tools: tools, target: RexTarget(clientID: "client:test")))
+        let controller = PanelController(service: service, tools: tools, readTheme: { _, _ in .fixture })
+        defer { controller.dismiss(focusRex: false); controller.model.clear() }
+        func present() -> Bool {
+            if state == "error" {
+                controller.present(error: ReshError("Cannot connect"), retry: {})
+            } else {
+                controller.presentLoading()
+                if state == "ready" {
+                    controller.prepare(service: service, snapshot: RexSnapshot(client: "client:test", rexAppPID: 1,
+                        sessions: [RexSession(sessionID: "s", label: "Session")]))
+                }
+            }
+            return true
+        }
+        #expect(controller.toggle(open: present))
+        #expect(controller.panel.isVisible)
+        controller.model.query = "session"
+        #expect(controller.toggle(open: present))
+        #expect(!controller.panel.isVisible && !controller.model.isOpening && controller.model.query.isEmpty)
+        #expect(controller.toggle(open: present))
+        #expect(controller.panel.isVisible)
     }
 
     @Test @MainActor func launcherCommandsUseResidentHistory() async throws {

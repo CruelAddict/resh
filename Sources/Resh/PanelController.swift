@@ -63,6 +63,15 @@ final class PanelController: NSObject, NSWindowDelegate {
         if let picker { panel.makeFirstResponder(picker.searchField) }
     }
 
+    func toggle(open: () -> Bool) -> Bool {
+        guard !model.isConnecting else { return false }
+        if panel.isVisible {
+            dismiss(focusRex: true)
+            return true
+        }
+        return open()
+    }
+
     func prepare(service: ReshService, snapshot: RexSnapshot, recentSessionIDs: [String] = [], currentSessionID: String? = nil) {
         let pendingQuery = model.isOpening ? model.query : nil
         rexAppPID = snapshot.rexAppPID

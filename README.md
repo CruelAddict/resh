@@ -77,7 +77,7 @@ optional and only affects repository-based session naming.
 
 | Key | Action |
 | --- | --- |
-| ⌘S in Rex | Open the native panel (physical S key, on any keyboard layout) |
+| ⌘S in Rex | Toggle the native panel (physical S key, on any keyboard layout) |
 | ⌘E | Existing Rex sessions (initial source) |
 | ⌘A | Sessions + projects + zoxide folders |
 | ⌘R | Recent/frequent folders, in zoxide order |
@@ -106,6 +106,8 @@ while Rex is frontmost. It does not rely on Rex's character/keyboard-layout
 matching. There are no duplicate launcher bindings in Rex's keymap. Outside Rex
 the hotkey is unregistered, so other apps retain their normal Save shortcut.
 This uses Carbon's hotkey API, not an Accessibility event tap.
+Pressing Cmd+S again dismisses the open panel, including during loading or when
+an error is shown; holding the shortcut does not repeatedly toggle it.
 The same physical-key/typed-text distinction is used in
 [Ghostty's event handling](https://github.com/ghostty-org/ghostty/blob/f54340ad77814fe319d136e5e915d6a48de8dd23/macos/Sources/Ghostty/NSEvent%2BExtension.swift#L18).
 It is one keycode for every language, not a table of keyboard layouts.
@@ -248,7 +250,7 @@ The startup command in Rex's config runs on every Rex launch, including after a
 Mac restart. `resh service start` starts the service without opening the panel
 and leaves an already-running instance alone. `resh service restart` explicitly
 replaces it with the supplied startup arguments. `resh serve` is the long-lived
-process run by launchd. Plain `resh` opens the panel and starts the service
+process run by launchd. Plain `resh` toggles the panel and starts the service
 automatically if necessary; there is no separate preparation command.
 
 `resh service status` reports the service PID, connection state, catalog CLI PID, session count, shutdown state

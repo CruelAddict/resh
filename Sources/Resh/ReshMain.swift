@@ -105,7 +105,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         } catch { fail(error); return }
         installMenu()
         hotkey = RexHotkey()
-        hotkey?.onPress = { [weak self] in _ = self?.open(LauncherRequest()) }
+        hotkey?.onPress = { [weak self] in _ = self?.toggle(LauncherRequest()) }
         rexMonitor = RexAppMonitor()
         rexMonitor?.onChange = { [weak self] available in
             guard let self, !self.isStopping else { return }
@@ -159,17 +159,17 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         controller?.stopAttention()
         controller?.model.stopBackground()
     }
+    private func toggle(_ request: LauncherRequest) -> Bool {
+        guard !isStopping, !isExecutingCommand, let controller else { return false }
+        return controller.toggle { open(request) }
+    }
+
     private func open(_ request: LauncherRequest) -> Bool {
         guard !isStopping, !isExecutingCommand, openingID == nil, let controller,
               !controller.model.isConnecting else { return false }
         DebugLog.shared.setEnabled(request.debug ?? options.debug)
         DebugLog.shared.record("Opening panel", source: "panel")
         let started = ProcessInfo.processInfo.systemUptime
-        if controller.panel.isVisible, controller.model.error == nil,
-           request.client == nil, request.currentSessionID == nil, request.server == nil, request.config == nil, request.debug == nil {
-            controller.panel.makeKeyAndOrderFront(nil)
-            return true
-        }
         let target = RexTarget(clientID: request.client, server: request.server)
         let frontmost = NSWorkspace.shared.frontmostApplication
         let rexAppPID = target.clientID == nil && PanelShortcut.launcherIsEnabled(frontmostBundleID: frontmost?.bundleIdentifier)
@@ -244,7 +244,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         guard request.operation == "show" || request.operation == "status" else {
             return ["error": "Unknown resh command: \(request.operation)"]
         }
-        if request.operation == "show", !open(request) {
+        if request.operation == "show", !toggle(request) {
             return ["error": "A session operation is still in progress."]
         }
         let connectionState: String

@@ -9,12 +9,16 @@ final class RexHotkey {
     private var handler: EventHandlerRef?
     private var hotkey: EventHotKeyRef?
     private var observer: NSObjectProtocol?
+    private var isPressed = false
     private(set) var registrationStatus: OSStatus = noErr
     var onPress: (() -> Void)?
     var isRegistered: Bool { hotkey != nil }
 
     init() {
-        var type = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
+        var types = [
+            EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed)),
+            EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyReleased)),
+        ]
         registrationStatus = InstallEventHandler(GetApplicationEventTarget(), { _, event, info in
             guard let info, let event else { return OSStatus(eventNotHandledErr) }
             var id = EventHotKeyID()
@@ -22,9 +26,16 @@ final class RexHotkey {
                 nil, MemoryLayout<EventHotKeyID>.size, nil, &id) == noErr,
                 id.signature == 0x72657368, id.id == 1 else { return OSStatus(eventNotHandledErr) }
             let shortcut = Unmanaged<RexHotkey>.fromOpaque(info).takeUnretainedValue()
-            MainActor.assumeIsolated { shortcut.onPress?() }
+            MainActor.assumeIsolated {
+                if GetEventKind(event) == UInt32(kEventHotKeyReleased) {
+                    shortcut.isPressed = false
+                } else if !shortcut.isPressed {
+                    shortcut.isPressed = true
+                    shortcut.onPress?()
+                }
+            }
             return noErr
-        }, 1, &type, Unmanaged.passUnretained(self).toOpaque(), &handler)
+        }, types.count, &types, Unmanaged.passUnretained(self).toOpaque(), &handler)
         observer = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main) { [weak self] _ in
                 MainActor.assumeIsolated { self?.updateRegistration() }
@@ -41,6 +52,7 @@ final class RexHotkey {
         } else if !shouldRegister, let hotkey {
             UnregisterEventHotKey(hotkey)
             self.hotkey = nil
+            isPressed = false
         }
     }
 
@@ -49,5 +61,6 @@ final class RexHotkey {
         if let handler { RemoveEventHandler(handler) }
         if let observer { NSWorkspace.shared.notificationCenter.removeObserver(observer) }
         hotkey = nil; handler = nil; observer = nil
+        isPressed = false
     }
 }
