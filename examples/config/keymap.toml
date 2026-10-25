@@ -1,11 +1,11 @@
 # Optional Ctrl preset. Copy to ~/.config/resh/config.toml, or merge [keymap] into it.
 # Bindings extend the defaults; the Cmd shortcuts remain unless removed with "none".
-# These settings apply inside the picker, not to the Cmd+S launcher.
+# These settings apply inside the picker, not to the Cmd+S launcher or Cmd+L in Rex.
 # Modifiers: cmd, ctrl, alt/option, shift. Keys use US physical positions on any layout.
 # Modifiers match exactly; write shifted symbols as "shift+5", not "%".
 
 [keymap]
-# source:ID opens a tab. Built-in IDs differ from some displayed names:
+# source:ID opens a view. Built-in IDs differ from some displayed names:
 # configs = Projects; directories = Recent. Custom source IDs also work here.
 "ctrl+t" = "source:sessions"
 "ctrl+a" = "source:all"

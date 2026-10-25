@@ -699,6 +699,16 @@ struct DataConnectionTests {
         await model.hostsTask?.value
         try await waitForSources(expected)
         for host in model.hosts { model.receive(.success(.sessions([])), host: host) }
+        for source in Array(expected.dropFirst()) + [.sessions] {
+            model.cycleSource(1)
+            #expect(model.scope == source)
+            await model.loadingTask?.value
+        }
+        for source in Array(expected.dropFirst().reversed()) + [.sessions] {
+            model.cycleSource(-1)
+            #expect(model.scope == source)
+            await model.loadingTask?.value
+        }
         if scenario == "remote" {
             model.changeScope(.directories)
             await model.loadingTask?.value

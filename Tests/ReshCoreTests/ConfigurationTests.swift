@@ -21,6 +21,8 @@ struct ConfigurationTests {
             #expect(config.keymap.action(for: try KeyChord("cmd+\(number)")) == .openResult(number))
         }
         #expect(config.keymap.action(for: try KeyChord("ctrl+n")) == .move(1))
+        #expect(config.keymap.action(for: try KeyChord("tab")) == .nextSource)
+        #expect(config.keymap.action(for: try KeyChord("shift+tab")) == .previousSource)
         #expect(config.projects.isEmpty)
     }
     @Test func namedProjectsSourcesAndOverrides() throws {

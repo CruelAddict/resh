@@ -1,65 +1,70 @@
 # resh
 
-A native macOS project launcher for [Rex](https://www.superlogical.com/), inspired
-by [sesh](https://github.com/joshmedeski/sesh). Find a directory and open it as a
-named session in a few keystrokes.
+A macOS session manager for [Rex](https://www.superlogical.com/), inspired by
+[sesh](https://github.com/joshmedeski/sesh). Switch sessions or open a directory as
+a named session in a few keystrokes.
 
-- Jump to frequently visited directories with zoxide, or find a folder with fd.
-- Save project shortcuts with commands to open your editor or start a dev server.
-- Search local and remote sessions and directories together.
-- Add your own folder lists and customize keyboard shortcuts.
+- Open frequently visited directories with `zoxide`.
+- Find other directories with `fd`.
+- Configure projects with a session name, directory, and startup command (e.g. open
+  an editor or start a dev server).
+- Switch between local and remote Rex sessions.
+- Add custom views populated by directory lists or commands.
+- Customize keyboard shortcuts.
 
 ## Install
 
-Requires macOS 15+ and Rex. One-command installation is planned for the public release.
+Requires macOS 15+ and Rex. Rex is currently in closed beta; compatibility may
+change between builds.
 
 Enable **Rex Settings → Rex Server → Remote Control** to allow session switching.
-For directory search, install zoxide and fd:
+
+If you want to discover directories with `Recent` and `Find`, install `zoxide` and
+`fd`:
 
 ```sh
 brew install zoxide fd
 ```
 
-Set up [zoxide in your shell](https://github.com/ajeetdsouza/zoxide#installation) to
-track the directories you visit. You can skip these tools if you only want sessions
-and configured projects.
+Set up [`zoxide` in your shell](https://github.com/ajeetdsouza/zoxide#installation) to
+track the directories you visit. Sessions and configured projects work without
+either tool.
 
 ## Using resh
 
-Press ⌘S in Rex to open the session list. From there, choose **Recent** to find a
-directory you've visited, **Find** to search for another folder, or **Projects** to
-open a saved project. Selecting a directory creates a named session there, or
-returns to the one you opened through resh before.
+Press `⌘S` in Rex to open resh. Choose the `Sessions` view to switch to an open
+session, `Recent` to find a directory you've visited, `Find` to discover another
+directory, or `Projects` to open a configured project. Selecting a directory creates
+a named session there, or returns to the one you opened through resh before.
 
 ### Default shortcuts
 
 | Key | Action |
 | --- | --- |
-| ⌘S | Open or close resh |
-| ⌘E | Sessions — switch to an open session |
-| ⌘R | Recent — open a zoxide directory as a session |
-| ⌘F | Find — search directories under your home folder with fd |
-| ⌘P | Projects — open a configured project |
-| ⌘A | All — search sessions and project directories together |
-| ⌘1–9 | Open by number |
-| ⌘⇧P | Pin or unpin the selected session |
-| ⌘⇧N | Create a session named after the search text |
-| ⌘⇧D | Close the selected session and its programs (without confirmation) |
-| ↑ / ↓, Tab / Shift-Tab, ⌃P / ⌃N | Move through the list |
-| Return | Open the selection |
-| Esc / ⌃[ | Close the picker |
-| Not bound | [Switch to the previous session](examples/config/rex.lua) |
-
-Hold ⌘ to show shortcut hints.
+| `⌘S` | Open or close resh in Rex |
+| `⌘L` | Switch to the previous session in Rex |
+| `⌘E` | `Sessions` — switch to an open session |
+| `⌘R` | `Recent` — open a `zoxide` directory as a session |
+| `⌘F` | `Find` — search directories under your home folder with `fd` |
+| `⌘P` | `Projects` — open a configured project |
+| `⌘A` | `All` — sessions, configured projects, and recently visited directories |
+| `⌘1–9` | Open by number |
+| `⌘⇧P` | Pin or unpin the selected session |
+| `⌘⇧N` | Create a session named after the search text |
+| `⌘⇧D` | Close the selected session and its programs (without confirmation) |
+| `↑` / `↓`, `⌃P` / `⌃N` | Move through the list |
+| `Enter` | Open the selection |
+| `Esc` / `⌃[` | Close the picker |
 
 ## Configuration
 
 Put settings in `~/.config/resh/config.toml` (or
-`$XDG_CONFIG_HOME/resh/config.toml`). Edits apply without restarting.
+`$XDG_CONFIG_HOME/resh/config.toml`). Edits apply automatically without restarting
+resh.
 
-### Project commands
+### Projects
 
-Save a directory with a name and a command to run when opening a new session:
+Configure a project's session name, directory, and optional startup command:
 
 ```toml
 [[session]]
@@ -68,11 +73,11 @@ path = "~/work/backend"
 startup_command = "nvim"
 ```
 
-[More project options](examples/config/projects.toml).
+[Project configuration](examples/config/projects.toml).
 
-### Custom folder lists
+### Custom views
 
-Add a tab that finds your work repositories:
+Add a `Work` view that finds directories under `~/work`:
 
 ```toml
 [[sources]]
@@ -83,7 +88,7 @@ cwd = "~/work"
 command = ["fd", "-t", "d", "-d", "2", ".", "."]
 ```
 
-[Source options and examples](examples/config/sources.toml).
+[View configuration](examples/config/sources.toml).
 
 ### Custom shortcuts
 
@@ -94,15 +99,17 @@ command = ["fd", "-t", "d", "-d", "2", ".", "."]
 "cmd+a" = "none"
 ```
 
-[Shortcut options and a Ctrl preset](examples/config/keymap.toml).
-See [config examples](examples/config) for annotated settings.
+[Keyboard configuration](examples/config/keymap.toml).
+See [all configuration examples](examples/config).
 
 ## Remote hosts
 
-Your Rex hosts' sessions appear automatically; switching between them needs no
-remote resh installation. **Recent** and **Find** also work on remote directories.
-With zoxide and fd installed there, run the folder-source adapter installer from
-a copy of this checkout on that host:
+resh shows the same local and remote sessions you see in Rex. Switching between
+them does not require installing resh on the remote host.
+
+To also use `Recent` and `Find` to discover directories on a remote host, install
+`zoxide` and `fd` there, set up `zoxide` in that host's shell, and install the source
+adapter from a copy of this checkout on that host:
 
 ```sh
 bash install.sh --remote

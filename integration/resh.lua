@@ -33,3 +33,5 @@ rex.action{
     elseif not result.ok then rex.log("debug", result.stderr) end
   end,
 }
+
+rex.bind("cmd+[KeyL]", "resh_last")

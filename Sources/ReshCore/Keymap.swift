@@ -57,7 +57,7 @@ public struct Keymap: Equatable, Sendable {
             "cmd+f":.scope(.find), "cmd+p":.scope(.configs), "cmd+shift+n":.create, "cmd+shift+p":.pin,
             "cmd+s":.ignore, "cmd+shift+d":.delete,
             "ctrl+n":.move(1), "ctrl+p":.move(-1), "down":.move(1), "up":.move(-1),
-            "tab":.move(1), "shift+tab":.move(-1), "enter":.open, "keypadenter":.open, "escape":.dismiss,
+            "tab":.nextSource, "shift+tab":.previousSource, "enter":.open, "keypadenter":.open, "escape":.dismiss,
             "ctrl+[":.dismiss,
         ]
         for (key, action) in defaults { bindings[try KeyChord(key)] = action }

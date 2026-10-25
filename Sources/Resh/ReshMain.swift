@@ -300,7 +300,7 @@ struct ReshMain {
             }
             if options.help {
                 print("""
-                resh — native, sesh-inspired session/folder picker for Rex
+                resh — macOS session manager for Rex, inspired by sesh
 
                 resh [--client CLIENT_ID] [--current-session SESSION_ID] [--server ADDRESS] [--debug]
                 resh --connect DIRECTORY [--client CLIENT_ID] [--current-session SESSION_ID]
@@ -314,10 +314,11 @@ struct ReshMain {
                 Config: ~/.config/resh/config.toml (or $RESH_CONFIG / --config FILE)
                 --debug: write diagnostics to ~/Library/Logs/resh/debug.log
 
+                ⌘S open/close resh in Rex · ⌘L previous session in Rex
                 ⌘E Sessions · ⌘A All · ⌘R Recent · ⌘F Find · ⌘P Projects
                 ⌘1…9 open a result · ⌘⇧P pin/unpin a session (memory only)
                 ⌘⇧N create a session named after the search text
-                ↑/↓ or Tab/Shift-Tab navigate · Return open · Esc or Ctrl+[ dismiss
+                ↑/↓ or Ctrl+P/Ctrl+N navigate · Enter open · Esc or Ctrl+[ dismiss
                 ⌘⇧D immediately close a selected session
                 """)
                 return
