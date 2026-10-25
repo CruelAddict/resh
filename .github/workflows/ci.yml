@@ -39,7 +39,8 @@ jobs:
           xcodebuild -version
           swift --version
       - name: Run tests
-        run: swift test
+        # Blocking subprocess fixtures must not starve other tests' executor threads.
+        run: swift test --no-parallel
       - name: Build native helper
         run: bash scripts/build.sh
       - name: Check native build
