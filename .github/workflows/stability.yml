@@ -1,0 +1,39 @@
+name: Stability verification
+
+on:
+  push:
+    branches: [ci/stability-verification]
+
+permissions:
+  contents: read
+
+jobs:
+  stress:
+    name: Cold test diagnostic (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x86_64
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+      STRESS_RUNS: 1
+      STRESS_SAMPLE_AFTER: 3
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build tests once
+        run: swift build --build-tests
+      - name: Capture one cold parallel run with thread samples
+        run: python3 .github/verify-stability.py
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: stability-${{ matrix.arch }}
+          path: ${{ runner.temp }}/resh-stability-results
+          if-no-files-found: error
+          retention-days: 14
