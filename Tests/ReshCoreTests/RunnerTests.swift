@@ -36,18 +36,20 @@ struct RunnerTests {
         defer { try? FileManager.default.removeItem(at: directory) }
         let ready = directory.appendingPathComponent("ready")
         try #require(mkfifo(ready.path, 0o600) == 0)
-        let descriptor = open(ready.path, O_RDWR | O_NONBLOCK | O_CLOEXEC)
+        let descriptor = open(ready.path, O_RDWR | O_CLOEXEC)
         try #require(descriptor >= 0)
         defer { close(descriptor) }
         let task = Task.detached {
-            try SystemCommandRunner().run("/bin/sh", ["-c", "echo $$ > \"$1\"; exec /bin/sleep 10", "sh", ready.path], timeout: 20)
+            // Also wake the listener if launching fails before acknowledgement.
+            defer { var finished: UInt8 = 0; _ = Darwin.write(descriptor, &finished, 1) }
+            return try SystemCommandRunner().run("/bin/sh", ["-c", "echo $$ > \"$1\"; exec /bin/sleep 10", "sh", ready.path], timeout: 20)
         }
-        // The runner blocks a cooperative worker; acknowledge and cancel from GCD.
+        // Global GCD workers can also be occupied by blocking tests.
         let cancellation: (pid: pid_t?, started: TimeInterval) = await withCheckedContinuation { continuation in
-            DispatchQueue.global().async {
-                var event = pollfd(fd: descriptor, events: Int16(POLLIN), revents: 0)
+            Thread.detachNewThread {
                 var bytes = [UInt8](repeating: 0, count: 64)
-                let count = Darwin.poll(&event, 1, 1000) > 0 ? Darwin.read(descriptor, &bytes, bytes.count) : 0
+                var count: Int
+                repeat { count = Darwin.read(descriptor, &bytes, bytes.count) } while count < 0 && errno == EINTR
                 let pid = Int32(String(decoding: bytes.prefix(max(0, count)), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
                 let alive = pid > 0 && kill(pid, 0) == 0
                 let started = ProcessInfo.processInfo.systemUptime
