@@ -16,7 +16,15 @@ private final class StubRex {
         try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: executable.path)
         tools = Tools(rex: executable.path, zoxide: nil, fd: nil, rexApp: "/not/Rex.app")
     }
-    deinit { try? FileManager.default.removeItem(at: directory) }
+    deinit {
+        var stopped = true
+        for child in RexProcess.stopAll(executable: tools.rex) {
+            let exited = child.waitForExit()
+            #expect(exited, "Rex fixture process \(child.pid) did not exit.")
+            if !exited { stopped = false }
+        }
+        if stopped { try? FileManager.default.removeItem(at: directory) }
+    }
 }
 
 private final class AttentionUpdates: @unchecked Sendable {
@@ -396,7 +404,7 @@ struct DataConnectionTests {
         time.sleep(30)
         """)
         let connection = RexEventConnection(tools: stub.tools), updates = AttentionUpdates()
-        defer { connection.stop() }
+        defer { connection.stop(); connection.waitUntilStopped() }
         connection.start(target: RexTarget(server: "explicit-server")) { updates.append($0) }
         try await updates.waitForCount(2)
         #expect(updates.values.first?.first?.sessionID == "explicit-server")
