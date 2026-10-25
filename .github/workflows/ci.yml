@@ -45,7 +45,7 @@ jobs:
         run: bash scripts/build.sh
       - name: Check native build
         run: |
-          lipo -verify_arch "${{ matrix.arch }}" dist/resh/resh
+          lipo dist/resh/resh -verify_arch "${{ matrix.arch }}"
           codesign --verify --strict dist/resh/resh
           dist/resh/resh --help
 
