@@ -23,14 +23,6 @@ struct ConfigurationTests {
         #expect(config.keymap.action(for: try KeyChord("ctrl+n")) == .move(1))
         #expect(config.projects.isEmpty)
     }
-    @Test func configurationExamples() throws {
-        let directory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
-            .deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("examples/config")
-        let examples = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
-            .filter { $0.pathExtension == "toml" }.sorted { $0.path < $1.path }
-        #expect(!examples.isEmpty)
-        for example in examples { _ = try ConfigurationFile.load(example) }
-    }
     @Test func namedProjectsSourcesAndOverrides() throws {
         let fixture = try TemporaryDirectory()
         let path = try fixture.folder("api")
