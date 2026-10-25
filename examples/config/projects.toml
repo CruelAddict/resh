@@ -1,0 +1,24 @@
+# Copy to ~/.config/resh/config.toml, or merge the sections you want into it.
+
+[default_session]
+# Used for folders and projects without their own startup_command.
+startup_command = "nvim"
+
+[[session]]
+# Each project needs a unique name and directory.
+name = "Backend"
+# ~ expands to your home; relative paths start beside this config file.
+path = "~/work/backend"
+# Overrides the default command. {} expands to the shell-quoted project path.
+startup_command = "nvim {}"
+
+[[session]]
+name = "Notes"
+path = "~/notes"
+# Omitting startup_command inherits the default above.
+
+[[session]]
+name = "Scratch"
+path = "~/scratch"
+# An empty command disables the default for this project.
+startup_command = ""

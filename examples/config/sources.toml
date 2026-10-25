@@ -1,0 +1,55 @@
+# Copy to ~/.config/resh/config.toml, or merge the sections you want into it.
+# Built-in IDs: sessions, all, directories (Recent), find, configs (Projects).
+
+# Controls both tab order and visibility: unlisted sources are hidden.
+# Omit to keep the default tabs and append custom sources automatically.
+source_order = ["sessions", "all", "configs", "work", "repositories", "directories", "find"]
+# Must be one of the IDs in source_order; defaults to "sessions".
+initial_source = "all"
+
+[[sources]]
+# IDs are used by source_order, unions and source:ID shortcuts.
+# Use lowercase letters, digits, underscores or hyphens, starting with a letter.
+id = "work"
+# Optional tab label; defaults to the ID.
+title = "Work"
+# A fixed list of directories. Other examples below use command and union.
+type = "paths"
+# ~ expands; relative paths start beside this config file. Missing folders are skipped.
+paths = ["~/work/backend", "~/work/frontend"]
+
+[[sources]]
+id = "repositories"
+title = "Repositories"
+type = "command"
+# Working directory; defaults to the directory containing this config file.
+# Relative output paths and relative executable paths resolve against cwd.
+cwd = "~/work"
+# Print UTF-8 directory paths, one per line. The list refreshes when you open its tab.
+# No shell is used: pipes, redirects and ~ in arguments need an explicit shell/script.
+command = ["fd", "-t", "d", "-d", "2", ".", "."]
+# Optional; "paths" is the only supported output format.
+format = "paths"
+# Seconds, greater than 0 and at most 60; defaults to 5.
+timeout = 5
+
+[[sources]]
+# Reusing a built-in ID replaces that source. Here All also includes our own lists.
+id = "all"
+title = "All"
+type = "union"
+# Members are combined in this order; duplicate paths appear only once.
+# Unions can include other unions, but cannot refer back to themselves.
+sources = ["sessions", "configs", "work", "repositories", "directories"]
+
+# Other source types reuse built-in providers:
+#   sessions — open Rex sessions
+#   projects — [[session]] entries
+#   zoxide   — directories in zoxide's order
+#   find     — fd search under ~, two levels deep, including hidden folders except .Trash
+# command/cwd/format apply only to command; paths only to paths; sources only to union.
+# The default All includes sessions, projects and zoxide, not custom lists or Find.
+
+[keymap]
+"ctrl+w" = "source:work"
+"ctrl+r" = "source:repositories"
