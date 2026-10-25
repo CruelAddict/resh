@@ -3,7 +3,7 @@ import Foundation
 import ReshCore
 import Testing
 
-@Suite("Subprocess execution")
+@Suite("Subprocess execution", .serialized)
 struct RunnerTests {
     @Test(arguments: [[], ["--remote"]])
     func missingInstallationOptionValue(_ options: [String]) throws {

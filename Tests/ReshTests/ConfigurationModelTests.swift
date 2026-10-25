@@ -3,8 +3,7 @@ import ReshCore
 import Testing
 @testable import Resh
 
-@Suite("Live configuration and asynchronous sources")
-struct ConfigurationModelTests {
+extension IntegrationTests {
     @Test @MainActor func reloadsSourcesKeysAndProjectsWithoutRestarting() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("resh-model-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: root.appendingPathComponent("project"), withIntermediateDirectories: true)
