@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build-and-test:
+    name: Build and test (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x86_64
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check toolchain
+        run: |
+          test "$(uname -m)" = "${{ matrix.arch }}"
+          xcodebuild -version
+          swift --version
+      - name: Run tests
+        run: swift test
+      - name: Build native helper
+        run: bash scripts/build.sh
+      - name: Check native build
+        run: |
+          lipo -verify_arch "${{ matrix.arch }}" dist/resh/resh
+          codesign --verify --strict dist/resh/resh
+          dist/resh/resh --help
+
+  scripts:
+    name: Scripts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install linters
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends --yes shellcheck lua5.1
+      - name: Check shell scripts
+        run: |
+          bash -n install.sh
+          bash -n scripts/build.sh
+          sh -n scripts/package.sh
+          shellcheck install.sh scripts/build.sh scripts/package.sh
+      - name: Check Lua syntax
+        run: luac5.1 -p Sources/Resh/Resources/*.lua integration/*.lua examples/config/*.lua
