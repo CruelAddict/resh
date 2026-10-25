@@ -44,6 +44,7 @@ final class SearchModel: ObservableObject {
     private var focusWatcher: FileWatcher?
     private var unvisitedCreatedSessionIDs = Set<String>()
     private var pendingDeletionFocus: (sessionID: String, clientID: String)?
+    private var pendingCreation: (name: String, sessionID: String, host: RexHost?)?
     private var isBackgroundActive = false
     private var isPresented = false
     private var subscriptions = Set<AnyCancellable>()
@@ -105,11 +106,27 @@ final class SearchModel: ObservableObject {
     }
     var sessionCount: Int { allSessions.count }
     var showsHosts: Bool { !hosts.isEmpty }
+    private var currentSession: Candidate? {
+        guard let currentSessionID else { return nil }
+        let matches = (sessionSnapshot + hosts.flatMap { hostSessions[$0.id] ?? [] })
+            .filter { $0.sessionID == currentSessionID }
+        return matches.count == 1 ? matches.first : nil
+    }
+    var newSessionHost: RexHost? { currentSession?.host }
+    private var isNewSessionHostResolved: Bool { currentSessionID == nil || currentSession != nil }
+    var canCreateSession: Bool {
+        isConfigurationReady && !isOpening && !isConnecting && onRetryOpening == nil && isNewSessionHostResolved
+    }
     var panelHeight: CGFloat { PanelLayout.height(resultCount: results.count, hasError: error != nil) }
     var canRetry: Bool { configurationError == nil }
+    var offersNewSession: Bool {
+        isConfigurationReady && !isOpening && !isLoading && !isRemoteLoading && onRetryOpening == nil
+            && isNewSessionHostResolved && results.isEmpty && !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
     var emptyMessage: String {
         if isOpening { return "Loading sessions…" }
         if isLoading || isRemoteLoading { return "Loading…" }
+        if !isNewSessionHostResolved { return "Active session host unavailable" }
         if !query.isEmpty { return "No matches" }
         return configuration.source(scope)?.kind == .sessions ? "No sessions" : "No folders or projects"
     }
@@ -220,6 +237,7 @@ final class SearchModel: ObservableObject {
 
     func endPresentation() {
         isPresented = false
+        pendingCreation = nil
         query = ""; scope = configuration.initialSource; selection = 0
         isOpening = false; isConnecting = false
         isLoading = loadingTask != nil
@@ -238,7 +256,7 @@ final class SearchModel: ObservableObject {
         attentionRecords = []; attentionSessionIDs = []
         sessionSnapshot = []; sessionRanks = [:]; search = FuzzyMatcher([])
         pinnedSessionIDs = []; currentSessionID = nil; currentCandidateID = nil
-        unvisitedCreatedSessionIDs = []; pendingDeletionFocus = nil
+        unvisitedCreatedSessionIDs = []; pendingDeletionFocus = nil; pendingCreation = nil
         sourceSnapshots = [:]
         rexAppPID = nil
         diagnostics = [:]
@@ -259,9 +277,7 @@ final class SearchModel: ObservableObject {
     private func updateResults() {
         // A session ID must identify exactly one known host. Never infer focus
         // from attachment order, a session label, or resh's MRU history.
-        let current = (sessionSnapshot + hosts.flatMap { hostSessions[$0.id] ?? [] })
-            .filter { $0.sessionID == currentSessionID && currentSessionID != nil }
-        let currentID = current.count == 1 ? current.first?.id : nil
+        let currentID = currentSession?.id
         if currentCandidateID != currentID { currentCandidateID = currentID }
         let updated: [Candidate]
         if pinnedSessionIDs.isEmpty, currentID == nil {
@@ -269,9 +285,6 @@ final class SearchModel: ObservableObject {
         } else {
             let matching = search.filter(query: query, limit: search.entries.count)
             var byID = Dictionary(matching.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-            // Keep the current session visible in a session-containing source,
-            // even when the query doesn't match it.
-            if let currentID, let entry = search.entries.first(where: { $0.id == currentID }) { byID[currentID] = entry }
             var ordered = pinnedSessionIDs.compactMap { byID.removeValue(forKey: $0) }
             if let currentID, let entry = byID.removeValue(forKey: currentID) { ordered.append(entry) }
             ordered += matching.filter { byID[$0.id] != nil }
@@ -364,6 +377,9 @@ final class SearchModel: ObservableObject {
         let updated = ReshService.candidates(from: sessions, host: host)
         let previous = host.map { hostSessions[$0.id] ?? [] } ?? sessionSnapshot
         let removed = Set(previous.map(\.id)).subtracting(updated.map(\.id))
+        if let pendingCreation, removed.contains(Candidate.identity(pendingCreation.sessionID, host: pendingCreation.host)) {
+            self.pendingCreation = nil
+        }
         unvisitedCreatedSessionIDs.subtract(removed)
         if pinnedSessionIDs.contains(where: removed.contains) { pinnedSessionIDs.removeAll(where: removed.contains) }
         if let host {
@@ -386,12 +402,12 @@ final class SearchModel: ObservableObject {
         }
         for client in clients {
             guard let sessionID = readFocusedSession(client.rexAppPID) else { continue }
-            let matches = (sessionSnapshot + hosts.flatMap { hostSessions[$0.id] ?? [] }).filter { $0.sessionID == sessionID }
-            guard matches.count == 1, let candidate = matches.first else { continue }
             if service.target.clientID == client.client, currentSessionID != sessionID {
                 currentSessionID = sessionID
                 refreshEntries()
             }
+            let matches = (sessionSnapshot + hosts.flatMap { hostSessions[$0.id] ?? [] }).filter { $0.sessionID == sessionID }
+            guard matches.count == 1, let candidate = matches.first else { continue }
             let afterDeletion = pendingDeletionFocus.map { $0.clientID == client.client && $0.sessionID != sessionID } ?? false
             guard unvisitedCreatedSessionIDs.remove(candidate.id) != nil || afterDeletion else { continue }
             if afterDeletion { pendingDeletionFocus = nil }
@@ -406,6 +422,9 @@ final class SearchModel: ObservableObject {
 
     private func removeSession(_ sessionID: String, host: RexHost?) {
         let id = Candidate.identity(sessionID, host: host)
+        if let pendingCreation, Candidate.identity(pendingCreation.sessionID, host: pendingCreation.host) == id {
+            self.pendingCreation = nil
+        }
         unvisitedCreatedSessionIDs.remove(id)
         if currentCandidateID == id, let clientID = service.target.clientID {
             pendingDeletionFocus = (sessionID, clientID)
@@ -646,6 +665,7 @@ final class SearchModel: ObservableObject {
         selection = (selection + delta + count) % count
     }
     func openSelection() {
+        if offersNewSession { createSession(); return }
         guard isConfigurationReady, !isOpening, !isConnecting, let candidate = selected else { return }
         isConnecting = true; error = nil
         let request = generation, service = service
@@ -670,6 +690,38 @@ final class SearchModel: ObservableObject {
                     } else { load() }
                 }
                 guard generation == request else { return }
+                isConnecting = false
+            }
+        }
+    }
+    func createSession() {
+        guard canCreateSession else { return }
+        isConnecting = true; error = nil
+        let name = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        let host = newSessionHost
+        let request = generation, service = service
+        Task {
+            do {
+                let sessionID: String
+                if let pendingCreation, pendingCreation.name == name, pendingCreation.host?.id == host?.id {
+                    sessionID = pendingCreation.sessionID
+                } else {
+                    sessionID = try await service.createSession(name: name, host: host)
+                    guard generation == request else { return }
+                    // A failed switch must not create another session on retry.
+                    pendingCreation = (name, sessionID, host)
+                }
+                try await service.connect(Candidate(id: Candidate.identity(sessionID, host: host), kind: .session,
+                    title: name, sessionID: sessionID, host: host))
+                guard generation == request else { return }
+                await catalog.refreshHistory().value
+                guard generation == request else { return }
+                pendingCreation = nil
+                onDismiss?(true)
+            } catch {
+                guard generation == request else { return }
+                reportDiagnostic(error, source: "create")
+                self.error = (error as? ReshError)?.userMessage
                 isConnecting = false
             }
         }

@@ -45,6 +45,65 @@ private final class AttentionUpdates: @unchecked Sendable {
 
 @Suite("Session data connections")
 struct DataConnectionTests {
+    /// Read-only compatibility check against a running local Rex app and server.
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["RESH_REX_SMOKE"] == "1",
+        "Set RESH_REX_SMOKE=1 to check a running Rex."))
+    func rexCompatibility() async throws {
+        let tools = try Tools.discover()
+        defer {
+            for child in RexProcess.stopAll(executable: tools.rex) {
+                #expect(child.waitForExit(), "Rex smoke connection did not exit.")
+            }
+        }
+        let client = RexClient(tools: tools,
+            target: RexTarget(clientID: ProcessInfo.processInfo.environment["RESH_REX_SMOKE_CLIENT"]))
+        _ = try client.sessions()
+        let resolved = try client.resolveClient()
+        let target = RexTarget(clientID: resolved.id)
+        let data = RexDataConnection(tools: tools)
+        defer { data.stop(); data.waitUntilStopped() }
+        let snapshot = try data.snapshot(target: target)
+        #expect(snapshot.client == resolved.id && snapshot.rexAppPID > 0)
+
+        for kind in [RexEventConnection.Kind.catalog, .attention] {
+            let connection = RexEventConnection(tools: tools, kind: kind)
+            let (updates, continuation) = AsyncThrowingStream<RexEventUpdate, Error>.makeStream()
+            defer {
+                connection.stop()
+                connection.waitUntilStopped()
+                continuation.finish()
+            }
+            connection.start(target: target) { result in
+                switch result {
+                case let .success(update): continuation.yield(update)
+                case let .failure(error): continuation.finish(throwing: error)
+                }
+            }
+            try await withThrowingTaskGroup(of: Void.self) { tasks in
+                tasks.addTask {
+                    var needsClients = kind == .catalog, needsSessions = kind == .catalog
+                    var needsRecords = kind == .attention
+                    for try await update in updates {
+                        switch update {
+                        case .clients: needsClients = false
+                        case .sessions: needsSessions = false
+                        case .records: needsRecords = false
+                        default: break
+                        }
+                        if !needsClients && !needsSessions && !needsRecords { return }
+                    }
+                    throw ReshError("Rex \(kind.rawValue) stream ended before its initial snapshot.")
+                }
+                tasks.addTask {
+                    try await Task.sleep(for: .seconds(10))
+                    throw ReshError("Timed out waiting for Rex \(kind.rawValue) snapshot.")
+                }
+                defer { tasks.cancelAll() }
+                try await tasks.next()
+            }
+        }
+    }
+
     @Test @MainActor func numberedShortcutsSkipTheCurrentSession() async throws {
         let stub = try StubRex(body: """
         import pathlib
@@ -70,7 +129,7 @@ struct DataConnectionTests {
         model.selection = try #require(model.results.firstIndex { $0.id == "c" })
         model.togglePin()
         model.query = "missing"
-        #expect(model.results.map(\.id) == ["b"])
+        #expect(model.results.isEmpty)
         model.openResult(1)
         #expect(!model.isConnecting)
         model.query = ""
@@ -83,6 +142,112 @@ struct DataConnectionTests {
         #expect(model.catalog.recentSessionIDs["client:test"] == ["a"])
         let selected = stub.directory.appendingPathComponent("rex.selected")
         #expect(try String(contentsOf: selected, encoding: .utf8) == "a")
+    }
+
+    @Test(arguments: ["local", "remote", "none"], [false, true])
+    @MainActor func createsNamedSessions(activeHost: String, selectionRefused: Bool) async throws {
+        let stub = try StubRex(body: """
+        import pathlib
+        root=pathlib.Path(__file__).parent
+        server=sys.argv[sys.argv.index('--server')+1]
+        if 'client' in sys.argv:
+            assert server=='home'
+            print('{"clients":[{"client_id":"client:test","info":{"kind":"app","platform":"macos"}}]}')
+        elif 'hosts' in sys.argv:
+            print(json.dumps({'hosts':[{'host':{'id':'host:build','label':'build','endpoints':['https://build.example']}}]}))
+        elif 'actions' in sys.argv:
+            print('{"actions":[]}')
+        elif 'session.create' in sys.argv:
+            assert server=='\(activeHost == "remote" ? "build" : "home")'
+            args=json.loads(sys.argv[-1])
+            block=args['initial_windows'][0]['layout']['block']
+            assert args['label']=="Scratch 'notes'"
+            assert block['flavor']=='com.superlogical.terminal.shell' and not block['options']
+            with (root/'creations').open('a') as f: f.write('1')
+            print('{"session_id":"new"}')
+        elif 'session.select' in sys.argv:
+            assert server=='home' and sys.argv[sys.argv.index('-C')+1]=='client:test'
+            if (root/'refuse').exists():
+                (root/'refuse').unlink()
+                print('Remote Control disabled',file=sys.stderr)
+                sys.exit(1)
+            (root/'selected').write_text(json.loads(sys.argv[sys.argv.index('--args')+1])['session_id'])
+            print('{}')
+        else:
+            raise Exception('Unexpected command')
+        """)
+        if selectionRefused { try Data().write(to: stub.directory.appendingPathComponent("refuse")) }
+        let config = stub.directory.appendingPathComponent("config.toml")
+        try "".write(to: config, atomically: true, encoding: .utf8)
+        let service = ReshService(client: RexClient(tools: stub.tools, target: RexTarget(clientID: "client:test", server: "home")),
+            registry: SessionRegistry(directory: stub.directory))
+        let sessions = [RexSession(sessionID: "local", label: "Work")]
+        let model = SearchModel(service: service, tools: stub.tools, sessions: sessions, configurationURL: config,
+            readTheme: { _, _ in .fixture }, readFocusedSession: { _ in nil })
+        defer { model.clear() }
+        model.loadInitial()
+        await model.loadingTask?.value
+        await model.hostsTask?.value
+        let host = try #require(model.hosts.first)
+        model.receive(.success(.sessions([RexSession(sessionID: "remote", label: "Build")])), host: host)
+        for _ in 0..<300 where model.isRemoteLoading { try await Task.sleep(for: .milliseconds(10)) }
+        model.prepare(service: service, sessions: sessions, currentSessionID: activeHost == "none" ? nil : activeHost)
+        let expectedHost = activeHost == "remote" ? host : nil
+        #expect(model.newSessionHost == expectedHost)
+        if activeHost != "none" { #expect(model.selected?.host != expectedHost) }
+        model.query = "  Scratch 'notes'  "
+        #expect(model.offersNewSession)
+        var connected = false
+        model.onDismiss = { _ in connected = true }
+        if selectionRefused { model.createSession() }
+        else { model.openSelection() }
+        for _ in 0..<300 where model.isConnecting && !connected { try await Task.sleep(for: .milliseconds(10)) }
+        if selectionRefused {
+            #expect(!connected && model.error?.contains("Remote Control") == true)
+            model.createSession()
+            for _ in 0..<300 where !connected { try await Task.sleep(for: .milliseconds(10)) }
+        }
+        #expect(connected)
+        #expect(model.catalog.recentSessionIDs["client:test"] == [Candidate.identity("new", host: expectedHost)])
+        #expect(try String(contentsOf: stub.directory.appendingPathComponent("selected"), encoding: .utf8) == "new")
+        #expect(try String(contentsOf: stub.directory.appendingPathComponent("creations"), encoding: .utf8) == "1")
+    }
+
+    @Test @MainActor func creationWaitsForTheActiveHost() async throws {
+        let stub = try StubRex(body: """
+        if 'hosts' in sys.argv:
+            print(json.dumps({'hosts':[{'host':{'id':'host:build','label':'build','endpoints':['https://build.example']}}]}))
+        elif 'actions' in sys.argv:
+            print('{"actions":[]}')
+        else:
+            raise Exception('Unexpected command')
+        """)
+        let config = stub.directory.appendingPathComponent("config.toml")
+        try "".write(to: config, atomically: true, encoding: .utf8)
+        let service = ReshService(client: RexClient(tools: stub.tools, target: RexTarget(clientID: "client:test")))
+        var focus = "local"
+        let model = SearchModel(service: service, tools: stub.tools, configurationURL: config,
+            readTheme: { _, _ in .fixture }, readFocusedSession: { _ in focus })
+        defer { model.clear() }
+        model.prepare(service: service, sessions: [RexSession(sessionID: "local", label: "Work")],
+            rexAppPID: 42, currentSessionID: focus)
+        model.query = "Scratch"
+        #expect(model.canCreateSession && model.offersNewSession)
+        focus = "remote"
+        model.refreshFocus()
+        #expect(!model.canCreateSession && !model.offersNewSession)
+        model.createSession()
+        #expect(!model.isConnecting)
+        model.loadInitial()
+        await model.loadingTask?.value
+        await model.hostsTask?.value
+        let host = try #require(model.hosts.first)
+        model.receive(.success(.sessions([RexSession(sessionID: "remote", label: "Build")])), host: host)
+        for _ in 0..<300 where model.isRemoteLoading { try await Task.sleep(for: .milliseconds(10)) }
+        #expect(model.canCreateSession && model.offersNewSession && model.newSessionHost == host)
+        focus = "local"
+        model.refreshFocus()
+        #expect(model.canCreateSession && model.offersNewSession && model.newSessionHost == nil)
     }
 
     @Test @MainActor func launcherCommandsUseResidentHistory() async throws {

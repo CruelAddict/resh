@@ -85,6 +85,7 @@ optional and only affects repository-based session naming.
 | ⌘P | Configured projects |
 | ⌘1…9 | Open a numbered result, excluding the current Rex session |
 | ⌘⇧P | Pin/unpin the selected session |
+| ⌘⇧N | Create a plain session named after the search text (empty text uses a generated name) |
 | ↑ / ↓, Tab / Shift-Tab, ⌃P / ⌃N | Select a result |
 | Return / click | Switch or create |
 | Esc / Ctrl+[ / click outside | Dismiss without creating a session |
@@ -142,8 +143,8 @@ a new pin goes after existing pins. Closing a session removes its pin. Pin/unpin
 smoothly moves its row without losing the selected session; Reduce Motion disables
 the movement. Search filters pinned sessions without reordering the matching pins.
 
-The current session stays visible below the pins in sources containing sessions,
-even when it doesn't match the query. If pinned, it keeps its pinned place instead.
+The current session appears below the pins in sources containing sessions,
+and is filtered by the query like every other result. If pinned, it keeps its pinned place instead.
 It never receives a number; the first other result is selected initially.
 The Rex action passes its session context. Native Cmd+S reads Rex's private
 `Workspace.lastFocusedSession` preference only for the frontmost Rex process;
@@ -153,8 +154,18 @@ alongside `--client`. resh never writes Rex's focus preference.
 Filesystem notifications also refresh this focus after session creation or removal,
 so the new current session is excluded from numbered shortcuts without reopening.
 
-Holding Cmd for 500 ms reveals result numbers and inline `Pin`/`Unpin` and `Close` hints
-on the selected session's row; there is no hint footer.
+The search field reads `Filter or create…`. A nonempty filter with no matches shows
+a selectable `New Session` row instead of `No matches`, once sources finish loading.
+Return or clicking this row creates a plain session with the entered name on the active
+Rex session's host, shown on the row. Cmd+Shift+N uses the same host, even while matching
+results are visible or another host's result is selected. Without an active session,
+creation targets This Mac; an unresolved or ambiguous active session host disables
+creation instead of silently falling back to This Mac. The new session uses that host's
+default shell directory, without folder reuse or project startup commands, and opens
+in the Rex client that invoked the picker.
+
+Holding Cmd for 600 ms reveals result numbers and inline `Pin`/`Unpin` and `Close` hints
+on the selected session's row, plus `⇧⌘N Create` inside the search field; there is no hint footer.
 Hints follow the configured bindings, so Ctrl bindings appear while holding Ctrl.
 The same delay applies when the picker opens with Cmd already held after Cmd+S.
 Releasing the modifier hides hints immediately and cancels any pending reveal.
@@ -368,7 +379,7 @@ timeout = 5
 
 **Keymaps.** Bindings extend the defaults; `"none"` removes a binding. Actions:
 `next`, `previous`, `open`, `dismiss`, `delete` (without confirmation), `reload`,
-`pin`, `open:1` through `open:9`, `next_source`, `previous_source`, and `source:ID`. Modifiers are `cmd`, `ctrl`,
+`create`, `pin`, `open:1` through `open:9`, `next_source`, `previous_source`, and `source:ID`. Modifiers are `cmd`, `ctrl`,
 `alt`/`option`, and `shift`. Keys use US physical positions, so `ctrl+t` also
 works with the Russian layout. Modifiers match exactly. Shifted symbols are
 written as `shift+5`, not `%`. UI shortcut hints follow the configuration.
@@ -531,7 +542,7 @@ inputs include Rex preferences and theme-file metadata; refresh tasks do not pil
 ```sh
 bash scripts/build.sh
 swift test
-RESH_UI_TESTS=1 swift test --filter PanelTests
+RESH_REX_SMOKE=1 swift test --filter rexCompatibility
 dist/resh/resh --diagnose
 dist/resh/resh --name "$PWD"
 dist/resh/resh --connect "$PWD" --client client:…
@@ -544,8 +555,14 @@ The service owns project configuration, session creation, switching and shared h
 Relative `--connect` paths use the calling terminal's working directory, not the service's.
 Commands are never resent after a response timeout. `--help`, `--check-config`, `--name`
 and `--diagnose` remain standalone so they also work when the service is stopped.
-The opt-in AppKit tests check session-title layout, unread indicators
-and view reuse. Synthetic rendering tests do not connect to Rex or read its preferences.
+The default test run uses fixtures and stubs; it does not require Rex or test UI layout.
+After updating Rex, the opt-in `rexCompatibility` smoke test checks session listing,
+the request/reply bridge and the initial catalog/attention snapshots against a running
+local Rex app and server. It opens no windows and never creates, selects or deletes
+sessions. Empty session and activity lists are valid; no unread activity is required.
+If multiple Rex apps are connected, set `RESH_REX_SMOKE_CLIENT=client:…` to select
+the app to check. Once opted in, discovery, connection and protocol errors fail the
+test rather than skipping it; reads and initial snapshots have bounded timeouts.
 
 Override CLI discovery with `RESH_REX_BIN`; override the Rex application bundle
 with `RESH_REX_APP`. Invalid explicit paths are errors, not hints for discovery.

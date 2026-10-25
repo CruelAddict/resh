@@ -12,6 +12,8 @@ struct ConfigurationTests {
         #expect(config.keymap.action(for: try KeyChord("cmd+e")) == .scope(.sessions))
         #expect(config.keymap.action(for: try KeyChord("cmd+a")) == .scope(.all))
         #expect(config.keymap.action(for: try KeyChord("cmd+shift+p")) == .pin)
+        #expect(config.keymap.action(for: try KeyChord("cmd+shift+n")) == .create)
+        #expect(config.keymap.label(for: .create) == "⇧⌘N")
         #expect(config.keymap.label(for: .delete) == "⇧⌘⌫")
         for number in 1...9 {
             #expect(config.keymap.action(for: try KeyChord("cmd+\(number)")) == .openResult(number))
@@ -88,13 +90,15 @@ struct ConfigurationTests {
     }
     @Test func physicalKeysAndExactModifiersKeepNativeEditing() throws {
         let map = try Keymap(overrides: ["ctrl+t":"source:sessions", "ctrl+tab":"next_source",
-            "ctrl+1":"open:1", "ctrl+shift+p":"pin"])
+            "ctrl+1":"open:1", "ctrl+shift+p":"pin", "ctrl+shift+n":"create"])
         #expect(map.action(for: KeyChord(code: 17, control: true)) == .scope(.sessions))
         #expect(map.action(for: KeyChord(code: 17, control: true, shift: true)) == nil)
         #expect(map.action(for: try KeyChord("ctrl+tab")) == .nextSource)
         #expect(map.label(for: .openResult(1), modifiers: 1) == "⌘1")
         #expect(map.label(for: .openResult(1), modifiers: 2) == "⌃1")
         #expect(map.label(for: .pin, modifiers: 2) == "⌃⇧P")
+        #expect(map.action(for: try KeyChord("ctrl+shift+n")) == .create)
+        #expect(map.label(for: .create, modifiers: 2) == "⌃⇧N")
         #expect(map.label(for: .openResult(1), modifiers: 0).isEmpty)
         for key in ["cmd+c", "cmd+v", "cmd+x", "cmd+z", "ctrl+a", "ctrl+f"] {
             #expect(map.action(for: try KeyChord(key)) == nil)

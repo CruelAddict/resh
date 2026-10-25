@@ -81,6 +81,18 @@ public actor ReshService {
         }
     }
 
+    /// A plain session uses Rex's default shell directory, with no folder identity or startup input.
+    public func createSession(name: String, host: RexHost? = nil) throws -> String {
+        _ = try client.resolveClient()
+        let dataClient = host.map(client.at) ?? client
+        let reply = try dataClient.api("session.create", ["label": name, "initial_windows": [[
+            "window_label": "Terminal",
+            "layout": ["block": ["flavor": "com.superlogical.terminal.shell", "options": [:]]],
+        ]]])
+        struct Created: Decodable { let session_id: String }
+        return try JSONDecoder().decode(Created.self, from: reply).session_id
+    }
+
     private func open(_ candidate: Candidate, clientID targetClient: String) throws -> String {
         if let sessionID = candidate.sessionID {
             try client.select(sessionID, clientID: targetClient)

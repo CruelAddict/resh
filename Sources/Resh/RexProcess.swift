@@ -11,6 +11,7 @@ final class RexProcess: @unchecked Sendable {
     private static let queue = DispatchQueue(label: "resh.cli-lifecycle", qos: .utility)
 
     let pid: pid_t
+    private let executable: String
     let input: FileHandle?
     let output: FileHandle
     private let lock = NSLock()
@@ -62,6 +63,7 @@ final class RexProcess: @unchecked Sendable {
         }
         guard status == 0 else { throw POSIXError(POSIXErrorCode(rawValue: status) ?? .EIO) }
         pid = identifier
+        self.executable = executable
         output = FileHandle(fileDescriptor: stdout.0, closeOnDealloc: true)
         input = stdin.map { FileHandle(fileDescriptor: $0.1, closeOnDealloc: true) }
         descriptors.removeAll { $0 == stdout.0 || $0 == stdin?.1 }
@@ -107,8 +109,10 @@ final class RexProcess: @unchecked Sendable {
     }
 
     /// Includes children already retiring after a panel close or reconnect.
-    static func stopAll() -> [RexProcess] {
-        registryLock.lock(); let children = Array(registry.values); registryLock.unlock()
+    static func stopAll(executable: String? = nil) -> [RexProcess] {
+        registryLock.lock()
+        let children = registry.values.filter { executable == nil || $0.executable == executable }
+        registryLock.unlock()
         for child in children { child.stop() }
         return children
     }

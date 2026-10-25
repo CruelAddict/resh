@@ -12,8 +12,32 @@ private final class SelectionRow: NSTableRowView {
 }
 
 @MainActor
+private final class AttentionIndicatorView: NSView {
+    var color = NSColor.controlAccentColor { didSet { needsDisplay = true } }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let circle = NSBezierPath(ovalIn: bounds.insetBy(dx: 1.35, dy: 1.35))
+        NSGraphicsContext.saveGraphicsState()
+        let shadow = NSShadow()
+        shadow.shadowColor = NSColor.black.withAlphaComponent(0.4)
+        shadow.shadowBlurRadius = 1
+        shadow.shadowOffset = NSSize(width: 0, height: -0.5)
+        shadow.set()
+        color.setFill()
+        circle.fill()
+        NSGraphicsContext.restoreGraphicsState()
+
+        NSGradient(starting: color.blended(withFraction: 0.35, of: .white) ?? color,
+            ending: color.blended(withFraction: 0.1, of: .black) ?? color)?.draw(in: circle, angle: -90)
+        NSColor.black.withAlphaComponent(0.85).setStroke()
+        circle.lineWidth = 0.7
+        circle.stroke()
+    }
+}
+
+@MainActor
 final class SessionCellView: NSTableCellView {
-    let attention = NSImageView()
+    private let attention = AttentionIndicatorView()
     let hostLabel = NSTextField(labelWithString: "")
     let pin = NSImageView()
     let shortcutLabel = NSTextField(labelWithString: "")
@@ -31,8 +55,6 @@ final class SessionCellView: NSTableCellView {
         label.lineBreakMode = .byTruncatingMiddle
         textField = label
         addSubview(label)
-        attention.image = NSImage(systemSymbolName: "circle.fill", accessibilityDescription: nil)
-        attention.imageScaling = .scaleProportionallyUpOrDown
         attention.setAccessibilityElement(false)
         attention.isHidden = true
         addSubview(attention)
@@ -78,7 +100,7 @@ final class SessionCellView: NSTableCellView {
         textField?.stringValue = candidate.displayTitle
         textField?.textColor = textColor
         attention.isHidden = candidate.kind != .session || !needsAttention
-        attention.contentTintColor = color
+        attention.color = color
         let hintColor = textColor.withAlphaComponent(0.55)
         pin.contentTintColor = hintColor
         shortcutLabel.stringValue = shortcut
@@ -113,7 +135,7 @@ final class SessionCellView: NSTableCellView {
         hostLabel.frame = NSRect(x: bounds.width - 8 - hostWidth,
             y: 5 + hostLabel.firstBaselineOffsetFromTop - titleBaselineOffset, width: hostWidth, height: 17)
         pin.frame = NSRect(x: 8, y: 6, width: 12, height: 14)
-        let gap: CGFloat = 12
+        let gap: CGFloat = 6
         var trailing = hostLabel.frame.minX - (hostLabel.isHidden ? 0 : gap)
         // Size each item to its text: a wide, right-aligned number field adds
         // invisible padding that makes the preceding gap look much larger.
@@ -130,7 +152,7 @@ final class SessionCellView: NSTableCellView {
         let fitting = ceil(textField.cell?.cellSize.width ?? available)
         let width = min(available, fitting)
         let titleFrame = NSRect(x: titleX, y: 5, width: width, height: 17)
-        let attentionFrame = NSRect(x: titleFrame.maxX + 6, y: 10, width: 7, height: 7)
+        let attentionFrame = NSRect(x: titleFrame.maxX + 5, y: 9, width: 9, height: 9)
         if animatesPinChange {
             animatesPinChange = false
             NSAnimationContext.runAnimationGroup { context in
@@ -154,12 +176,71 @@ final class SessionCellView: NSTableCellView {
     }
 }
 
+@MainActor
+private final class NewSessionCellView: NSTableCellView {
+    private let icon = NSImageView()
+    private let shortcut = NSTextField(labelWithString: "")
+    private let hostLabel = NSTextField(labelWithString: "")
+    private var hostColumnWidth: CGFloat = 0
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        let label = NSTextField(labelWithString: "New Session")
+        label.font = .systemFont(ofSize: 13)
+        textField = label
+        addSubview(label)
+        icon.image = NSImage(systemSymbolName: "rectangle.stack.badge.plus", accessibilityDescription: nil)
+        icon.imageScaling = .scaleProportionallyUpOrDown
+        icon.setAccessibilityElement(false)
+        addSubview(icon)
+        shortcut.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
+        shortcut.alignment = .right
+        addSubview(shortcut)
+        hostLabel.font = .systemFont(ofSize: 11)
+        hostLabel.lineBreakMode = .byTruncatingMiddle
+        hostLabel.alignment = .right
+        addSubview(hostLabel)
+        setAccessibilityIdentifier("resh.new-session")
+        setAccessibilityLabel("New Session")
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    func configure(textColor: NSColor, key: String, host: String, hostWidth: CGFloat) {
+        textField?.textColor = textColor
+        icon.contentTintColor = textColor
+        shortcut.textColor = textColor.withAlphaComponent(0.55)
+        shortcut.stringValue = key
+        hostLabel.stringValue = host
+        hostLabel.textColor = shortcut.textColor
+        hostColumnWidth = hostWidth
+        setAccessibilityLabel("New Session, \(host)")
+        needsLayout = true
+    }
+
+    override func layout() {
+        super.layout()
+        guard let textField else { return }
+        let titleBaselineOffset = textField.firstBaselineOffsetFromTop
+        let hostWidth = min(bounds.width * 0.3, max(hostColumnWidth, ceil(hostLabel.cell?.cellSize.width ?? 0)))
+        hostLabel.frame = NSRect(x: bounds.width - 8 - hostWidth,
+            y: 5 + hostLabel.firstBaselineOffsetFromTop - titleBaselineOffset, width: hostWidth, height: 17)
+        let shortcutWidth = shortcut.stringValue.isEmpty ? 0 : ceil(shortcut.cell?.cellSize.width ?? 0)
+        shortcut.frame = NSRect(x: hostLabel.frame.minX - 6 - shortcutWidth,
+            y: 5 + shortcut.firstBaselineOffsetFromTop - titleBaselineOffset, width: shortcutWidth, height: 17)
+        icon.frame = NSRect(x: 8, y: 5, width: 16, height: 16)
+        let trailing = shortcutWidth > 0 ? shortcut.frame.minX : hostLabel.frame.minX
+        textField.frame = NSRect(x: 32, y: 5, width: max(0, trailing - 44), height: 17)
+    }
+}
+
 /// AppKit controls keep the picker compact and avoid cold-start SwiftUI layout work.
 @MainActor
 final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTextFieldDelegate {
     let searchField = NSTextField()
     private let model: SearchModel
     private let searchBackground = NSView()
+    private let createHintLabel = NSTextField(labelWithString: "")
     private let progress = NSProgressIndicator()
     private let table = NSTableView()
     private let scroll = NSScrollView()
@@ -173,6 +254,7 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
     private let sourceContainer = NSView()
     private var sourceButtons: [NSButton] = []
     private var rows: [Candidate] = []
+    private var showsNewSession = false
     private var attentionSessionIDs = Set<String>()
     private var pinnedSessionIDs = Set<String>()
     private var currentCandidateID: String?
@@ -202,10 +284,14 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
         searchField.drawsBackground = false
         searchField.focusRingType = .none
         searchField.font = .systemFont(ofSize: 14)
-        searchField.placeholderString = "Search sessions and folders…"
+        searchField.placeholderString = "Filter or create…"
         searchField.delegate = self
         searchField.setAccessibilityIdentifier("resh.search")
         searchBackground.addSubview(searchField)
+        createHintLabel.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
+        createHintLabel.alignment = .right
+        createHintLabel.isHidden = true
+        searchBackground.addSubview(createHintLabel)
         progress.style = .spinning
         progress.controlSize = .mini
         progress.isIndeterminate = true
@@ -263,7 +349,7 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
 
         bindModel()
         apply(theme: model.theme)
-        emptyLabel.stringValue = model.emptyMessage
+        updateEmptyState()
     }
 
     required init?(coder: NSCoder) { nil }
@@ -295,7 +381,7 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
         model.$results.sink { [weak self] entries in
             guard let self else { return }
             updateRows(entries)
-            emptyLabel.isHidden = !entries.isEmpty || model.configurationError != nil
+            emptyLabel.isHidden = !entries.isEmpty || showsNewSession || model.configurationError != nil
             needsLayout = true
         }.store(in: &subscriptions)
         model.$selection.sink { [weak self] in
@@ -337,31 +423,54 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
             errorLabel.stringValue = message
             errorScroll.isHidden = message.isEmpty
             retry.isHidden = message.isEmpty || !model.canRetry
-            emptyLabel.isHidden = !rows.isEmpty || model.configurationError != nil
+            emptyLabel.isHidden = !rows.isEmpty || showsNewSession || model.configurationError != nil
             scroll.isHidden = model.configurationError != nil
             needsLayout = true
             layoutSubtreeIfNeeded()
             errorLabel.scrollToVisible(NSRect(x: 0, y: max(0, errorLabel.bounds.maxY - 1), width: 1, height: 1))
         }.store(in: &subscriptions)
         Publishers.CombineLatest3(model.$isLoading, model.$isConnecting, model.$isRemoteLoading).sink { [weak self] loading, connecting, remote in
-            if loading || connecting || remote { self?.progress.startAnimation(nil) }
-            else { self?.progress.stopAnimation(nil) }
+            guard let self else { return }
+            progress.isHidden = !loading && !connecting && !remote
+            if progress.isHidden { progress.stopAnimation(nil) }
+            else { progress.startAnimation(nil) }
+            needsLayout = true
         }.store(in: &subscriptions)
-        Publishers.CombineLatest(model.$isConfigurationReady, model.$isOpening).sink { [weak self] ready, opening in
+        Publishers.CombineLatest3(model.$isConfigurationReady, model.$isOpening, model.$isConnecting).sink { [weak self] ready, opening, connecting in
             guard let self else { return }
             searchField.isEnabled = ready || opening
             table.isEnabled = ready && !opening
             for button in sourceButtons { button.isEnabled = ready && !opening }
-            showsActions = ready && !opening
+            showsActions = ready && !opening && !connecting
             refreshCells()
             if ready || opening, window?.isKeyWindow == true { window?.makeFirstResponder(searchField) }
         }.store(in: &subscriptions)
         model.objectWillChange.sink { [weak self] in
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
-                emptyLabel.stringValue = model.emptyMessage
+                updateEmptyState()
+                refreshCells()
             }
         }.store(in: &subscriptions)
+    }
+
+    private func updateEmptyState() {
+        let updated = model.offersNewSession
+        if showsNewSession != updated {
+            showsNewSession = updated
+            table.reloadData()
+            selectRow(model.selection)
+        }
+        emptyLabel.stringValue = model.emptyMessage
+        emptyLabel.isHidden = !rows.isEmpty || showsNewSession || model.configurationError != nil
+        needsLayout = true
+    }
+
+    private func refreshCreateHint() {
+        let key = keymap.label(for: .create, modifiers: modifiers)
+        createHintLabel.stringValue = key.isEmpty ? "" : key + "  Create"
+        createHintLabel.isHidden = !shortcutsVisible || !showsActions || key.isEmpty || !model.canCreateSession
+        needsLayout = true
     }
 
     func apply(theme: RexTheme) {
@@ -369,9 +478,10 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
         searchBackground.layer?.backgroundColor = NSColor.black.withAlphaComponent(theme.isDark ? 0.12 : 0.03).cgColor
         searchBackground.layer?.borderColor = theme.foreground.nsColor.withAlphaComponent(0.2).cgColor
         searchField.textColor = theme.foreground.nsColor
-        searchField.placeholderAttributedString = NSAttributedString(string: "Search sessions and folders…",
+        searchField.placeholderAttributedString = NSAttributedString(string: "Filter or create…",
             attributes: [.foregroundColor: theme.foreground.nsColor.withAlphaComponent(0.45), .font: NSFont.systemFont(ofSize: 14)])
         emptyLabel.textColor = theme.foreground.nsColor.withAlphaComponent(0.5)
+        createHintLabel.textColor = theme.foreground.nsColor.withAlphaComponent(0.55)
         updateSources()
         table.reloadData()
         selectRow(model.selection)
@@ -400,7 +510,11 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
         let width = bounds.width
         let padding = PanelLayout.outerPadding
         searchBackground.frame = NSRect(x: padding, y: padding, width: width - padding * 2, height: PanelLayout.searchHeight)
-        searchField.frame = NSRect(x: 10, y: 7, width: width - 58, height: 19)
+        let hintWidth = createHintLabel.isHidden ? 0 : ceil(createHintLabel.cell?.cellSize.width ?? 0)
+        let trailing = searchBackground.bounds.width - (progress.isHidden ? 10 : 32)
+        createHintLabel.frame = NSRect(x: trailing - hintWidth,
+            y: 7 + createHintLabel.firstBaselineOffsetFromTop - searchField.firstBaselineOffsetFromTop, width: hintWidth, height: 19)
+        searchField.frame = NSRect(x: 10, y: 7, width: max(0, trailing - 10 - (hintWidth > 0 ? hintWidth + 12 : 0)), height: 19)
         progress.frame = NSRect(x: width - 45, y: 10, width: 12, height: 12)
         sourceScroll.frame = NSRect(x: padding, y: PanelLayout.sourcesTop, width: width - padding * 2, height: PanelLayout.sourcesHeight)
         var x: CGFloat = 0
@@ -448,10 +562,14 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
     }
 
     private func refreshCells() {
+        refreshCreateHint()
         let visible = table.rows(in: table.visibleRect)
         if visible.location != NSNotFound {
-            for row in visible.location..<NSMaxRange(visible) where rows.indices.contains(row) {
-                if let cell = table.view(atColumn: 0, row: row, makeIfNecessary: false) as? SessionCellView {
+            for row in visible.location..<NSMaxRange(visible) {
+                let view = table.view(atColumn: 0, row: row, makeIfNecessary: false)
+                if let cell = view as? NewSessionCellView {
+                    configure(cell, row: row)
+                } else if rows.indices.contains(row), let cell = view as? SessionCellView {
                     configure(cell, row: row)
                 }
             }
@@ -461,6 +579,7 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
     private func updateRows(_ entries: [Candidate]) {
         let previous = rows
         rows = entries
+        if !entries.isEmpty { showsNewSession = false }
         isSelecting = true
         if let id = model.animatedSessionID, window?.isVisible == true,
            !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion,
@@ -483,14 +602,26 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
         refreshCells()
     }
 
-    func numberOfRows(in tableView: NSTableView) -> Int { rows.count }
+    func numberOfRows(in tableView: NSTableView) -> Int { rows.count + (showsNewSession ? 1 : 0) }
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
+        if showsNewSession, row == rows.count {
+            let identifier = NSUserInterfaceItemIdentifier("new-session.cell")
+            let cell = tableView.makeView(withIdentifier: identifier, owner: self) as? NewSessionCellView ?? NewSessionCellView()
+            cell.identifier = identifier
+            configure(cell, row: row)
+            return cell
+        }
         let identifier = NSUserInterfaceItemIdentifier("entry.cell")
         let cell = tableView.makeView(withIdentifier: identifier, owner: self) as? SessionCellView ?? SessionCellView()
         cell.identifier = identifier
         configure(cell, row: row)
         return cell
+    }
+
+    private func configure(_ cell: NewSessionCellView, row: Int) {
+        cell.configure(textColor: table.selectedRow == row ? .white : theme.foreground.nsColor,
+            key: keymap.label(for: .create), host: model.newSessionHost?.label ?? "This Mac", hostWidth: hostColumnWidth)
     }
 
     private func configure(_ cell: SessionCellView, row: Int) {
@@ -529,7 +660,7 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
         let wasSelecting = isSelecting
         isSelecting = true
         defer { isSelecting = wasSelecting }
-        if rows.indices.contains(row) {
+        if (0..<numberOfRows(in: table)).contains(row) {
             table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
             table.scrollRowToVisible(row)
         } else { table.deselectAll(nil) }

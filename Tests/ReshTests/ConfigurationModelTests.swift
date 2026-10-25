@@ -81,6 +81,9 @@ struct ConfigurationModelTests {
         #expect(model.results.map(\.title) == ["Live", "Project"])
         model.receive(.success(.sessions([RexSession(sessionID: "new", label: "Fresh")])))
         #expect(model.results.map(\.title) == ["Fresh", "Project"] && model.isLoading)
+        model.query = "missing"
+        #expect(model.results.isEmpty && !model.offersNewSession)
+        model.query = ""
         let oldTask = model.loadingTask
         model.changeScope(.sessions)
         #expect(!model.isLoading && model.results.map(\.title) == ["Fresh"])
@@ -195,8 +198,14 @@ struct ConfigurationModelTests {
         model.endPresentation()
         model.prepare(service: service, sessions: sessions, recentSessionIDs: ["d", "a", "c"], currentSessionID: "a")
         #expect(model.results.map(\.id) == ["c", "a", "d", "b"])
+        #expect(!model.offersNewSession)
         model.query = "d"
-        #expect(model.results.map(\.id) == ["a", "d"])
+        #expect(model.results.map(\.id) == ["d"])
+        #expect(!model.offersNewSession)
+        model.query = "missing"
+        #expect(model.results.isEmpty && model.offersNewSession)
+        model.query = "   "
+        #expect(!model.offersNewSession)
         model.query = ""
         model.selection = try #require(model.results.firstIndex { $0.id == "a" })
         model.togglePin()

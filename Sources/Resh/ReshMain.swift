@@ -309,6 +309,7 @@ struct ReshMain {
 
                 ⌘E Sessions · ⌘A All · ⌘R Recent folders · ⌘F Find folders · ⌘P Projects
                 ⌘1…9 open a result · ⌘⇧P pin/unpin a session (memory only)
+                ⌘⇧N create a session named after the search text
                 ↑/↓ or Tab/Shift-Tab navigate · Return open · Esc or Ctrl+[ dismiss
                 ⌘⇧Backspace immediately close a selected session
                 """)

@@ -208,6 +208,7 @@ final class PanelController: NSObject, NSWindowDelegate {
         case let .move(delta): model.move(delta)
         case .open: model.openSelection()
         case let .openResult(number): model.openResult(number)
+        case .create: if !event.isARepeat { model.createSession() }
         case .pin: if !event.isARepeat { model.togglePin() }
         case .dismiss: if !model.isConnecting { dismiss(focusRex: true) }
         case .delete: if !event.isARepeat { model.deleteSelection() }
