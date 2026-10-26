@@ -2,8 +2,6 @@ import AppKit
 import Carbon
 import ReshCore
 
-/// Register a virtual key, not a character. Registration exists only while Rex is
-/// the frontmost application, so Save in every other application is untouched.
 @MainActor
 final class RexHotkey {
     private var handler: EventHandlerRef?

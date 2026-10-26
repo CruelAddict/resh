@@ -3,7 +3,7 @@ local executable = os.getenv("HOME") .. "/Library/Application Support/resh/resh"
 rex.action{
   name = "resh",
   title = "Open resh Session Manager",
-  description = "Find a folder or switch to a named Rex session.",
+  description = "Find a folder or switch to a Rex session.",
   category = "Session",
   run = function(ctx)
     local arguments = { executable, "--client", ctx.client_id }

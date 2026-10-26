@@ -26,7 +26,7 @@ type = "command"
 # Relative output paths and relative executable paths resolve against cwd.
 cwd = "~/work"
 # Print UTF-8 directory paths, one per line. The list refreshes when you open its view.
-# No shell is used: pipes, redirects and ~ in arguments need an explicit shell/script.
+# Use an explicit shell/script for pipes, redirects and ~ in arguments.
 command = ["fd", "-t", "d", "-d", "2", ".", "."]
 # Optional; "paths" is the only supported output format.
 format = "paths"
@@ -48,7 +48,7 @@ sources = ["sessions", "configs", "work", "repositories", "directories"]
 #   zoxide   — directories in zoxide's order
 #   find     — fd search under ~, two levels deep, including hidden folders except .Trash
 # command/cwd/format apply only to command; paths only to paths; sources only to union.
-# The default All includes sessions, projects and zoxide, not custom views or Find.
+# The default All includes sessions, projects and zoxide.
 
 [keymap]
 "ctrl+w" = "source:work"

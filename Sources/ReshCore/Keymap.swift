@@ -1,6 +1,5 @@
 import Foundation
 
-/// US hardware positions, not translated characters. A binding keeps working in Russian.
 public struct KeyChord: Hashable, Sendable {
     public let code: UInt16
     public let modifiers: UInt8
