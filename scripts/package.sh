@@ -3,7 +3,7 @@
 set -eu
 COPYFILE_DISABLE=1
 export COPYFILE_DISABLE
-root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+root=$(CDPATH="" cd -- "$(dirname -- "$0")/.." && pwd)
 out="$root/dist/releases"
 mkdir -p "$out"
 stage=$(mktemp -d "${TMPDIR:-/tmp}/resh-package.XXXXXX")

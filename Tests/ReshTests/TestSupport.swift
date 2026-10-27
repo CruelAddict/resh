@@ -1,6 +1,10 @@
 import Foundation
 import ReshCore
+import Testing
 @testable import Resh
+
+@Suite("Picker behavior", .serialized)
+struct PickerTests {}
 
 extension RexTheme {
     static var fixture: RexTheme {

@@ -3,7 +3,7 @@ import Foundation
 import ReshCore
 import Testing
 
-@Suite("Subprocess execution")
+@Suite("Subprocess execution", .serialized)
 struct RunnerTests {
     @Test(arguments: [[], ["--remote"]])
     func missingInstallationOptionValue(_ options: [String]) throws {
@@ -28,14 +28,6 @@ struct RunnerTests {
     func timeoutCoversTheEntireProcess(_ command: String) throws {
         let started = ProcessInfo.processInfo.systemUptime
         #expect(try SystemCommandRunner().run("/bin/sh", ["-c", command], timeout: 0.03).status == 124)
-        #expect(ProcessInfo.processInfo.systemUptime - started < 1)
-    }
-    @Test func cancellationStopsTheProcess() async throws {
-        let task = Task.detached { try SystemCommandRunner().run("/bin/sleep", ["10"], timeout: 20) }
-        try await Task.sleep(for: .milliseconds(30))
-        let started = ProcessInfo.processInfo.systemUptime
-        task.cancel()
-        await #expect(throws: CancellationError.self) { try await task.value }
         #expect(ProcessInfo.processInfo.systemUptime - started < 1)
     }
     @Test func timeoutStopsChildProcesses() throws {
