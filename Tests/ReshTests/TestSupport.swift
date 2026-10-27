@@ -3,9 +3,8 @@ import ReshCore
 import Testing
 @testable import Resh
 
-// Serialize independent integration scenarios, not their background work.
-@Suite("Rex integration", .serialized)
-struct IntegrationTests {}
+@Suite("Picker behavior", .serialized)
+struct PickerTests {}
 
 extension RexTheme {
     static var fixture: RexTheme {

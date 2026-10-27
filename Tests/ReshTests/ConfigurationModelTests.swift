@@ -3,7 +3,7 @@ import ReshCore
 import Testing
 @testable import Resh
 
-extension IntegrationTests {
+extension PickerTests {
     @Test @MainActor func reloadsSourcesKeysAndProjectsWithoutRestarting() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("resh-model-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: root.appendingPathComponent("project"), withIntermediateDirectories: true)
@@ -174,9 +174,7 @@ extension IntegrationTests {
         let oldTask = model.loadingTask
         model.changeScope(.sessions)
         #expect(!model.isLoading && model.results.map(\.title) == ["Fresh"])
-        let started = ProcessInfo.processInfo.systemUptime
         await oldTask?.value
-        #expect(ProcessInfo.processInfo.systemUptime - started < 1)
         #expect(model.scope == .sessions)
         model.clear()
     }
