@@ -1,21 +1,23 @@
 # resh
 
 A macOS session manager for [Rex](https://www.superlogical.com/), inspired by
-[sesh](https://github.com/joshmedeski/sesh). Fuzzy-find sessions and project
-directories.
+[sesh](https://github.com/joshmedeski/sesh). Focused on blazingly fast session
+creation and switching across multiple projects. Designed to feel native to
+Rex's stunning UI.
 
-- Open frequently visited directories with `zoxide`.
-- Find other directories with `fd`.
+- Fuzzy-find and open frequently visited directories with `zoxide`
+- Find other directories with `fd`
 - Configure projects with a session name, directory, and startup command (e.g. open
-  an editor or start a dev server).
-- Switch between local and remote Rex sessions.
-- Add custom views populated by directory lists or commands.
-- Customize keyboard shortcuts.
+  an editor or start a dev server)
+- Switch between local and remote Rex sessions
+- Add custom views populated by directory lists or commands
+- Customize keyboard shortcuts. Make them tmux-style if that's where you're
+  coming from.
 
 ## Install
 
-Requires macOS 15+ and Rex. Rex is currently in closed beta; compatibility may
-change between builds.
+Requires macOS 15+ and Rex. Rex is currently in closed beta and does not provide
+a proper API for a plugin such as resh, so things might and will likely break.
 
 Enable **Rex Settings → Rex Server → Remote Control** to allow session switching.
 
