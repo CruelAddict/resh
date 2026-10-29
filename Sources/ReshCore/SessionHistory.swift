@@ -1,12 +1,13 @@
 import Foundation
 
-/// Process-owned successful selections, shared by every client-facing service.
+/// Process-owned confirmed selections and observed visits, shared by every client-facing service.
 final class SessionHistory: @unchecked Sendable {
     struct Visit: Sendable {
         let clientID: String
         let server: String
         let sessionID: String
         let host: RexHost?
+        let selectedAt: ContinuousClock.Instant
 
         var candidateID: String { Candidate.identity(sessionID, host: host) }
         func belongs(to clientID: String, server: String) -> Bool {
@@ -29,10 +30,13 @@ final class SessionHistory: @unchecked Sendable {
         return try operation(&visits)
     }
 
-    static func record(_ sessionID: String, host: RexHost?, clientID: String, server: String, from current: Candidate? = nil, visits: inout [Visit]) {
-        let visit = Visit(clientID: clientID, server: server, sessionID: sessionID, host: host)
+    static func record(_ sessionID: String, host: RexHost?, clientID: String, server: String, from current: Candidate? = nil,
+                       at selectedAt: ContinuousClock.Instant = .now, visits: inout [Visit]) {
+        // Queued observations must not undo a later observation or successful command.
+        if let latest = visits.first(where: { $0.belongs(to: clientID, server: server) }), latest.selectedAt > selectedAt { return }
+        let visit = Visit(clientID: clientID, server: server, sessionID: sessionID, host: host, selectedAt: selectedAt)
         if let current, let sourceID = current.sessionID, !visit.matches(sourceID, host: current.host) {
-            record(sourceID, host: current.host, clientID: clientID, server: server, visits: &visits)
+            record(sourceID, host: current.host, clientID: clientID, server: server, at: selectedAt, visits: &visits)
         }
         visits.removeAll {
             $0.belongs(to: clientID, server: server) && $0.matches(sessionID, host: host)

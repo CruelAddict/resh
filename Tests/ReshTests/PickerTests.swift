@@ -154,7 +154,6 @@ extension PickerTests {
                 title: "Scratch", sessionID: "new", host: expectedHost)
             #expect(try await service.connectLast(from: created) == activeHost)
             focus = "new"
-            model.receive(.success(.created("new")), host: expectedHost)
             let previous = expectedHost == nil ? sessions : [RexSession(sessionID: "remote", label: "Build")]
             model.receive(.success(.sessions(previous + [RexSession(sessionID: "new", label: "Scratch")])), host: expectedHost)
             await model.catalog.refreshHistory().value
@@ -337,7 +336,6 @@ extension PickerTests {
         model.endPresentation()
         #expect(model.query.isEmpty && model.results.map(\.title) == ["First"])
         let sessions = [RexSession(sessionID: "s", label: "Renamed"), RexSession(sessionID: "new", label: "New")]
-        model.receive(.success(.created("new")))
         model.receive(.success(.sessions(sessions)))
         #expect(model.results.map(\.title) == ["Renamed", "New"])
         #expect(try await selectedService.recentSessionIDs() == ["s"])
@@ -351,6 +349,15 @@ extension PickerTests {
         if presented {
             #expect(model.results.map(\.title) == ["New", "Renamed"])
             #expect(model.numberedRows.map { model.results[$0].id } == ["s"])
+        }
+        for sessionID in ["s", "new"] {
+            focus = sessionID
+            model.refreshFocus()
+            let recent = sessionID == "s" ? ["s", "new"] : ["new", "s"]
+            for _ in 0..<300 where model.catalog.recentSessionIDs["client:test"] != recent {
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            #expect(model.catalog.recentSessionIDs["client:test"] == recent)
         }
         #expect(!model.isLoading)
         if presented { model.selection = 0; model.deleteSelection() }

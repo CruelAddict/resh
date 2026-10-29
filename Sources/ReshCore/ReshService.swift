@@ -46,14 +46,14 @@ public actor ReshService {
         }
     }
 
-    public func recordVisit(sessionID: String, host: RexHost? = nil, clientID: String, from current: Candidate? = nil,
-                            onlyIfNew: Bool = false, expectedRecentSessionIDs: [String]? = nil) {
+    public func recordVisit(sessionID: String, host: RexHost? = nil, clientID: String,
+                            observedAt: ContinuousClock.Instant, initial: Bool) {
         history.withVisits { visits in
-            let recent = visits.filter { $0.belongs(to: clientID, server: client.target.server) }
-            // Delayed focus notifications must not reorder a newer successful switch.
-            if onlyIfNew, recent.contains(where: { $0.matches(sessionID, host: host) }) { return }
-            if let expectedRecentSessionIDs, recent.map(\.candidateID) != expectedRecentSessionIDs { return }
-            SessionHistory.record(sessionID, host: host, clientID: clientID, server: client.target.server, from: current, visits: &visits)
+            // The first preference read seeds an empty history, but must not
+            // replace a selection already confirmed by a command.
+            if initial, visits.contains(where: { $0.belongs(to: clientID, server: client.target.server) }) { return }
+            SessionHistory.record(sessionID, host: host, clientID: clientID, server: client.target.server,
+                at: observedAt, visits: &visits)
         }
     }
 
