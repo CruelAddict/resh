@@ -3,18 +3,16 @@ import ReshCore
 import Testing
 @testable import Resh
 
-@Suite("Live configuration and asynchronous sources")
+@Suite("Configuration and asynchronous sources")
 struct ConfigurationModelTests {
-    @Test @MainActor func reloadsSourcesKeysAndProjectsWithoutRestarting() async throws {
+    @Test @MainActor func configurationStaysFixedUntilRestart() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("resh-model-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: root.appendingPathComponent("project"), withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
         let url = root.appendingPathComponent("config.toml")
         let tools = Tools(rex: "/not/rex", zoxide: nil, fd: nil, rexApp: "/not/Rex.app")
-        let model = SearchModel(service: ReshService(client: RexClient(tools: tools, target: RexTarget())),
-            tools: tools, sessions: [RexSession(sessionID: "s", label: "Live session")], configurationURL: url,
-            readTheme: { _, _ in .fixture })
-        defer { model.clear() }
+        let service = ReshService(client: RexClient(tools: tools, target: RexTarget()))
+        let sessions = [RexSession(sessionID: "s", label: "Live session")]
         try """
         source_order = ["sessions", "configs"]
         [keymap]
@@ -23,6 +21,9 @@ struct ConfigurationModelTests {
         name = "Project one"
         path = "project"
         """.write(to: url, atomically: true, encoding: .utf8)
+        let model = SearchModel(service: service, tools: tools, sessions: sessions, configurationURL: url,
+            readTheme: { _, _ in .fixture })
+        defer { model.clear() }
         model.startBackground()
         await model.loadingTask?.value
         #expect(model.configuration.visibleSources.map(\.id) == [.sessions, .configs])
@@ -36,16 +37,63 @@ struct ConfigurationModelTests {
         try """
         initial_source = "configs"
         source_order = ["configs"]
+        [keymap]
+        "ctrl+w" = "source:configs"
         [[session]]
         name = "Project two"
         path = "project"
         """.write(to: url, atomically: true, encoding: .utf8)
-        for _ in 0..<300 {
-            if model.results.map(\.title) == ["Project two"] { break }
-            try await Task.sleep(for: .milliseconds(10))
-        }
-        #expect(model.scope == .configs)
-        #expect(model.results.map(\.title) == ["Project two"])
+        model.stopBackground()
+        model.startBackground()
+        await model.loadingTask?.value
+        model.prepare(service: service, sessions: sessions)
+        #expect(model.scope == .sessions)
+        model.changeScope(.configs)
+        model.retry()
+        await model.loadingTask?.value
+        #expect(model.configuration.visibleSources.map(\.id) == [.sessions, .configs])
+        #expect(model.configuration.keymap.action(for: try KeyChord("ctrl+t")) == .scope(.configs))
+        #expect(model.results.map(\.title) == ["Project one"])
+
+        let restarted = SearchModel(service: service, tools: tools, sessions: sessions, configurationURL: url,
+            readTheme: { _, _ in .fixture })
+        defer { restarted.clear() }
+        restarted.loadInitial()
+        await restarted.loadingTask?.value
+        #expect(restarted.scope == .configs)
+        #expect(restarted.configuration.visibleSources.map(\.id) == [.configs])
+        #expect(restarted.configuration.keymap.action(for: try KeyChord("ctrl+w")) == .scope(.configs))
+        #expect(restarted.configuration.keymap.action(for: try KeyChord("ctrl+t")) == nil)
+        #expect(restarted.results.map(\.title) == ["Project two"])
+    }
+
+    @Test(arguments: ["missing", "invalid"])
+    @MainActor func configurationErrorsRequireRestart(_ scenario: String) async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("resh-config-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = root.appendingPathComponent("config.toml")
+        if scenario == "invalid" { try "source_order = []".write(to: url, atomically: true, encoding: .utf8) }
+        let tools = Tools(rex: "/not/rex", zoxide: nil, fd: nil, rexApp: "/not/Rex.app")
+        let service = ReshService(client: RexClient(tools: tools, target: RexTarget()))
+        let model = SearchModel(service: service, tools: tools, configurationURL: url, readTheme: { _, _ in .fixture })
+        defer { model.clear() }
+        model.startBackground()
+        #expect(model.error?.contains(url.path) == true)
+        #expect(model.error?.contains("resh service restart") == true)
+        #expect(!model.isConfigurationReady && !model.canRetry && !model.canCreateSession)
+        let error = model.error
+
+        try "".write(to: url, atomically: true, encoding: .utf8)
+        model.retry()
+        model.stopBackground()
+        model.startBackground()
+        await model.loadingTask?.value
+        #expect(model.error == error && model.results.isEmpty && !model.isConfigurationReady)
+
+        let restarted = SearchModel(service: service, tools: tools, configurationURL: url, readTheme: { _, _ in .fixture })
+        defer { restarted.clear() }
+        #expect(restarted.isConfigurationReady && restarted.error == nil)
     }
     @Test @MainActor func compositeSourcesKeepFreshSessionsAvailableWhileProvidersRun() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("resh-slow-" + UUID().uuidString)

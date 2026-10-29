@@ -60,11 +60,13 @@ a session there, or returns to the one you opened through resh before.
 ## Configuration
 
 Put settings in `~/.config/resh/config.toml` (or
-`$XDG_CONFIG_HOME/resh/config.toml`). Edits apply without restarting.
+`$XDG_CONFIG_HOME/resh/config.toml`).
+
+After changing the config, apply the new version with `resh service restart`.
 
 ### Projects
 
-Configure a project's session name, directory, and optional startup command:
+A project is a pre-configured session shortcut, e.g.:
 
 ```toml
 [[session]]
@@ -73,11 +75,11 @@ path = "~/work/backend"
 startup_command = "nvim"
 ```
 
-[Project configuration](examples/config/projects.toml).
+[See more in examples](examples/config/projects.toml).
 
 ### Custom views
 
-Add a `Work` view that finds directories under `~/work`:
+Specify your own command to supply candidates for the picker.
 
 ```toml
 [[sources]]
@@ -88,7 +90,7 @@ cwd = "~/work"
 command = ["fd", "-t", "d", "-d", "2", ".", "."]
 ```
 
-[View configuration](examples/config/sources.toml).
+[See more in examples](examples/config/sources.toml).
 
 ### Custom shortcuts
 
@@ -99,20 +101,20 @@ command = ["fd", "-t", "d", "-d", "2", ".", "."]
 "cmd+a" = "none"
 ```
 
-[Shortcut configuration](examples/config/keymap.toml).
-See [all configuration examples](examples/config).
+[See more in examples](examples/config/keymap.toml).
 
 ## Remote hosts
 
 resh shows the same local and remote sessions you see in Rex.
 
-To also use `Recent` and `Find` to discover directories on a remote host, install
-`zoxide` and `fd` there, set up `zoxide` in that host's shell, and install the source
-adapter from a copy of this checkout on that host:
+To have `Recent` and `Find` discover directories on a remote host,
+install the remote resh adapter on it:
 
 ```sh
 bash install.sh --remote
 ```
+
+The remote machine also needs to have `zoxide` and `fd` configured.
 
 ## License
 

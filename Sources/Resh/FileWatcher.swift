@@ -7,7 +7,6 @@ final class FileWatcher: @unchecked Sendable {
     private let url: URL
     private let onChange: @Sendable () -> Void
     private let queue = DispatchQueue(label: "resh.files", qos: .utility)
-    private let ready = DispatchGroup()
     private var sources: [DispatchSourceFileSystemObject] = []
     private var signature: Signature?
     private var stopped = false
@@ -21,14 +20,10 @@ final class FileWatcher: @unchecked Sendable {
 
     init(url: URL, onChange: @escaping @Sendable () -> Void) {
         self.url = url; self.onChange = onChange
-        ready.enter()
-        queue.async { [self] in signature = readSignature(); watch(); ready.leave() }
+        queue.async { [self] in signature = readSignature(); watch() }
     }
 
     deinit { for source in sources { source.cancel() } }
-
-    /// Call off the UI thread before the initial read, so it cannot precede the watch.
-    func waitUntilReady() { ready.wait() }
 
     func stop() {
         queue.async { [self] in

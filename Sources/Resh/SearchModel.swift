@@ -12,7 +12,6 @@ final class SearchModel: ObservableObject {
     @Published private(set) var hosts: [RexHost] = []
     @Published var isConnecting = false
     @Published private(set) var isOpening = false
-    @Published private(set) var isConfigurationReady = true
     @Published var error: String?
     @Published var theme: RexTheme
     @Published private(set) var results: [Candidate] = []
@@ -21,10 +20,11 @@ final class SearchModel: ObservableObject {
     @Published private(set) var currentCandidateID: String?
     private var currentSessionID: String?
     private(set) var animatedSessionID: String?
-    @Published private(set) var configuration = ReshConfiguration.defaults
+    let configuration: ReshConfiguration
     @Published private(set) var visibleSources = ReshConfiguration.defaults.visibleSources
-    private(set) var configurationURL: URL?
-    private(set) var configurationError: String?
+    let configurationURL: URL
+    let configurationError: String?
+    var isConfigurationReady: Bool { configurationError == nil }
     private var search = FuzzyMatcher([])
     private var sessionSnapshot: [Candidate] = []
     private var sessionRanks: [String: Int] = [:]
@@ -40,7 +40,6 @@ final class SearchModel: ObservableObject {
     private var remoteRequest = UUID()
     private var rexAppPID: Int32?
     let catalog: SessionStore
-    private var configurationWatcher: FileWatcher?
     private var focusWatcher: FileWatcher?
     private var createdSessionClients: [String: Set<String>] = [:]
     private var observedFocus: [String: Candidate] = [:]
@@ -48,7 +47,6 @@ final class SearchModel: ObservableObject {
     private var seenSessionHosts = Set<String>()
     private var pendingCreation: (name: String, sessionID: String, host: RexHost?)?
     private var isBackgroundActive = false
-    private var isPresented = false
     private var subscriptions = Set<AnyCancellable>()
     private let snapshotProvider: any RexSnapshotProviding
     private let readPreferences: @Sendable () -> [String: Any]
@@ -74,7 +72,14 @@ final class SearchModel: ObservableObject {
          readFocusedSession: @escaping @MainActor (Int32?) -> String? = { RexAppMonitor.focusedSessionID(rexAppPID: $0) }) {
         self.service = service; self.tools = tools
         self.catalog = SessionStore(tools: tools, service: service)
-        self.configurationURL = configurationURL
+        self.configurationURL = (configurationURL ?? ConfigurationFile.url()).standardizedFileURL
+        do {
+            self.configuration = try ConfigurationFile.load(configurationURL)
+            self.configurationError = nil
+        } catch {
+            self.configuration = .defaults
+            self.configurationError = error.localizedDescription + "\nFix the configuration and run resh service restart."
+        }
         self.snapshotProvider = snapshotProvider ?? RexDataConnection(tools: tools)
         self.readPreferences = readPreferences
         self.readFocusedSession = readFocusedSession
@@ -87,6 +92,7 @@ final class SearchModel: ObservableObject {
         sessionSnapshot = ReshService.candidates(from: sessions)
         sessionRanks = Dictionary(recentSessionIDs.enumerated().map { ($0.element, $0.offset) }, uniquingKeysWith: min)
         scope = configuration.initialSource
+        error = configurationError
         showAvailableEntries()
         isLoading = false
         catalog.updates.sink { [weak self] result, host in
@@ -138,14 +144,16 @@ final class SearchModel: ObservableObject {
     }
 
     func loadInitial() {
-        load(reloadConfiguration: true, resetScope: true)
+        guard isConfigurationReady else { return }
+        scope = configuration.initialSource
+        discoverHosts()
+        load()
     }
 
     func startBackground() {
         catalog.start()
         guard !isBackgroundActive else { return }
         isBackgroundActive = true
-        watchConfiguration()
         focusWatcher = FileWatcher(url: FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Preferences/com.superlogical.rex.plist")) { [weak self] in
             Task { @MainActor [weak self] in
@@ -159,7 +167,6 @@ final class SearchModel: ObservableObject {
     @discardableResult
     func stopBackground() -> [RexEventConnection] {
         isBackgroundActive = false
-        configurationWatcher?.stop(); configurationWatcher = nil
         focusWatcher?.stop(); focusWatcher = nil
         generation += 1
         hostGeneration += 1
@@ -174,32 +181,12 @@ final class SearchModel: ObservableObject {
         return catalog.stop()
     }
 
-    private func watchConfiguration() {
-        configurationWatcher?.stop()
-        configurationWatcher = FileWatcher(url: configurationURL ?? ConfigurationFile.url()) { [weak self] in
-            Task { @MainActor [weak self] in
-                guard let self, isBackgroundActive else { return }
-                load(reloadConfiguration: true, resetScope: !isPresented)
-            }
-        }
-    }
-
-    func configure(target: RexTarget, configurationURL: URL?) {
-        let changedServer = service.target.server != target.server
-        let changedConfiguration = self.configurationURL != configurationURL
-        guard changedServer || changedConfiguration else { return }
-        if changedServer {
-            clear()
-            service = service.at(target)
-            catalog.configure(target: target)
-        }
-        if changedConfiguration {
-            self.configurationURL = configurationURL
-            configurationError = nil
-            isConfigurationReady = false
-        }
-        if changedServer { startBackground() }
-        else { watchConfiguration(); loadInitial() }
+    func configure(target: RexTarget) {
+        guard service.target.server != target.server else { return }
+        clear()
+        service = service.at(target)
+        catalog.configure(target: target)
+        startBackground()
     }
 
     private func updateRecentSessions(_ recent: [String]) {
@@ -210,7 +197,6 @@ final class SearchModel: ObservableObject {
     }
 
     func beginOpening() {
-        isPresented = true
         isOpening = true
         isLoading = true
         error = configurationError
@@ -219,7 +205,6 @@ final class SearchModel: ObservableObject {
     func prepare(service: ReshService, sessions: [RexSession], recentSessionIDs: [String] = [], rexAppPID: Int32? = nil,
                  currentSessionID: String? = nil) {
         if !isOpening { query = ""; selection = 0 }
-        isPresented = true
         self.service = service
         self.rexAppPID = rexAppPID
         self.currentSessionID = currentSessionID
@@ -242,7 +227,6 @@ final class SearchModel: ObservableObject {
     }
 
     func endPresentation() {
-        isPresented = false
         pendingCreation = nil
         query = ""; scope = configuration.initialSource; selection = 0
         isOpening = false; isConnecting = false
@@ -266,18 +250,18 @@ final class SearchModel: ObservableObject {
         sourceSnapshots = [:]
         rexAppPID = nil
         diagnostics = [:]
-        configurationError = nil
-        isConfigurationReady = false
         isOpening = false
         onRetryOpening = nil
-        query = ""; scope = .sessions; selection = 0
-        isLoading = false; isConnecting = false; error = nil
+        query = ""; scope = configuration.initialSource; selection = 0
+        isLoading = false; isConnecting = false; error = configurationError
         updateResults()
     }
 
     func retry() {
         if let onRetryOpening { onRetryOpening(); return }
-        load(reloadConfiguration: true, refreshSessions: true)
+        guard isConfigurationReady else { return }
+        discoverHosts()
+        load(refreshSessions: true)
     }
 
     private func updateResults() {
@@ -572,69 +556,22 @@ final class SearchModel: ObservableObject {
 
     private func updateRemoteLoading() { isRemoteLoading = hostsTask != nil || !remoteTasks.isEmpty || !pendingHosts.isEmpty }
 
-    private func load(reloadConfiguration: Bool = false, resetScope: Bool = false, refreshSessions: Bool = false,
-                      keepingSnapshots: Bool = false) {
+    private func load(refreshSessions: Bool = false, keepingSnapshots: Bool = false) {
+        guard isConfigurationReady else { return }
         generation += 1
         loadingTask?.cancel()
-        if !reloadConfiguration, !keepingSnapshots { sourceSnapshots = [:]; hostSources = [:] }
-        remoteRequest = UUID()
-        for task in remoteTasks.values { task.cancel() }
-        remoteTasks = [:]
-        if reloadConfiguration {
-            hostGeneration += 1
-            hostsTask?.cancel(); hostsTask = nil
-            pendingHosts = []
-            hasHostCatalog = false
-            hostFunctions = [:]
-        }
-        updateRemoteLoading()
-        let request = generation, url = configurationURL, watcher = configurationWatcher
-        error = configurationError
-        if reloadConfiguration { isConfigurationReady = false }
-        if !reloadConfiguration {
-            showAvailableEntries()
-            loadRemoteSources()
-            if configuration.source(scope)?.kind == .sessions {
-                isLoading = false; loadingTask = nil
-                return
-            }
+        if !keepingSnapshots { sourceSnapshots = [:]; hostSources = [:] }
+        let request = generation
+        error = nil
+        showAvailableEntries()
+        loadRemoteSources()
+        if !refreshSessions, configuration.source(scope)?.kind == .sessions {
+            isLoading = false; loadingTask = nil
+            return
         }
         isLoading = true
         loadingTask = Task {
             defer { if generation == request { isLoading = false; loadingTask = nil } }
-            if reloadConfiguration {
-                let worker = Task.detached {
-                    watcher?.waitUntilReady()
-                    return try ConfigurationFile.load(url)
-                }
-                do {
-                    let updated = try await withTaskCancellationHandler(operation: { try await worker.value }, onCancel: { worker.cancel() })
-                    guard generation == request else { return }
-                    if updated != configuration {
-                        sourceSnapshots = [:]; hostSources = [:]
-                        configuration = updated
-                    }
-                    configurationError = nil
-                    isConfigurationReady = true
-                } catch {
-                    guard generation == request else { return }
-                    let path = (url ?? ConfigurationFile.url()).path
-                    if !FileManager.default.fileExists(atPath: path) {
-                        configurationError = "Config file not found: \(path)\nCorrect --config in Rex's init.lua and restart the resh service."
-                    } else {
-                        configurationError = error.localizedDescription + "\nFix this file to reload resh’s configuration."
-                    }
-                    search = FuzzyMatcher([])
-                    updateResults()
-                    self.error = configurationError
-                    isLoading = false
-                    return
-                }
-                if resetScope || configuration.source(scope) == nil { scope = configuration.initialSource }
-                error = configurationError
-                showAvailableEntries()
-                discoverHosts()
-            }
             do {
                 if refreshSessions {
                     let provider = snapshotProvider, rexAppPID = rexAppPID

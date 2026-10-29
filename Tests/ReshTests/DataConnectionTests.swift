@@ -298,7 +298,7 @@ struct DataConnectionTests {
     }
 
     @Test(arguments: [false, true])
-    @MainActor func launcherCommandsUseResidentHistory(_ cached: Bool) async throws {
+    @MainActor func launcherCommandsUseResidentState(_ cached: Bool) async throws {
         let stub = try StubRex(body: """
         import pathlib
         root=pathlib.Path(__file__).parent.resolve()
@@ -331,8 +331,9 @@ struct DataConnectionTests {
         """.write(to: config, atomically: true, encoding: .utf8)
         let service = ReshService(client: RexClient(tools: stub.tools, target: RexTarget(clientID: "client:test")),
             registry: SessionRegistry(directory: stub.directory))
-        let commands = LauncherCommands(service: service, configurationURL: config,
+        let commands = LauncherCommands(service: service, configuration: try ConfigurationFile.load(config),
             sessions: cached ? ReshService.candidates(from: [RexSession(sessionID: "a", label: "First")]) : [])
+        try "".write(to: config, atomically: true, encoding: .utf8)
         let name = "resh-tests." + UUID().uuidString
         let host = try LauncherHost(name: name as CFString)
         defer { host.stop() }
