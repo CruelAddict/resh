@@ -1,8 +1,8 @@
 # Copy to ~/.config/resh/config.toml, or merge the sections you want into it.
 # Built-in IDs: sessions, all, directories (Recent), find, configs (Projects).
 
-# Controls both tab order and visibility: unlisted sources are hidden.
-# Omit to keep the default tabs and append custom sources automatically.
+# Controls both view order and visibility: unlisted sources are hidden.
+# Omit to keep the default views and append custom sources automatically.
 source_order = ["sessions", "all", "configs", "work", "repositories", "directories", "find"]
 # Must be one of the IDs in source_order; defaults to "sessions".
 initial_source = "all"
@@ -11,7 +11,7 @@ initial_source = "all"
 # IDs are used by source_order, unions and source:ID shortcuts.
 # Use lowercase letters, digits, underscores or hyphens, starting with a letter.
 id = "work"
-# Optional tab label; defaults to the ID.
+# Optional view label; defaults to the ID.
 title = "Work"
 # A fixed list of directories. Other examples below use command and union.
 type = "paths"
@@ -25,8 +25,8 @@ type = "command"
 # Working directory; defaults to the directory containing this config file.
 # Relative output paths and relative executable paths resolve against cwd.
 cwd = "~/work"
-# Print UTF-8 directory paths, one per line. The list refreshes when you open its tab.
-# No shell is used: pipes, redirects and ~ in arguments need an explicit shell/script.
+# Print UTF-8 directory paths, one per line. The list refreshes when you open its view.
+# Use an explicit shell/script for pipes, redirects and ~ in arguments.
 command = ["fd", "-t", "d", "-d", "2", ".", "."]
 # Optional; "paths" is the only supported output format.
 format = "paths"
@@ -48,7 +48,7 @@ sources = ["sessions", "configs", "work", "repositories", "directories"]
 #   zoxide   — directories in zoxide's order
 #   find     — fd search under ~, two levels deep, including hidden folders except .Trash
 # command/cwd/format apply only to command; paths only to paths; sources only to union.
-# The default All includes sessions, projects and zoxide, not custom lists or Find.
+# The default All includes sessions, projects and zoxide.
 
 [keymap]
 "ctrl+w" = "source:work"
