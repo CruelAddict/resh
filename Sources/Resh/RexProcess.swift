@@ -99,7 +99,9 @@ final class RexProcess: @unchecked Sendable {
         lock.lock()
         var status: Int32 = 0
         var result: pid_t
-        repeat { result = waitpid(pid, &status, WNOHANG) } while result < 0 && errno == EINTR
+        // Exit notification can precede wait status. Finish reaping here on
+        // the lifecycle queue; WNOHANG could return zero with no later event.
+        repeat { result = waitpid(pid, &status, 0) } while result < 0 && errno == EINTR
         guard result == pid || (result < 0 && errno == ECHILD) else { lock.unlock(); return }
         running = false
         source?.cancel(); source = nil

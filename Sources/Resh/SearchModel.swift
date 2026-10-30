@@ -40,11 +40,8 @@ final class SearchModel: ObservableObject {
     private var remoteRequest = UUID()
     private var rexAppPID: Int32?
     let catalog: SessionStore
-    private var focusWatcher: FileWatcher?
-    private var createdSessionClients: [String: Set<String>] = [:]
-    private var observedFocus: [String: Candidate] = [:]
-    private var pendingDeletionFocus: [String: (sessionID: String, host: RexHost?, recent: [String])] = [:]
-    private var seenSessionHosts = Set<String>()
+    private var focusTimer: Timer?
+    private var observedFocus: [String: String] = [:]
     private var pendingCreation: (name: String, sessionID: String, host: RexHost?)?
     private var isBackgroundActive = false
     private var subscriptions = Set<AnyCancellable>()
@@ -104,7 +101,7 @@ final class SearchModel: ObservableObject {
         }.store(in: &subscriptions)
         NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.didActivateApplicationNotification).sink { [weak self] _ in
             guard let self, isBackgroundActive else { return }
-            refreshFocus()
+            watchFocus()
         }.store(in: &subscriptions)
     }
     static var systemIsDark: Bool { UserDefaults.standard.string(forKey: "AppleInterfaceStyle") == "Dark" }
@@ -154,20 +151,14 @@ final class SearchModel: ObservableObject {
         catalog.start()
         guard !isBackgroundActive else { return }
         isBackgroundActive = true
-        focusWatcher = FileWatcher(url: FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Preferences/com.superlogical.rex.plist")) { [weak self] in
-            Task { @MainActor [weak self] in
-                guard let self, isBackgroundActive else { return }
-                refreshFocus()
-            }
-        }
+        watchFocus()
         loadInitial()
     }
 
     @discardableResult
     func stopBackground() -> [RexEventConnection] {
         isBackgroundActive = false
-        focusWatcher?.stop(); focusWatcher = nil
+        focusTimer?.invalidate(); focusTimer = nil
         generation += 1
         hostGeneration += 1
         hostsTask?.cancel(); hostsTask = nil
@@ -217,7 +208,7 @@ final class SearchModel: ObservableObject {
         isLoading = loadingTask != nil
         onRetryOpening = nil
         if isConfigurationReady, configuration.source(scope)?.kind != .sessions { load(keepingSnapshots: true) }
-        refreshFocus(updateCurrent: currentSessionID == nil)
+        watchFocus(updateCurrent: currentSessionID == nil)
     }
 
     func failOpening(_ error: Error, retry: @escaping () -> Void) {
@@ -246,7 +237,7 @@ final class SearchModel: ObservableObject {
         attentionRecords = []; attentionSessionIDs = []
         sessionSnapshot = []; sessionRanks = [:]; search = FuzzyMatcher([])
         pinnedSessionIDs = []; currentSessionID = nil; currentCandidateID = nil
-        createdSessionClients = [:]; observedFocus = [:]; pendingDeletionFocus = [:]; seenSessionHosts = []; pendingCreation = nil
+        observedFocus = [:]; pendingCreation = nil
         sourceSnapshots = [:]
         rexAppPID = nil
         diagnostics = [:]
@@ -367,13 +358,6 @@ final class SearchModel: ObservableObject {
         let updated = ReshService.candidates(from: sessions, host: host)
         let previous = host.map { hostSessions[$0.id] ?? [] } ?? sessionSnapshot
         let removed = Set(previous.map(\.id)).subtracting(updated.map(\.id))
-        let key = host?.id ?? service.target.server
-        if seenSessionHosts.contains(key) {
-            for id in Set(updated.map(\.id)).subtracting(previous.map(\.id)) where createdSessionClients[id] == nil {
-                createdSessionClients[id] = []
-            }
-        }
-        seenSessionHosts.insert(key)
         for candidate in previous where removed.contains(candidate.id) {
             if let id = candidate.sessionID { removeSession(id, host: host) }
         }
@@ -388,9 +372,24 @@ final class SearchModel: ObservableObject {
         refreshFocus()
     }
 
+    private func watchFocus(updateCurrent: Bool = true) {
+        focusTimer?.invalidate(); focusTimer = nil
+        refreshFocus(updateCurrent: updateCurrent)
+        guard isBackgroundActive, let pid = NSWorkspace.shared.frontmostApplication?.processIdentifier,
+              catalog.clients.contains(where: { $0.rexAppPID == pid }) || rexAppPID == pid else { return }
+        // The plist batches writes, and dotted preference keys cannot use KVO.
+        // Read the preferences service only while Rex is active, never its API.
+        let timer = Timer(timeInterval: 0.1, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.refreshFocus() }
+        }
+        timer.tolerance = 0.02
+        RunLoop.main.add(timer, forMode: .common)
+        focusTimer = timer
+    }
+
     func refreshFocus(updateCurrent: Bool = true) {
-        // Creation events have no calling client. A real app focus is required
-        // before recording a visit; CLI-created background sessions stay unvisited.
+        // Only actual focus changes are visits. Catalog updates and background
+        // session creation must not reorder history.
         var clients = catalog.clients
         if let rexAppPID, let client = service.target.clientID, !clients.contains(where: { $0.client == client }) {
             clients.append(RexAppClient(client: client, rexAppPID: rexAppPID))
@@ -403,20 +402,14 @@ final class SearchModel: ObservableObject {
             }
             let matches = sessionCandidates.filter { $0.sessionID == sessionID }
             guard matches.count == 1, let candidate = matches.first else { continue }
-            let previous = observedFocus.updateValue(candidate, forKey: client.client)
-            let created = createdSessionClients[candidate.id].map { !$0.contains(client.client) } ?? false
-            if created { createdSessionClients[candidate.id]?.insert(client.client) }
-            let deletion = pendingDeletionFocus[client.client].flatMap { $0.sessionID != sessionID ? $0 : nil }
-            guard created || deletion != nil || previous == nil else { continue }
-            if deletion != nil { pendingDeletionFocus[client.client] = nil }
-            let service = service, request = generation
+            let previous = observedFocus.updateValue(candidate.id, forKey: client.client)
+            guard previous != candidate.id else { continue }
+            DebugLog.shared.record("\(client.client): \(candidate.id)", source: "focus")
+            let service = service, observedAt = ContinuousClock.now
             Task {
-                guard generation == request else { return }
-                if let deletion { await service.forgetSession(sessionID: deletion.sessionID, host: deletion.host) }
                 await service.recordVisit(sessionID: sessionID, host: candidate.host, clientID: client.client,
-                    from: created && deletion == nil ? previous : nil, onlyIfNew: deletion == nil,
-                    expectedRecentSessionIDs: deletion?.recent ?? (created ? nil : []))
-                guard generation == request else { return }
+                    observedAt: observedAt, initial: previous == nil)
+                guard self.service.target.server == service.target.server else { return }
                 await catalog.refreshHistory().value
             }
         }
@@ -426,16 +419,6 @@ final class SearchModel: ObservableObject {
         let id = Candidate.identity(sessionID, host: host)
         if let pendingCreation, Candidate.identity(pendingCreation.sessionID, host: pendingCreation.host) == id {
             self.pendingCreation = nil
-        }
-        createdSessionClients[id] = nil
-        var focused = observedFocus
-        if currentCandidateID == id, let clientID = service.target.clientID, let currentSession {
-            focused[clientID] = currentSession
-        }
-        for (clientID, candidate) in focused where candidate.id == id {
-            let recent = catalog.recentSessionIDs[clientID] ?? []
-            if recent.first == id { pendingDeletionFocus[clientID] = (sessionID, host, recent.filter { $0 != id }) }
-            observedFocus[clientID] = nil
         }
         if let host { hostSessions[host.id]?.removeAll { $0.id == id } }
         else { sessionSnapshot.removeAll { $0.id == id } }
@@ -738,11 +721,7 @@ final class SearchModel: ObservableObject {
     func receive(_ result: Result<RexEventUpdate, Error>, host: RexHost? = nil) {
         let key = host.map { "attention:\($0.id)" } ?? "attention"
         switch result {
-        case .success(.clients): refreshFocus()
-        case let .success(.created(sessionID)):
-            let id = Candidate.identity(sessionID, host: host)
-            if createdSessionClients[id] == nil { createdSessionClients[id] = [] }
-            refreshFocus()
+        case .success(.clients): watchFocus()
         case let .success(.destroyed(sessionID)):
             removeSession(sessionID, host: host)
         case .success(.reconnecting):

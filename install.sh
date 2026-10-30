@@ -86,7 +86,7 @@ configure_environment() {
 
 # These small scripts use Rex's interpreter for its API and Lua config files.
 # File installation and rollback stay in Bash.
-rex_lua() { "${rex_command[@]}" do - "$@"; }
+rex_lua() { "${rex_command[@]}" "do" - "$@"; }
 
 check_rex() {
     local pid command
@@ -283,11 +283,11 @@ cleanup() {
 
 main() {
     remote=false
-    source_dir= config=
+    source_dir="" config=""
     repository=${RESH_REPOSITORY:-}
     version=latest
     explicit_config=false
-    work= pending_file= module=
+    work="" pending_file="" module=""
     committed=false reload_attempted=false
 
     parse_options "$@"

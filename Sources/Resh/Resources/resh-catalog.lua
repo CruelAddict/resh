@@ -36,10 +36,7 @@ local function publish_clients()
   reply(value)
 end
 
-rex.on("session_created", function(_, ev)
-  reply({ type = "created", session_id = ev.session.session_id })
-  publish_sessions()
-end)
+rex.on("session_created", function() publish_sessions() end)
 rex.on("session_destroyed", function(_, ev)
   reply({ type = "destroyed", session_id = ev.session_id })
   publish_sessions()
