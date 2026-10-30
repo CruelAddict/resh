@@ -5,13 +5,13 @@
 # Modifiers match exactly; write shifted symbols as "shift+5", not "%".
 
 [keymap]
-# source:ID opens a tab. Built-in IDs differ from some displayed names:
-# configs = Projects; directories = Recent. Custom source IDs also work here.
-"ctrl+t" = "source:sessions"
-"ctrl+a" = "source:all"
-"ctrl+g" = "source:configs"
-"ctrl+x" = "source:directories"
-"ctrl+f" = "source:find"
+# source:Name opens a tab, using its exact, case-sensitive name.
+# Built-in and custom source names both work here.
+"ctrl+t" = "source:Sessions"
+"ctrl+a" = "source:All"
+"ctrl+g" = "source:Projects"
+"ctrl+x" = "source:Recent"
+"ctrl+f" = "source:Find"
 "ctrl+n" = "next"
 "ctrl+p" = "previous"
 "ctrl+j" = "next"

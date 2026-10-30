@@ -9,7 +9,7 @@ struct ConfigurationTests {
     @Test func defaultSourcesAndShortcuts() throws {
         let config = ReshConfiguration.defaults
         #expect(config.visibleSources.map(\.id) == [.sessions, .all, .directories, .find])
-        #expect(config.visibleSources.map(\.title) == ["Sessions", "All", "Recent", "Find"])
+        #expect(config.visibleSources.map(\.name) == ["Sessions", "All", "Recent", "Find"])
         #expect(config.keymap.action(for: try KeyChord("cmd+e")) == .scope(.sessions))
         #expect(config.keymap.action(for: try KeyChord("cmd+a")) == .scope(.all))
         #expect(config.keymap.action(for: try KeyChord("cmd+shift+p")) == .pin)
@@ -35,14 +35,13 @@ struct ConfigurationTests {
         let fixture = try TemporaryDirectory()
         let path = try fixture.folder("api")
         let config = try ReshConfiguration.parse("""
-        source_order = ["work", "configs", "sessions"]
-        initial_source = "work"
+        source_order = ["Рабочие проекты", "Projects", "Sessions"]
+        initial_source = "Рабочие проекты"
         [keymap]
-        "ctrl+w" = "source:work"
+        "ctrl+w" = "source:Рабочие проекты"
         "cmd+1" = "none"
         [[sources]]
-        id = "work"
-        title = "Работа"
+        name = "Рабочие проекты"
         type = "paths"
         paths = ["api", "api/."]
         [[session]]
@@ -50,12 +49,12 @@ struct ConfigurationTests {
         path = "api"
         startup_command = "nvim"
         """, directory: fixture.url)
-        #expect(config.initialSource.rawValue == "work")
-        #expect(config.visibleSources.map(\.title) == ["Работа", "Projects", "Sessions"])
-        #expect(config.keymap.action(for: try KeyChord("control+w")) == .scope(.init(rawValue: "work")))
+        #expect(config.initialSource.rawValue == "Рабочие проекты")
+        #expect(config.visibleSources.map(\.name) == ["Рабочие проекты", "Projects", "Sessions"])
+        #expect(config.keymap.action(for: try KeyChord("control+w")) == .scope(.init(rawValue: "Рабочие проекты")))
         #expect(config.keymap.action(for: try KeyChord("cmd+1")) == nil)
-        #expect(config.keymap.label(for: .init(rawValue: "work")) == "⌃W")
-        let entries = try SourceLoader(tools: tools).load(.init(rawValue: "work"), configuration: config, sessions: []).entries
+        #expect(config.keymap.label(for: .init(rawValue: "Рабочие проекты")) == "⌃W")
+        let entries = try SourceLoader(tools: tools).load(.init(rawValue: "Рабочие проекты"), configuration: config, sessions: []).entries
         #expect(entries.count == 1)
         #expect(entries.first?.displayTitle == "Backend")
         #expect(entries.first?.path == path)
@@ -78,20 +77,26 @@ struct ConfigurationTests {
         #expect(config.visibleSources.map(\.id).contains(.configs))
     }
     @Test(arguments: [
-        "source_order = []", "initial_source = 'missing'", "source_order = ['sessions', 'sessions']",
+        "source_order = []", "initial_source = 'missing'", "source_order = ['Sessions', 'Sessions']",
+        "source_order = ['sessions']",
         "typo = true", "[keymap]\n'ctrl+w' = 'source:missing'", "[keymap]\n'ctrl+w' = 'explode'",
         "[keymap]\n'ctrl+r' = 'reload'",
         "[keymap]\n'ctrl+1' = 'open:0'", "[keymap]\n'ctrl+1' = 'open:10'",
         "[keymap]\n'ctrl+n' = 'next'\n'control+n' = 'previous'",
-        "[[sources]]\nid = 'a'\ntype = 'union'\nsources = ['a']",
-        "[[sources]]\nid = 'a'\ntype = 'union'\nsources = ['b']\n[[sources]]\nid = 'b'\ntype = 'union'\nsources = ['a']",
-        "[[sources]]\nid = 'a'\ntype = 'union'\nsources = ['missing']",
-        "[[sources]]\nid = 'a'\ntype = 'command'\ncommand = []",
-        "[[sources]]\nid = 'a'\ntype = 'paths'\ncommand = ['bad']",
-        "[[sources]]\nid = 'a'\ntype = 'paths'\ntimeout = -1",
-        "[[sources]]\nid = 'a'\ntype = 'command'\ncommand = ['a']\nformat = 'shell'",
-        "[[sources]]\nid = 'a'\ntype = 'paths'\npaths = []\ntypo = true",
-        "[[sources]]\nid = 'a'\ntype = 'paths'\n[[sources]]\nid = 'a'\ntype = 'paths'",
+        "[[sources]]\nname = 'a'\ntype = 'union'\nsources = ['a']",
+        "[[sources]]\nname = 'a'\ntype = 'union'\nsources = ['b']\n[[sources]]\nname = 'b'\ntype = 'union'\nsources = ['a']",
+        "[[sources]]\nname = 'a'\ntype = 'union'\nsources = ['missing']",
+        "[[sources]]\nname = 'a'\ntype = 'command'\ncommand = []",
+        "[[sources]]\nname = 'a'\ntype = 'paths'\ncommand = ['bad']",
+        "[[sources]]\nname = 'a'\ntype = 'paths'\ntimeout = -1",
+        "[[sources]]\nname = 'a'\ntype = 'command'\ncommand = ['a']\nformat = 'shell'",
+        "[[sources]]\nname = 'a'\ntype = 'paths'\npaths = []\ntypo = true",
+        "[[sources]]\nname = 'a'\ntype = 'paths'\n[[sources]]\nname = 'a'\ntype = 'paths'",
+        "[[sources]]\ntype = 'paths'", "[[sources]]\nname = ''\ntype = 'paths'",
+        "[[sources]]\nname = '   '\ntype = 'paths'",
+        "[[sources]]\nname = 'Work'\nid = 'work'\ntype = 'paths'",
+        "[[sources]]\nname = 'Work'\ntitle = 'Work projects'\ntype = 'paths'",
+        "[[sources]]\nname = 'Work'\ntype = 'paths'\n[keymap]\n'ctrl+w' = 'source:work'",
         "[[session]]\nname = 'a'\npath = '/a'\n[[session]]\nname = 'a'\npath = '/b'",
         "[[session]]\nname = 'a'\npath = '/a'\n[[session]]\nname = 'b'\npath = '/a/.'",
         "[[session]]\nname = ''\npath = '/a'", "[keymap\nwrong",
@@ -100,7 +105,7 @@ struct ConfigurationTests {
         #expect(throws: (any Error).self) { try ReshConfiguration.parse(text) }
     }
     @Test func physicalKeysAndExactModifiersKeepNativeEditing() throws {
-        let map = try Keymap(overrides: ["ctrl+t":"source:sessions", "ctrl+tab":"next_source",
+        let map = try Keymap(overrides: ["ctrl+t":"source:Sessions", "ctrl+tab":"next_source",
             "ctrl+1":"open:1", "ctrl+shift+p":"pin", "ctrl+shift+n":"create", "ctrl+shift+d":"delete"])
         #expect(map.action(for: KeyChord(code: 17, control: true)) == .scope(.sessions))
         #expect(map.action(for: KeyChord(code: 17, control: true, shift: true)) == nil)
@@ -126,12 +131,12 @@ struct ConfigurationTests {
         let path = try fixture.folder(weird)
         let config = try ReshConfiguration.parse("""
         [[sources]]
-        id = "custom"
+        name = "Custom"
         type = "command"
         cwd = "."
         command = ["/usr/bin/printf", "%s\\n", '\(weird)', '\(weird)/.', 'missing']
         """, directory: fixture.url)
-        let result = try SourceLoader(tools: tools).load(.init(rawValue: "custom"), configuration: config, sessions: [])
+        let result = try SourceLoader(tools: tools).load(.init(rawValue: "Custom"), configuration: config, sessions: [])
         #expect(result.entries.map(\.path) == [path])
     }
     @Test func unionPreservesSourcePriorityAndPathOrder() throws {
@@ -142,15 +147,15 @@ struct ConfigurationTests {
         name = "One"
         path = "one"
         [[sources]]
-        id = "folders"
+        name = "Work folders"
         type = "paths"
         paths = ["two", "one", "two/.", "missing"]
         [[sources]]
-        id = "combined"
+        name = "All"
         type = "union"
-        sources = ["configs", "folders"]
+        sources = ["Projects", "Work folders"]
         """, directory: fixture.url)
-        let entries = try SourceLoader(tools: tools).load(.init(rawValue: "combined"), configuration: config, sessions: []).entries
+        let entries = try SourceLoader(tools: tools).load(.all, configuration: config, sessions: []).entries
         #expect(entries.map(\.path) == [one, two])
         #expect(entries.map(\.kind) == [.project, .directory])
     }

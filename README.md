@@ -76,12 +76,14 @@ Add a tab that finds your work repositories:
 
 ```toml
 [[sources]]
-id = "work"
-title = "Work"
+name = "Work"
 type = "command"
 cwd = "~/work"
 command = ["fd", "-t", "d", "-d", "2", ".", "."]
 ```
+
+The name is also used in source order, unions, and shortcuts such as `source:Work`.
+Names are case-sensitive; renaming a source means updating its references.
 
 [Source options and examples](examples/config/sources.toml).
 
