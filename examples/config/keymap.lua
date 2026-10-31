@@ -3,13 +3,13 @@
 -- Bindings in the resh mode extend the picker's defaults, without changing Rex's
 -- normal keyboard controls. [KeyX] names a physical key; x follows the layout.
 
-rex.bind("resh/ctrl+[KeyT]", "resh_source", { id = "sessions" })
-rex.bind("resh/ctrl+[KeyA]", "resh_source", { id = "all" })
-rex.bind("resh/ctrl+[KeyG]", "resh_source", { id = "configs" })
-rex.bind("resh/ctrl+[KeyX]", "resh_source", { id = "directories" })
-rex.bind("resh/ctrl+[KeyF]", "resh_source", { id = "find" })
--- Custom sources use their TOML id; changing a view title leaves bindings intact:
--- rex.bind("resh/ctrl+[KeyW]", "resh_source", { id = "work" })
+rex.bind("resh/ctrl+[KeyT]", "resh_source", { name = "Sessions" })
+rex.bind("resh/ctrl+[KeyA]", "resh_source", { name = "All" })
+rex.bind("resh/ctrl+[KeyG]", "resh_source", { name = "Projects" })
+rex.bind("resh/ctrl+[KeyX]", "resh_source", { name = "Recent" })
+rex.bind("resh/ctrl+[KeyF]", "resh_source", { name = "Find" })
+-- Custom source names are case-sensitive, just like their TOML names:
+-- rex.bind("resh/ctrl+[KeyW]", "resh_source", { name = "Work" })
 
 rex.bind("resh/ctrl+[KeyJ]", "resh_next")
 rex.bind("resh/ctrl+[KeyK]", "resh_previous")

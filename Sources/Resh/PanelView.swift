@@ -500,7 +500,7 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
     private func updateSources() {
         for (index, button) in sourceButtons.enumerated() {
             let source = sources[index], selected = source.id == activeScope
-            let text = NSMutableAttributedString(string: source.title, attributes: [
+            let text = NSMutableAttributedString(string: source.name, attributes: [
                 .font: NSFont.systemFont(ofSize: 11, weight: selected ? .medium : .regular),
                 .foregroundColor: theme.foreground.nsColor.withAlphaComponent(selected ? 1 : 0.55),
             ])

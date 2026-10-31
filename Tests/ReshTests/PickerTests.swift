@@ -430,9 +430,11 @@ extension PickerTests {
         ])
         let service = ReshService(client: RexClient(tools: stub.tools, target: RexTarget(clientID: "client:test"), runner: stub),
             registry: SessionRegistry(directory: stub.directory))
+        let config = stub.directory.appendingPathComponent("config.toml")
+        try "".write(to: config, atomically: true, encoding: .utf8)
         let model = SearchModel(service: service, tools: stub.tools,
             sessions: [RexSession(sessionID: "old", label: "Session")],
-            snapshotProvider: provider, readTheme: { _, _ in .fixture })
+            configurationURL: config, snapshotProvider: provider, readTheme: { _, _ in .fixture })
         defer { model.clear() }
         model.loadInitial()
         await model.loadingTask?.value
@@ -459,8 +461,10 @@ extension PickerTests {
         }
         let service = ReshService(client: RexClient(tools: stub.tools, target: RexTarget(), runner: stub))
         let local = RexSession(sessionID: "local", label: "api")
+        let config = stub.directory.appendingPathComponent("config.toml")
+        try "".write(to: config, atomically: true, encoding: .utf8)
         let model = SearchModel(service: service, tools: stub.tools, sessions: [local],
-            recentSessionIDs: ["host:build/remote", "local"],
+            recentSessionIDs: ["host:build/remote", "local"], configurationURL: config,
             readTheme: { _, _ in .fixture }, readPreferences: { ["Workspace.programActivitySeen": [:]] })
         defer { model.clear() }
         model.loadInitial()
@@ -502,7 +506,7 @@ extension PickerTests {
         }
         let config = stub.directory.appendingPathComponent("config.toml")
         let text = scenario == "projects" ? "[[session]]\nname = 'Project'\npath = '.'\n"
-            : scenario == "custom" ? "source_order = ['find']\ninitial_source = 'find'\n" : ""
+            : scenario == "custom" ? "source_order = ['Find']\ninitial_source = 'Find'\n" : ""
         try text.write(to: config, atomically: true, encoding: .utf8)
         let tools = Tools(rex: stub.tools.rex, zoxide: nil, fd: scenario == "local" ? "/usr/bin/true" : nil, rexApp: stub.tools.rexApp)
         let model = SearchModel(service: ReshService(client: RexClient(tools: tools, target: RexTarget(), runner: stub)),

@@ -31,8 +31,8 @@ for _, definition in ipairs({
     properties = { number = { type = "integer", minimum = 1, maximum = 9 } },
   } },
   { "resh_source", "Select Source", false, {
-    type = "object", additionalProperties = false, required = { "id" },
-    properties = { id = { type = "string", minLength = 1 } },
+    type = "object", additionalProperties = false, required = { "name" },
+    properties = { name = { type = "string", minLength = 1 } },
   } },
   { "resh_next_source", "Next Source", true },
   { "resh_previous_source", "Previous Source", true },

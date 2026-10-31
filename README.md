@@ -83,15 +83,14 @@ Specify your own command to supply candidates for the picker.
 
 ```toml
 [[sources]]
-id = "work"
-title = "Work"
+name = "Work"
 type = "command"
 cwd = "~/work"
 command = ["fd", "-t", "d", "-d", "2", ".", "."]
 ```
 
-The source ID is used in source order, unions, and the `resh_source` action.
-Changing its title leaves those references intact.
+The name is also used in source order, unions, and the `resh_source` action.
+Names are case-sensitive; renaming a source means updating its references.
 
 [Source options and examples](examples/config/sources.toml).
 

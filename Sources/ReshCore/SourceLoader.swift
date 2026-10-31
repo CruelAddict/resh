@@ -70,19 +70,19 @@ public struct SourceLoader: Sendable {
         let result = try runner.run(executable, arguments, timeout: source.timeout, directory: source.cwd)
         guard result.status == 0 else { throw commandError(result, source: source) }
         guard let text = String(data: result.stdout, encoding: .utf8), !text.contains("\0") else {
-            throw ReshError("\(source.title) must return UTF-8 paths, one per line.")
+            throw ReshError("\(source.name) must return UTF-8 paths, one per line.")
         }
         let lines = text.split(separator: "\n").map { line -> String in
             let path = line.hasSuffix("\r") ? String(line.dropLast()) : String(line)
             let expanded = (path as NSString).expandingTildeInPath
             return expanded.hasPrefix("/") ? expanded : URL(fileURLWithPath: source.cwd).appendingPathComponent(expanded).path
         }
-        guard lines.count <= 20_000 else { throw ReshError("\(source.title) returned more than 20,000 paths.") }
+        guard lines.count <= 20_000 else { throw ReshError("\(source.name) returned more than 20,000 paths.") }
         return SourceResult(entries: try candidates(lines, configuration: configuration))
     }
     private func commandError(_ result: CommandResult, source: SourceDefinition) -> ReshError {
         let message = String(decoding: result.stderr.prefix(1000), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-        return ReshError("\(source.title) exited with status \(result.status). \(message)")
+        return ReshError("\(source.name) exited with status \(result.status). \(message)")
     }
 
     private func candidates(_ paths: [String], configuration: ReshConfiguration) throws -> [Candidate] {

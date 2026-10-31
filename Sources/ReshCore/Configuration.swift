@@ -12,8 +12,8 @@ public struct ProjectDefinition: Equatable, Sendable {
 
 public struct SourceDefinition: Identifiable, Equatable, Sendable {
     public enum Kind: String, Decodable, Sendable { case sessions, union, zoxide, find, projects, paths, command }
-    public let id: SearchScope
-    public let title: String
+    public let name: String
+    public var id: SearchScope { SearchScope(rawValue: name) }
     public let kind: Kind
     public var paths: [String] = []
     public var command: [String] = []
@@ -56,34 +56,32 @@ public struct ReshConfiguration: Equatable, Sendable {
                 startupCommand: project.startup_command ?? raw.default_session?.startup_command)
         }
         var sources: [SourceDefinition] = [
-            .init(id: .sessions, title: "Sessions", kind: .sessions),
-            .init(id: .all, title: "All", kind: .union, members: [.sessions, .configs, .directories]),
-            .init(id: .directories, title: "Recent", kind: .zoxide),
-            .init(id: .find, title: "Find", kind: .find, timeout: 12),
-            .init(id: .configs, title: "Projects", kind: .projects),
+            .init(name: SearchScope.sessions.rawValue, kind: .sessions),
+            .init(name: SearchScope.all.rawValue, kind: .union, members: [.sessions, .configs, .directories]),
+            .init(name: SearchScope.directories.rawValue, kind: .zoxide),
+            .init(name: SearchScope.find.rawValue, kind: .find, timeout: 12),
+            .init(name: SearchScope.configs.rawValue, kind: .projects),
         ]
         var declared = Set<SearchScope>()
         for source in raw.sources ?? [] {
-            guard source.id.range(of: "^[a-z][a-z0-9_-]*$", options: .regularExpression) != nil else {
-                throw ReshError("Invalid source id: \(source.id). Use lowercase letters, digits, _ and -.")
+            guard !source.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                throw ReshError("Each [[sources]] needs a nonempty name.")
             }
-            let id = SearchScope(rawValue: source.id)
-            guard declared.insert(id).inserted else { throw ReshError("Duplicate source: \(source.id)") }
-            guard source.format == nil || source.format == "paths" else { throw ReshError("Source \(source.id): only format = \"paths\" is supported.") }
+            let id = SearchScope(rawValue: source.name)
+            guard declared.insert(id).inserted else { throw ReshError("Duplicate source: \(source.name)") }
+            guard source.format == nil || source.format == "paths" else { throw ReshError("Source \(source.name): only format = \"paths\" is supported.") }
             guard source.timeout == nil || (source.timeout! > 0 && source.timeout! <= 60) else {
-                throw ReshError("Source \(source.id): timeout must be between 0 and 60 seconds.")
+                throw ReshError("Source \(source.name): timeout must be between 0 and 60 seconds.")
             }
-            let title = source.title ?? source.id
-            guard !title.isEmpty else { throw ReshError("Source \(source.id) needs a title.") }
             if source.type == .command, source.command?.first?.isEmpty != false {
-                throw ReshError("Source \(source.id) needs a nonempty command array.")
+                throw ReshError("Source \(source.name) needs a nonempty command array.")
             }
             if source.type != .command, source.command != nil || source.cwd != nil || source.format != nil {
-                throw ReshError("Source \(source.id): command, cwd and format require type = \"command\".")
+                throw ReshError("Source \(source.name): command, cwd and format require type = \"command\".")
             }
-            if source.type != .paths, source.paths != nil { throw ReshError("Source \(source.id): paths require type = \"paths\".") }
-            if source.type != .union, source.sources != nil { throw ReshError("Source \(source.id): sources require type = \"union\".") }
-            let definition = SourceDefinition(id: id, title: title, kind: source.type,
+            if source.type != .paths, source.paths != nil { throw ReshError("Source \(source.name): paths require type = \"paths\".") }
+            if source.type != .union, source.sources != nil { throw ReshError("Source \(source.name): sources require type = \"union\".") }
+            let definition = SourceDefinition(name: source.name, kind: source.type,
                 paths: (source.paths ?? []).map(absolute), command: source.command ?? [],
                 cwd: source.cwd.map(absolute) ?? directory.path,
                 members: (source.sources ?? []).map { SearchScope(rawValue: $0) }, timeout: source.timeout ?? 5)
@@ -100,9 +98,9 @@ public struct ReshConfiguration: Equatable, Sendable {
         let visibleIDs = raw.source_order?.map { SearchScope(rawValue: $0) }
             ?? sources.filter { $0.id != .configs || !projects.isEmpty || declared.contains(.configs) }.map(\.id)
         guard !visibleIDs.isEmpty, Set(visibleIDs).count == visibleIDs.count, Set(visibleIDs).isSubset(of: ids) else {
-            throw ReshError("source_order must contain unique, existing source IDs and cannot be empty.")
+            throw ReshError("source_order must contain unique, existing source names and cannot be empty.")
         }
-        let initial = SearchScope(rawValue: raw.initial_source ?? "sessions")
+        let initial = raw.initial_source.map { SearchScope(rawValue: $0) } ?? .sessions
         guard visibleIDs.contains(initial) else { throw ReshError("initial_source must appear in source_order.") }
         return Self(sources: sources, visibleSources: visibleIDs.compactMap { id in sources.first { $0.id == id } },
                     initialSource: initial, projects: projects,
@@ -165,8 +163,7 @@ private struct Document: Decodable {
     }
 }
 private struct RawSource: Decodable {
-    let id: String
-    let title: String?
+    let name: String
     let type: SourceDefinition.Kind
     let paths: [String]?
     let command: [String]?
@@ -174,11 +171,11 @@ private struct RawSource: Decodable {
     let format: String?
     let sources: [String]?
     let timeout: Double?
-    enum CodingKeys: String, CodingKey, CaseIterable { case id, title, type, paths, command, cwd, format, sources, timeout }
+    enum CodingKeys: String, CodingKey, CaseIterable { case name, type, paths, command, cwd, format, sources, timeout }
     init(from decoder: Decoder) throws {
         try rejectUnknown(decoder, CodingKeys.allCases.map(\.rawValue))
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        id = try c.decode(String.self, forKey: .id); title = try c.decodeIfPresent(String.self, forKey: .title)
+        name = try c.decode(String.self, forKey: .name)
         type = try c.decode(SourceDefinition.Kind.self, forKey: .type)
         paths = try c.decodeIfPresent([String].self, forKey: .paths); command = try c.decodeIfPresent([String].self, forKey: .command)
         cwd = try c.decodeIfPresent(String.self, forKey: .cwd); format = try c.decodeIfPresent(String.self, forKey: .format)

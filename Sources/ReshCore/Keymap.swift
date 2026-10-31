@@ -122,7 +122,7 @@ public struct KeyInvocation: Codable, Equatable, Sendable {
             if args.isEmpty { return .open }
             if args.count == 1, case let .integer(number) = args["number"], (1...9).contains(number) { return .openResult(number) }
         case "resh_source":
-            if args.count == 1, case let .string(id) = args["id"], !id.isEmpty { return .scope(SearchScope(rawValue: id)) }
+            if args.count == 1, case let .string(name) = args["name"], !name.isEmpty { return .scope(SearchScope(rawValue: name)) }
         default: break
         }
         return nil
@@ -237,7 +237,7 @@ public struct Keymap: Equatable, Sendable {
             for key in keys { result.append(.init(keys: [key], action: action, args: args)) }
         }
         for (key, source) in [("E", SearchScope.sessions), ("A", .all), ("R", .directories), ("F", .find), ("P", .configs)] {
-            bind(["cmd+[Key\(key)]"], "resh_source", ["id": .string(source.rawValue)])
+            bind(["cmd+[Key\(key)]"], "resh_source", ["name": .string(source.rawValue)])
         }
         bind(["cmd+shift+[KeyN]"], "resh_create")
         bind(["cmd+shift+[KeyP]"], "resh_pin")
