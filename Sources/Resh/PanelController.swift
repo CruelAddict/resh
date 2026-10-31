@@ -220,6 +220,7 @@ final class PanelController: NSObject, NSWindowDelegate {
         case .passThrough: return false
         case .consumed: return true
         case let .action(shortcut): perform(shortcut)
+        case let .invoke(invocation): model.performRexAction(invocation)
         }
         return true
     }

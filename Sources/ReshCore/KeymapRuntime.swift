@@ -2,7 +2,7 @@ import Foundation
 
 /// Input state belongs to the picker, never to the Rex server or its app client.
 public struct KeymapRuntime {
-    public enum Decision: Equatable { case passThrough, consumed, action(PanelShortcut) }
+    public enum Decision: Equatable { case passThrough, consumed, action(PanelShortcut), invoke(KeyInvocation) }
     private struct ActiveMode { let name: String; let once: Bool }
     private var map: Keymap
     private var stack: [ActiveMode] = []
@@ -34,7 +34,7 @@ public struct KeymapRuntime {
         }
         pending = []; depth = 0
         guard let invocation = first.binding?.invocation else { return .consumed }
-        if isRepeat, !invocation.repeats { return .consumed }
+        if isRepeat, !invocation.repeats, first.binding?.repeats != true { return .consumed }
         if invocation.action != "client.mode.exit", stack.last?.once == true { stack.removeLast() }
         switch invocation.action {
         case "client.mode.enter":
@@ -43,7 +43,9 @@ public struct KeymapRuntime {
             }
         case "client.mode.exit": if !stack.isEmpty { stack.removeLast() }
         case "client.mode.exit_all": stack = []
-        default: if let shortcut = invocation.shortcut { return .action(shortcut) }
+        default:
+            if let shortcut = invocation.shortcut { return .action(shortcut) }
+            return .invoke(invocation)
         }
         return .consumed
     }

@@ -22,7 +22,7 @@ local function publish_keymap()
   if keymap then
     -- Rex's Lua encoder represents an empty table as {}. Omit empty arrays,
     -- as the session and client publishers below do.
-    for _, field in ipairs({ "bindings", "modes", "diagnostics" }) do
+    for _, field in ipairs({ "bindings", "modes", "diagnostics", "actions" }) do
       if keymap[field] and #keymap[field] == 0 then keymap[field] = nil end
     end
     for _, mode in ipairs(keymap.modes or {}) do

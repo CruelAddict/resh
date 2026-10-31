@@ -57,6 +57,7 @@ final class SearchModel: ObservableObject {
     private(set) var service: ReshService
     let tools: Tools
     var loadingTask: Task<Void, Never>?
+    private(set) var actionTask: Task<Void, Never>?
     private(set) var attentionTask: Task<Void, Never>?
     private var themeTask: Task<Void, Never>?
     private var themeTaskID: UUID?
@@ -170,6 +171,7 @@ final class SearchModel: ObservableObject {
         for task in remoteTasks.values { task.cancel() }
         remoteTasks = [:]
         loadingTask?.cancel(); loadingTask = nil
+        actionTask?.cancel(); actionTask = nil
         attentionTask?.cancel(); attentionTask = nil
         themeTask?.cancel(); themeTask = nil; themeTaskID = nil
         isLoading = false
@@ -683,6 +685,27 @@ final class SearchModel: ObservableObject {
             }
         }
     }
+    func performRexAction(_ invocation: KeyInvocation) {
+        guard isConfigurationReady, !isOpening else { return }
+        let previous = actionTask, request = generation, service = service, sessionID = currentSessionID
+        actionTask = Task {
+            await previous?.value
+            guard generation == request, !Task.isCancelled else { return }
+            let source = "action:\(invocation.action)"
+            let message = "Couldn’t run Rex action ‘\(invocation.action)’."
+            do {
+                try await service.perform(invocation, sessionID: sessionID)
+                guard generation == request else { return }
+                reportDiagnostic(nil, source: source)
+                if error == message { error = configurationError ?? keymapError }
+            } catch {
+                guard generation == request, !Task.isCancelled else { return }
+                reportDiagnostic(error, source: source)
+                self.error = configurationError ?? keymapError ?? message
+            }
+        }
+    }
+
     func deleteSelection() {
         guard isConfigurationReady, !isOpening, !isConnecting, let selected, let sessionID = selected.sessionID else { return }
         isConnecting = true

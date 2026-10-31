@@ -251,6 +251,43 @@ extension PickerTests {
     }
 
     @Test(arguments: [false, true])
+    @MainActor func rexActionsUseCallingContext(_ refused: Bool) async throws {
+        _ = NSApplication.shared
+        var calls = 0
+        let stub = try CommandStub { arguments in
+            #expect(arguments.contains("dev_layout"))
+            for (flag, value) in [("-C", "client:test"), ("-s", "a"), ("--server", "home")] {
+                let index = try #require(arguments.firstIndex(of: flag))
+                #expect(arguments[index + 1] == value)
+            }
+            let index = try #require(arguments.firstIndex(of: "--args"))
+            let args = try JSONDecoder().decode([String: KeyArgument].self, from: Data(arguments[index + 1].utf8))
+            #expect(args["layout"] == .object(["paths": .array([.string("src"), .null]),
+                "scale": .number(0.5), "count": .integer(2), "focus": .boolean(true)]))
+            calls += 1
+            if refused { throw ReshError("Action refused") }
+            return [:]
+        }
+        let service = ReshService(client: RexClient(tools: stub.tools, target: RexTarget(clientID: "client:test", server: "home"), runner: stub))
+        let controller = PanelController(service: service, tools: stub.tools, readTheme: { _, _ in .fixture })
+        defer { controller.model.clear() }
+        controller.prepare(service: service, snapshot: RexSnapshot(client: "client:test", rexAppPID: 1,
+            sessions: [RexSession(sessionID: "a", label: "Current"), RexSession(sessionID: "b", label: "Other")]), currentSessionID: "a")
+        let json = """
+        {"bindings":[{"keys":["ctrl+j"],"mode":"resh","action":"dev_layout",
+          "args":{"layout":{"paths":["src",null],"scale":0.5,"count":2,"focus":true}}}],
+         "modes":[{"name":"resh","exclusive":false}]}
+        """
+        controller.model.receive(.success(.keymap(Keymap(try JSONDecoder().decode(RexKeymap.self, from: Data(json.utf8))))))
+        let event = try #require(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [.control], timestamp: 0,
+            windowNumber: 0, context: nil, characters: "j", charactersIgnoringModifiers: "j", isARepeat: false, keyCode: 38))
+        #expect(controller.handle(event))
+        await controller.model.actionTask?.value
+        #expect(calls == 1 && controller.model.selected?.id == "b" && controller.model.sessionCount == 2)
+        #expect((controller.model.error != nil) == refused)
+    }
+
+    @Test(arguments: [false, true])
     @MainActor func launcherCommandsUseResidentState(_ cached: Bool) async throws {
         var created = false
         var createdPath: String?

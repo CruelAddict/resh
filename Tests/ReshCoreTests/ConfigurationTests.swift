@@ -152,6 +152,25 @@ struct ConfigurationTests {
         #expect(input.handle(code: 53, character: nil, modifiers: 0) == .consumed)
         #expect(input.modes == ["resh"])
     }
+    @Test(arguments: [false, true])
+    func rexActionsInNestedModes(_ repeats: Bool) throws {
+        let map = try keymap("""
+        {"keys":["ctrl+r"],"action":"client.mode.enter","args":{"name":"tools"},"mode":"resh"},
+        {"keys":["cmd+d"],"action":"resh_delete","mode":"resh"},
+        {"keys":["cmd+d"],"action":"dev_layout","mode":"tools"}
+        """, modes: """
+        {"name":"resh","exclusive":false},{"name":"tools","exclusive":false}
+        """, actions: """
+        {"name":"dev_layout","repeats":\(repeats)}
+        """)
+        var input = KeymapRuntime(keymap: map)
+        #expect(map.diagnostics.isEmpty)
+        #expect(input.handle(code: 15, character: "r", modifiers: 2) == .consumed)
+        let expected = KeymapRuntime.Decision.invoke(KeyInvocation(action: "dev_layout"))
+        #expect(input.handle(code: 2, character: "d", modifiers: 1) == expected)
+        #expect(input.handle(code: 2, character: "d", modifiers: 1, isRepeat: true) == (repeats ? expected : .consumed))
+        #expect(map.label(for: .delete, modes: input.modes).isEmpty)
+    }
     @Test func invalidActionArguments() throws {
         let map = try keymap("""
         {"keys":["ctrl+d"],"action":"resh_open","args":{"number":0},"mode":"resh"},
@@ -161,8 +180,8 @@ struct ConfigurationTests {
         #expect(!map.diagnostics.isEmpty)
         #expect(input.handle(code: 2, character: "d", modifiers: 2) == .consumed)
     }
-    private func keymap(_ bindings: String, modes: String = #"{"name":"resh","exclusive":false}"#) throws -> Keymap {
-        let response = try JSONDecoder().decode(RexKeymap.self, from: Data("{\"bindings\":[\(bindings)],\"modes\":[\(modes)]}".utf8))
+    private func keymap(_ bindings: String, modes: String = #"{"name":"resh","exclusive":false}"#, actions: String = "") throws -> Keymap {
+        let response = try JSONDecoder().decode(RexKeymap.self, from: Data("{\"bindings\":[\(bindings)],\"modes\":[\(modes)],\"actions\":[\(actions)]}".utf8))
         return Keymap(response)
     }
     @Test func commandPathsRespectCwdPreserveOrderAndDoNotUseShell() throws {

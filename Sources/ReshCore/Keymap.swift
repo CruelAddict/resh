@@ -84,13 +84,16 @@ public struct KeyChord: Hashable, Sendable {
 }
 
 public enum KeyArgument: Codable, Equatable, Sendable {
-    case string(String), integer(Int), boolean(Bool), other
+    case string(String), integer(Int), boolean(Bool), number(Double), array([KeyArgument]), object([String: KeyArgument]), null
     public init(from decoder: Decoder) throws {
         let c = try decoder.singleValueContainer()
         if let value = try? c.decode(String.self) { self = .string(value) }
         else if let value = try? c.decode(Bool.self) { self = .boolean(value) }
         else if let value = try? c.decode(Int.self) { self = .integer(value) }
-        else { self = .other }
+        else if c.decodeNil() { self = .null }
+        else if let value = try? c.decode([KeyArgument].self) { self = .array(value) }
+        else if let value = try? c.decode([String: KeyArgument].self) { self = .object(value) }
+        else { self = .number(try c.decode(Double.self)) }
     }
     public func encode(to encoder: Encoder) throws {
         var c = encoder.singleValueContainer()
@@ -98,7 +101,10 @@ public enum KeyArgument: Codable, Equatable, Sendable {
         case let .string(value): try c.encode(value)
         case let .integer(value): try c.encode(value)
         case let .boolean(value): try c.encode(value)
-        case .other: try c.encodeNil()
+        case let .number(value): try c.encode(value)
+        case let .array(value): try c.encode(value)
+        case let .object(value): try c.encode(value)
+        case .null: try c.encodeNil()
         }
     }
 }
@@ -132,6 +138,10 @@ public struct KeyInvocation: Codable, Equatable, Sendable {
 
 /// The wire format returned by the supported client.keymap API.
 public struct RexKeymap: Decodable, Sendable {
+    public struct Action: Decodable, Sendable {
+        public let name: String
+        public let repeats: Bool?
+    }
     public struct Binding: Codable, Equatable, Sendable {
         public var keys: [String]
         public var action: String
@@ -152,6 +162,7 @@ public struct RexKeymap: Decodable, Sendable {
         public let source: String?
         public let message: String
     }
+    public let actions: [Action]?
     public let bindings: [Binding]?
     public let modes: [Mode]?
     public let diagnostics: [Diagnostic]?
@@ -163,6 +174,7 @@ public struct Keymap: Equatable, Sendable {
         let invocation: KeyInvocation?
         let mode: String?
         let source: String?
+        var repeats = false
     }
     struct Mode: Equatable, Sendable {
         var exclusive = false
@@ -201,10 +213,6 @@ public struct Keymap: Equatable, Sendable {
             let inPicker = b.mode.map(relevant.contains) ?? false
             guard inPicker || b.mode == nil && known.contains(b.action) else { continue }
             let invocation = KeyInvocation(action: b.action, args: b.args ?? [:])
-            guard known.contains(b.action) || ["client.mode.enter", "client.mode.exit", "client.mode.exit_all"].contains(b.action) else {
-                diagnostics.append("\(b.source ?? "Rex keymap"): action unavailable in resh: \(b.action)")
-                continue
-            }
             let valid: Bool
             switch invocation.action {
             case "client.mode.enter":
@@ -213,14 +221,15 @@ public struct Keymap: Equatable, Sendable {
                         && (invocation.args["once"] == nil || invocation.args["once"] == .boolean(true) || invocation.args["once"] == .boolean(false))
                 } else { valid = false }
             case "client.mode.exit", "client.mode.exit_all": valid = invocation.args.isEmpty
-            default: valid = invocation.shortcut != nil
+            default: valid = !known.contains(b.action) || invocation.shortcut != nil
             }
             if !valid { diagnostics.append("\(b.source ?? "Rex keymap"): invalid arguments for \(b.action)") }
             do {
                 guard !b.keys.isEmpty else { continue }
                 // An invalid invocation consumes its key rather than accidentally
                 // running a lower-priority action, which might close a session.
-                bindings.append(Binding(keys: try b.keys.map(KeyChord.init), invocation: valid ? invocation : nil, mode: b.mode, source: b.source))
+                bindings.append(Binding(keys: try b.keys.map(KeyChord.init), invocation: valid ? invocation : nil, mode: b.mode, source: b.source,
+                    repeats: !known.contains(b.action) && response.actions?.first { $0.name == b.action }?.repeats == true))
             } catch { diagnostics.append("\(b.source ?? "Rex keymap"): \(error.localizedDescription)") }
         }
         diagnostics += (response.diagnostics ?? []).filter { $0.mode.map(relevant.contains) ?? false }
@@ -229,7 +238,7 @@ public struct Keymap: Equatable, Sendable {
 
     public static var request: [String: Any] {
         let bindings = try! JSONSerialization.jsonObject(with: JSONEncoder().encode(defaultBindings))
-        return ["defaults": [["name": "resh-defaults", "bindings": bindings]], "server_actions": "none"]
+        return ["defaults": [["name": "resh-defaults", "bindings": bindings]], "server_actions": "configured"]
     }
     private static var defaultBindings: [RexKeymap.Binding] {
         var result: [RexKeymap.Binding] = []

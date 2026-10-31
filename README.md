@@ -110,6 +110,10 @@ working in other layouts. Rex key sequences (`ctrl+b>j`) and nested modes,
 including `once`, `exclusive`, and blocked keys, are supported for picker actions.
 Unbound keys go to the search field. Escape cancels an unfinished sequence.
 
+Other named Rex actions bound in `resh/` or its nested modes run through Rex,
+using the originating app and its current session. Failed actions consume the
+shortcut and report an error instead of running a lower-priority binding.
+
 Use `rex config reload` to apply bindings to both Rex and an already-running
 picker. No resh restart or file watcher is involved. Open/close is the normal
 Rex action `resh`; its default shortcut is `cmd+[KeyS]`.
