@@ -135,7 +135,6 @@ final class SessionCellView: NSTableCellView {
         agentIcon.image = agentImage
         agentIcon.isHidden = agent == nil
         agentIcon.contentTintColor = textColor
-        agentIcon.toolTip = agent?.app
         attention.isHidden = !needsAttention || (candidate.kind != .session && candidate.kind != .agent)
         attention.color = color
         let spins = candidate.kind == .agent && isWorking && attention.isHidden
@@ -162,8 +161,6 @@ final class SessionCellView: NSTableCellView {
         hostLabel.stringValue = agent.map { $0.sessionTitle + " | " + candidate.hostLabel } ?? candidate.hostLabel
         hostLabel.textColor = hintColor
         hostLabel.isHidden = !showHost
-        toolTip = !attention.isHidden ? "Unread result or action required in this \(candidate.kind == .agent ? "pane" : "session")"
-            : spins ? "Agent working" : nil
         let accessibleTitle = agent.map { "\($0.sessionTitle), \($0.app), \($0.title)" } ?? title
         setAccessibilityLabel("\(candidate.kind == .agent ? "Agent" : candidate.kind == .session ? "Session" : "Folder"), \(accessibleTitle)"
             + (showHost || agent != nil ? ", \(candidate.hostLabel)" : "")
