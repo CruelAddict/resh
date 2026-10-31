@@ -20,7 +20,7 @@ enum RexEventUpdate: Sendable {
     case keymapError(String)
 }
 
-/// Supported CLI event streams for the persistent catalog and visible-only activity.
+/// Supported CLI event streams for the persistent catalog and activity.
 /// All process and pipe state belongs to the serial queue, including teardown.
 final class RexEventConnection: @unchecked Sendable {
     enum Kind: String { case catalog, attention }

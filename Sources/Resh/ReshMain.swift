@@ -133,7 +133,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         rexMonitor?.stop()
         dataConnection.stop()
         controller?.dismiss(focusRex: false)
-        let connections = (controller?.stopAttention() ?? []) + (controller?.model.stopBackground() ?? [])
+        let connections = controller?.model.stopBackground() ?? []
         controller?.model.clear()
         let connection = dataConnection
         DispatchQueue.global(qos: .userInitiated).async {
@@ -156,7 +156,6 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         if lockDescriptor >= 0 { flock(lockDescriptor, LOCK_UN); close(lockDescriptor) }
         host?.stop()
         dataConnection.stop()
-        controller?.stopAttention()
         controller?.model.stopBackground()
     }
     private func toggle(_ request: LauncherRequest) -> Bool {

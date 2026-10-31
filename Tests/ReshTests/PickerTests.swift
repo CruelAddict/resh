@@ -1078,4 +1078,67 @@ extension PickerTests {
         #expect(model.results.map(\.blockID) == (floatUnread && !seen ? ["unread", "idle", "read", "working"] : ["idle", "read", "unread", "working"]))
         #expect(model.selected?.id == selectedID)
     }
+
+    @Test @MainActor func agentTaskLifecycleBetweenPresentations() async throws {
+        let stub = try CommandStub { _ in [:] }
+        let stream = stub.directory.appendingPathComponent("activity")
+        let catalog = stub.directory.appendingPathComponent("catalog")
+        for url in [stream, catalog] { try #require(mkfifo(url.path, 0o600) == 0) }
+        let output = try FileHandle(forUpdating: stream)
+        let catalogOutput = try FileHandle(forUpdating: catalog)
+        defer { try? output.close(); try? catalogOutput.close() }
+        let executable = stub.directory.appendingPathComponent("rex")
+        try """
+        #!/bin/sh
+        case "$*" in
+          *resh-attention.lua*) exec /bin/cat '\(stream.path)' ;;
+          *) exec /bin/cat '\(catalog.path)' ;;
+        esac
+        """.write(to: executable, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: executable.path)
+        let tools = Tools(rex: executable.path, zoxide: nil, fd: nil, rexApp: "/not/Rex.app")
+        let service = ReshService(client: RexClient(tools: tools, target: RexTarget(), runner: stub), stateURL: nil)
+        let sessions = [RexSession(sessionID: "work", label: "Work")]
+        let time = "2026-10-31T12:00:00Z"
+        let date = try Date.ISO8601FormatStyle().parse(time)
+        let model = SearchModel(service: service, tools: tools, sessions: sessions,
+            configurationURL: ConfigurationFile.emptyFixture, readTheme: { _, _ in .fixture }, readPreferences: {
+                ["Workspace.programActivitySeen": ["alerted": [
+                    ["block": "task", "record": "", "date": date], ["block": "other", "record": "", "date": date]]]]
+            })
+        defer {
+            let connections = model.stopBackground()
+            model.clear()
+            for connection in connections { connection.waitUntilStopped() }
+        }
+        let reports = ["task", "other"].flatMap { block in
+            [nil, "worker"].map { id in
+                RexAttentionRecord(sessionID: "work", blockID: block, recordID: id, state: "working", updatedAt: time,
+                    app: "builder", title: "Build", terminalTitle: block == "task" ? "Build" : "Notes")
+            }
+        }
+        func publish(_ records: [RexAttentionRecord]) throws {
+            var data = Data("{\"records\":".utf8)
+            data.append(try JSONEncoder().encode(records))
+            data.append(Data("}\n".utf8))
+            try output.write(contentsOf: data)
+        }
+        model.startBackground()
+        try publish(reports)
+        try await waitForValue(model.$workingAgentIDs) { !$0.isEmpty }
+        let taskID = RexAgent.identity(sessionID: "work", blockID: "task")
+        #expect(model.workingAgentIDs == [taskID])
+        model.endPresentation()
+        try publish(reports.filter { $0.recordID == nil }.map {
+            RexAttentionRecord(sessionID: $0.sessionID, blockID: $0.blockID, state: "idle", updatedAt: time,
+                app: $0.app, terminalTitle: $0.terminalTitle)
+        })
+        try await waitForValue(model.$attentionAgentIDs) { !$0.isEmpty }
+        model.prepare(service: service, sessions: sessions)
+        model.changeScope(.agents)
+        #expect(model.results.map(\.blockID) == ["task", "other"])
+        #expect(model.workingAgentIDs.isEmpty)
+        #expect(model.attentionAgentIDs == [taskID])
+        #expect(model.attentionSessionIDs == ["work"])
+    }
 }

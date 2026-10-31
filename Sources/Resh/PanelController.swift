@@ -16,9 +16,6 @@ final class PanelController: NSObject, NSWindowDelegate {
     private var monitor: Any?
     private var outsideClickMonitor: Any?
     private var themeTimer: Timer?
-    private let attentionConnection: RexEventConnection
-    private var remoteConnections: [String: (RexHost, RexEventConnection)] = [:]
-    private var attentionGeneration = 0
     private var subscriptions = Set<AnyCancellable>()
     private var picker: PanelView?
     private var rexAppPID: Int32?
@@ -38,7 +35,6 @@ final class PanelController: NSObject, NSWindowDelegate {
          readTheme: @escaping @Sendable (String, Bool) throws -> RexTheme = { try RexTheme.read(rexApp: $0, systemIsDark: $1) }) {
         self.model = SearchModel(service: service, tools: tools, sessions: sessions, configurationURL: configurationURL,
             snapshotProvider: snapshotProvider, readTheme: readTheme)
-        self.attentionConnection = RexEventConnection(tools: tools)
         self.readWindowFrame = readWindowFrame
         self.readScreens = readScreens
         panel = LauncherPanel(contentRect: NSRect(x: 0, y: 0, width: PanelLayout.width,
@@ -59,10 +55,6 @@ final class PanelController: NSObject, NSWindowDelegate {
         panel.hidesOnDeactivate = false
         panel.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
         model.onDismiss = { [weak self] focusRex in self?.dismiss(focusRex: focusRex) }
-        model.$hosts.dropFirst().sink { [weak self] hosts in
-            guard let self, self.panel.isVisible, self.model.isConfigurationReady else { return }
-            self.updateRemoteConnections(hosts)
-        }.store(in: &subscriptions)
         model.$theme.dropFirst().sink { [weak self] theme in self?.apply(theme: theme) }.store(in: &subscriptions)
         model.$keymap.removeDuplicates().sink { [weak self] keymap in
             guard let self else { return }
@@ -103,7 +95,6 @@ final class PanelController: NSObject, NSWindowDelegate {
     }
 
     func presentLoading() {
-        stopAttention()
         model.beginOpening()
         rexAppPID = nil
         display()
@@ -111,7 +102,6 @@ final class PanelController: NSObject, NSWindowDelegate {
 
     func present(error: Error, retry: @escaping () -> Void) {
         let pendingQuery = model.isOpening ? model.query : nil
-        stopAttention()
         rexAppPID = nil
         model.failOpening(error, retry: retry)
         if let pendingQuery { model.query = pendingQuery }
@@ -120,49 +110,15 @@ final class PanelController: NSObject, NSWindowDelegate {
 
     func show() {
         model.startBackground()
+        model.refreshAttention()
         display()
         model.refreshTheme()
-    }
-
-    private func startAttention() {
-        attentionGeneration += 1
-        let attentionRequest = attentionGeneration
-        attentionConnection.start(target: model.service.target) { [weak self] result in
-            Task { @MainActor [weak self] in
-                guard let self, attentionGeneration == attentionRequest, panel.isVisible else { return }
-                model.receive(result)
-            }
-        }
-        updateRemoteConnections(model.hosts)
-    }
-
-    private func updateRemoteConnections(_ hosts: [RexHost]) {
-        let ids = Set(hosts.map(\.id))
-        for id in Array(remoteConnections.keys) where !ids.contains(id) {
-            remoteConnections.removeValue(forKey: id)?.1.stop()
-        }
-        for host in hosts {
-            if remoteConnections[host.id]?.0 == host { continue }
-            remoteConnections.removeValue(forKey: host.id)?.1.stop()
-            let connection = RexEventConnection(tools: model.tools), request = attentionGeneration
-            remoteConnections[host.id] = (host, connection)
-            connection.start(target: RexTarget(server: host.server)) { [weak self] result in
-                Task { @MainActor [weak self] in
-                    guard let self, attentionGeneration == request, panel.isVisible,
-                          remoteConnections[host.id]?.0 == host else { return }
-                    model.receive(result, host: host)
-                }
-            }
-        }
     }
 
     private func display() {
         isDismissing = false
         resize(resultCount: model.results.count, hasError: model.error != nil)
-        if panel.isVisible {
-            if rexAppPID != nil, model.isConfigurationReady { startAttention() }
-            return
-        }
+        if panel.isVisible { return }
         guard positioningTask == nil else { return }
         let frontmost = NSWorkspace.shared.frontmostApplication
         presentationAppPID = frontmost?.processIdentifier
@@ -229,7 +185,6 @@ final class PanelController: NSObject, NSWindowDelegate {
                 self?.model.refreshAttention()
             }
         }
-        if rexAppPID != nil, model.isConfigurationReady { startAttention() }
     }
 
     private func apply(theme: RexTheme) {
@@ -386,22 +341,12 @@ final class PanelController: NSObject, NSWindowDelegate {
         onDismiss?()
         stopEventMonitoring()
         themeTimer?.invalidate()
-        stopAttention()
         panel.orderOut(nil)
         picker?.updateModifiers([])
         if focusRex, NSApp.isActive, let rexAppPID, NSWorkspace.shared.frontmostApplication?.processIdentifier != rexAppPID {
             NSRunningApplication(processIdentifier: rexAppPID)?.activate(options: [])
         }
         model.endPresentation()
-    }
-
-    @discardableResult
-    func stopAttention() -> [RexEventConnection] {
-        attentionGeneration += 1
-        let connections = [attentionConnection] + remoteConnections.values.map { $0.1 }
-        remoteConnections = [:]
-        for connection in connections { connection.stop() }
-        return connections
     }
 }
 
