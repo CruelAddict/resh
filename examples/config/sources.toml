@@ -1,5 +1,8 @@
 # Copy to ~/.config/resh/config.toml, or merge the sections you want into it.
 
+# Replace the local home directory with ~ in displayed paths; defaults to false.
+shorten_home_path = false
+
 # Controls both view order and visibility: unlisted sources are hidden.
 # Omit to keep the default views and append custom sources automatically.
 source_order = ["Sessions", "Agents", "All", "Projects", "Work", "Repositories", "Recent", "Find"]

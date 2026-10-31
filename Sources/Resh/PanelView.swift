@@ -107,7 +107,8 @@ final class SessionCellView: NSTableCellView {
     func configure(_ candidate: Candidate, needsAttention: Bool, color: NSColor, textColor: NSColor,
                    showHost: Bool = false, hostWidth: CGFloat = 0, isPinned: Bool = false,
                    isCurrent: Bool = false, shortcut: String = "", shortcutWidth: CGFloat = 24,
-                   pinHint: String = "", closeHint: String = "", isWorking: Bool = false, agentImage: NSImage? = nil) {
+                   pinHint: String = "", closeHint: String = "", isWorking: Bool = false, agentImage: NSImage? = nil,
+                   shortenHomePath: Bool = false) {
         let pinned = candidate.kind == .session && isPinned
         if representedID != candidate.id {
             animatesPinChange = false
@@ -119,7 +120,9 @@ final class SessionCellView: NSTableCellView {
         representedID = candidate.id
         self.isPinned = pinned
         let agent = candidate.kind == .agent ? candidate.agent : nil
-        textField?.stringValue = agent?.title ?? candidate.displayTitle
+        let title = candidate.kind == .directory && !shortenHomePath
+            ? candidate.path ?? candidate.title : candidate.displayTitle
+        textField?.stringValue = agent?.title ?? title
         textField?.textColor = textColor
         agentIcon.image = agentImage
         agentIcon.isHidden = agent == nil
@@ -153,7 +156,7 @@ final class SessionCellView: NSTableCellView {
         hostLabel.isHidden = !showHost
         toolTip = !attention.isHidden ? "Unread result or action required in this \(candidate.kind == .agent ? "pane" : "session")"
             : spins ? "Agent working" : nil
-        let accessibleTitle = agent.map { "\($0.sessionTitle), \($0.app), \($0.title)" } ?? candidate.displayTitle
+        let accessibleTitle = agent.map { "\($0.sessionTitle), \($0.app), \($0.title)" } ?? title
         setAccessibilityLabel("\(candidate.kind == .agent ? "Agent" : candidate.kind == .session ? "Session" : "Folder"), \(accessibleTitle)"
             + (showHost || agent != nil ? ", \(candidate.hostLabel)" : "")
             + (pinned ? ", pinned" : "")
@@ -727,7 +730,7 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
             isCurrent: entry.id == currentCandidateID,
             shortcut: number.map { resultShortcut(for: $0) } ?? "", shortcutWidth: shortcutColumnWidth,
             pinHint: pinHint, closeHint: closeHint, isWorking: workingAgentIDs.contains(entry.id),
-            agentImage: entry.agent.flatMap { agentIcons.image(for: $0.app) })
+            agentImage: entry.agent.flatMap { agentIcons.image(for: $0.app) }, shortenHomePath: model.configuration.shortenHomePath)
     }
 
     func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
