@@ -1,11 +1,13 @@
 # Copy to ~/.config/resh/config.toml, or merge the sections you want into it.
 
+# Controls both view order and visibility: unlisted sources are hidden.
+# Omit to keep the default views and append custom sources automatically.
 source_order = ["Sessions", "All", "Projects", "Work", "Repositories", "Recent", "Find"]
-# Defaults to "Sessions".
+# Must be one of the names in source_order; defaults to "Sessions".
 initial_source = "All"
 
 [[sources]]
-# The name is both the tab label and the key used by source_order, unions and shortcuts.
+# The name is both the view label and the key used by source_order, unions and shortcuts.
 # Names must be nonempty and unique; spaces and Unicode are allowed.
 # References are case-sensitive. Update them when renaming a source.
 name = "Work"
@@ -20,8 +22,8 @@ type = "command"
 # Working directory; defaults to the directory containing this config file.
 # Relative output paths and relative executable paths resolve against cwd.
 cwd = "~/work"
-# Print UTF-8 directory paths, one per line. The list refreshes when you open its tab.
-# No shell is used: pipes, redirects and ~ in arguments need an explicit shell/script.
+# Print UTF-8 directory paths, one per line. The list refreshes when you open its view.
+# Use an explicit shell/script for pipes, redirects and ~ in arguments.
 command = ["fd", "-t", "d", "-d", "2", ".", "."]
 # Optional; "paths" is the only supported output format.
 format = "paths"
@@ -42,7 +44,7 @@ sources = ["Sessions", "Projects", "Work", "Repositories", "Recent"]
 #   zoxide   — directories in zoxide's order
 #   find     — fd search under ~, two levels deep, including hidden folders except .Trash
 # command/cwd/format apply only to command; paths only to paths; sources only to union.
-# The default All includes sessions, projects and zoxide, not custom lists or Find.
+# The default All includes sessions, projects and zoxide.
 
 [keymap]
 "ctrl+w" = "source:Work"

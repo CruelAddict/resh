@@ -175,8 +175,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         let rexAppPID = target.clientID == nil && PanelShortcut.launcherIsEnabled(frontmostBundleID: frontmost?.bundleIdentifier)
             ? frontmost?.processIdentifier : nil
         let currentSessionID = request.currentSessionID ?? RexAppMonitor.focusedSessionID(rexAppPID: rexAppPID)
-        let configurationURL = (request.config ?? options.config).map { URL(fileURLWithPath: $0) }
-        controller.model.configure(target: target, configurationURL: configurationURL)
+        controller.model.configure(target: target)
         controller.model.startBackground()
         if let snapshot = controller.model.catalog.snapshot(clientID: target.clientID, rexAppPID: rexAppPID) {
             let selected = RexTarget(clientID: snapshot.client, server: target.server)
@@ -218,6 +217,13 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
             DispatchQueue.main.async { NSApp.terminate(nil) }
             return ["stopping": true]
         }
+        if let path = request.config,
+           URL(fileURLWithPath: path).standardizedFileURL != controller.model.configurationURL {
+            return ["error": "To change the configuration file, run resh service restart --config \"\(path)\"."]
+        }
+        if request.operation == "connect", let error = controller.model.configurationError {
+            return ["error": error]
+        }
         if request.changesSession {
             guard !isStopping, !isExecutingCommand, openingID == nil, !controller.model.isConnecting else {
                 return ["error": "A session operation is still in progress."]
@@ -237,7 +243,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
                     let clients = controller.model.catalog.clients.filter { request.client == nil || $0.client == request.client }
                     if clients.count == 1 { command.currentSessionID = RexAppMonitor.focusedSessionID(rexAppPID: clients[0].rexAppPID) }
                 }
-                let commands = LauncherCommands(service: service, configurationURL: options.config.map { URL(fileURLWithPath: $0) },
+                let commands = LauncherCommands(service: service, configuration: controller.model.configuration,
                     sessions: sameServer ? controller.model.sessionCandidates : [])
                 let result = try await commands.run(command)
                 await controller.model.catalog.refreshHistory().value
@@ -262,7 +268,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
                  "stopping": isStopping, "connectionState": connectionState,
                  "dataProcessID": controller.model.catalog.processID as Any? ?? NSNull(),
                  "sessions": controller.model.sessionCount,
-                "configPath": (controller.model.configurationURL ?? ConfigurationFile.url()).path,
+                "configPath": controller.model.configurationURL.path,
                 "panelError": controller.model.error as Any? ?? NSNull(),
                 "nativeHotkeyRegistered": hotkey?.isRegistered ?? false,
                 "nativeHotkeyStatus": hotkey?.registrationStatus ?? 0]
@@ -300,7 +306,7 @@ struct ReshMain {
             }
             if options.help {
                 print("""
-                resh — native, sesh-inspired session/folder picker for Rex
+                resh — macOS session manager for Rex, inspired by sesh
 
                 resh [--client CLIENT_ID] [--current-session SESSION_ID] [--server ADDRESS] [--debug]
                 resh --connect DIRECTORY [--client CLIENT_ID] [--current-session SESSION_ID]
@@ -312,12 +318,14 @@ struct ReshMain {
                 resh --check-config [--config FILE]
 
                 Config: ~/.config/resh/config.toml (or $RESH_CONFIG / --config FILE)
+                Restart with resh service restart to apply configuration changes.
                 --debug: write diagnostics to ~/Library/Logs/resh/debug.log
 
+                ⌘S open/close resh in Rex · ⌘L previous session in Rex
                 ⌘E Sessions · ⌘A All · ⌘R Recent · ⌘F Find · ⌘P Projects
                 ⌘1…9 open a result · ⌘⇧P pin/unpin a session (memory only)
                 ⌘⇧N create a session named after the search text
-                ↑/↓ or Tab/Shift-Tab navigate · Return open · Esc or Ctrl+[ dismiss
+                ↑/↓ or Ctrl+P/Ctrl+N navigate · Enter open · Esc or Ctrl+[ dismiss
                 ⌘⇧D immediately close a selected session
                 """)
                 return

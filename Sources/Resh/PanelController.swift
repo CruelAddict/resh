@@ -46,11 +46,6 @@ final class PanelController: NSObject, NSWindowDelegate {
         panel.hidesOnDeactivate = false
         panel.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
         model.onDismiss = { [weak self] focusRex in self?.dismiss(focusRex: focusRex) }
-        model.$isConfigurationReady.dropFirst().removeDuplicates().sink { [weak self] ready in
-            guard let self, self.panel.isVisible else { return }
-            if ready { self.startAttention() }
-            else { self.stopAttention() }
-        }.store(in: &subscriptions)
         model.$hosts.dropFirst().sink { [weak self] hosts in
             guard let self, self.panel.isVisible, self.model.isConfigurationReady else { return }
             self.updateRemoteConnections(hosts)
@@ -208,7 +203,7 @@ final class PanelController: NSObject, NSWindowDelegate {
 
     func handle(_ event: NSEvent) -> Bool {
         let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-        let keymap = model.isConfigurationReady ? model.configuration.keymap : ReshConfiguration.defaults.keymap
+        let keymap = model.configuration.keymap
         guard let shortcut = keymap.action(for: KeyChord(code: event.keyCode,
             command: modifiers.contains(.command), control: modifiers.contains(.control),
             option: modifiers.contains(.option), shift: modifiers.contains(.shift))) else { return false }

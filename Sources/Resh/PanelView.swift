@@ -249,7 +249,7 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
     private let errorScroll = NSScrollView()
     private let retry = NSButton(title: "Retry", target: nil, action: nil)
     private var sources: [SourceDefinition] = []
-    private var keymap = ReshConfiguration.defaults.keymap
+    private let keymap: Keymap
     private let sourceScroll = NSScrollView()
     private let sourceContainer = NSView()
     private var sourceButtons: [NSButton] = []
@@ -273,6 +273,7 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
 
     init(model: SearchModel) {
         self.model = model; self.theme = model.theme
+        self.keymap = model.configuration.keymap
         super.init(frame: NSRect(x: 0, y: 0, width: PanelLayout.width, height: model.panelHeight))
         autoresizingMask = [.width, .height]
 
@@ -357,12 +358,6 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
     deinit { shortcutTask?.cancel() }
 
     private func bindModel() {
-        model.$configuration.sink { [weak self] configuration in
-            guard let self else { return }
-            keymap = configuration.keymap
-            updateSources()
-            refreshCells()
-        }.store(in: &subscriptions)
         model.$visibleSources.sink { [weak self] sources in
             guard let self else { return }
             self.sources = sources
@@ -436,8 +431,9 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
             else { progress.startAnimation(nil) }
             needsLayout = true
         }.store(in: &subscriptions)
-        Publishers.CombineLatest3(model.$isConfigurationReady, model.$isOpening, model.$isConnecting).sink { [weak self] ready, opening, connecting in
+        Publishers.CombineLatest(model.$isOpening, model.$isConnecting).sink { [weak self] opening, connecting in
             guard let self else { return }
+            let ready = model.isConfigurationReady
             searchField.isEnabled = ready || opening
             table.isEnabled = ready && !opening
             for button in sourceButtons { button.isEnabled = ready && !opening }

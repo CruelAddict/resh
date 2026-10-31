@@ -226,8 +226,9 @@ extension PickerTests {
     }
 
     @Test(arguments: [false, true])
-    @MainActor func launcherCommandsUseResidentHistory(_ cached: Bool) async throws {
+    @MainActor func launcherCommandsUseResidentState(_ cached: Bool) async throws {
         var created = false
+        var createdPath: String?
         let stub = try CommandStub { arguments in
             if arguments.contains("client") {
                 return ["clients": [["client_id": "client:test", "info": ["kind": "app", "platform": "macos"]]]]
@@ -238,6 +239,13 @@ extension PickerTests {
                 return ["sessions": sessions]
             }
             if arguments.contains("session.create") {
+                let value = try #require(try JSONSerialization.jsonObject(with: Data(arguments.last!.utf8)) as? [String: Any])
+                let windows = try #require(value["initial_windows"] as? [[String: Any]])
+                let block = try #require((windows.first?["layout"] as? [String: Any])?["block"] as? [String: Any])
+                let options = try #require(block["options"] as? [String: Any])
+                #expect(value["label"] as? String == "Project")
+                #expect(options["initial_input"] as? String == "true\n")
+                createdPath = options["cwd"] as? String
                 created = true
                 return ["session_id": "b"]
             }
@@ -255,13 +263,15 @@ extension PickerTests {
         """.write(to: config, atomically: true, encoding: .utf8)
         let service = ReshService(client: RexClient(tools: stub.tools, target: RexTarget(clientID: "client:test"), runner: stub),
             registry: SessionRegistry(directory: stub.directory))
-        let commands = LauncherCommands(service: service, configurationURL: config,
+        let commands = LauncherCommands(service: service, configuration: try ConfigurationFile.load(config),
             sessions: cached ? ReshService.candidates(from: [RexSession(sessionID: "a", label: "First")]) : [])
+        try "".write(to: config, atomically: true, encoding: .utf8)
         var last = LauncherRequest(operation: "last", client: "client:test", currentSessionID: "a")
         #expect(try await commands.run(last).isEmpty)
         let connected = try await commands.run(LauncherRequest(operation: "connect", client: "client:test", currentSessionID: "a", path: ".", cwd: folder.path))
         #expect(connected["session_id"] as? String == "b")
         #expect(connected["path"] as? String == folder.resolvingSymlinksInPath().path)
+        #expect(createdPath == folder.resolvingSymlinksInPath().path)
         #expect(try await service.recentSessionIDs() == ["b", "a"])
         last.currentSessionID = "b"
         #expect(try await commands.run(last)["session_id"] as? String == "a")
@@ -496,6 +506,16 @@ extension PickerTests {
         await model.hostsTask?.value
         try await waitForSources(expected)
         for host in model.hosts { model.receive(.success(.sessions([])), host: host) }
+        for source in Array(expected.dropFirst()) + [.sessions] {
+            model.cycleSource(1)
+            #expect(model.scope == source)
+            await model.loadingTask?.value
+        }
+        for source in Array(expected.dropFirst().reversed()) + [.sessions] {
+            model.cycleSource(-1)
+            #expect(model.scope == source)
+            await model.loadingTask?.value
+        }
         if scenario == "remote" {
             model.changeScope(.directories)
             await model.loadingTask?.value
