@@ -1,6 +1,6 @@
 # resh
 
-A macOS session manager for [Rex](https://www.superlogical.com/), inspired by
+A macOS session manager for [Rex](https://www.superlogical.com/rex), inspired by
 [sesh](https://github.com/joshmedeski/sesh). Focused on blazingly fast session
 creation and switching across multiple projects. Designed to feel native to
 Rex's stunning UI.
