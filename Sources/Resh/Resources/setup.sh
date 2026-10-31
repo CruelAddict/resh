@@ -184,22 +184,23 @@ LUA
 }
 
 confirm_setup() {
+    say 'This will install resh files and reload the Rex configuration.'
     say "Rex config: $config"
     say "resh files: $destination"
     if [[ $linked == true ]]; then say "Homebrew source: $bundle (linked, not copied)"; fi
     if cmp -s "$work/config.before" "$work/config.after"; then
-        say 'The Rex config already contains the resh integration.'
+        say 'Rex integration is already configured; the config will be preserved.'
     else
         diff -u "$work/config.before" "$work/config.after" || true
     fi
     if [[ $yes == true ]]; then return 0; fi
     local answer
-    if ! IFS= read -r -p 'Set up resh with this Rex config? [y/N] ' answer < /dev/tty; then
+    if ! IFS= read -r -p 'Continue with installation? [y/N] ' answer < /dev/tty; then
         die 'Confirmation requires a terminal. Use --yes to apply changes non-interactively.'
     fi
     case "$answer" in
         y|Y|yes|YES) return 0 ;;
-        *) say 'Setup cancelled.'; return 1 ;;
+        *) say 'Installation cancelled.'; return 1 ;;
     esac
 }
 
