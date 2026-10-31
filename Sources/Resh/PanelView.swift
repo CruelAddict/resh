@@ -43,10 +43,12 @@ final class SessionCellView: NSTableCellView {
     let agentIcon = NSImageView()
     let hostLabel = NSTextField(labelWithString: "")
     let pin = NSImageView()
+    private let currentSession = NSImageView()
     let shortcutLabel = NSTextField(labelWithString: "")
     let pinHintLabel = NSTextField(labelWithString: "")
     let closeHintLabel = NSTextField(labelWithString: "")
     private var hostColumnWidth: CGFloat = 0
+    private var shortcutColumnWidth: CGFloat = 24
     private var representedID: String?
     private var isPinned = false
     private var animatesPinChange = false
@@ -78,6 +80,11 @@ final class SessionCellView: NSTableCellView {
         pin.wantsLayer = true
         pin.alphaValue = 0
         addSubview(pin)
+        currentSession.image = NSImage(systemSymbolName: "checkmark", accessibilityDescription: nil)
+        currentSession.imageScaling = .scaleProportionallyUpOrDown
+        currentSession.setAccessibilityElement(false)
+        currentSession.isHidden = true
+        addSubview(currentSession)
         shortcutLabel.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
         shortcutLabel.alignment = .right
         shortcutLabel.isHidden = true
@@ -99,7 +106,7 @@ final class SessionCellView: NSTableCellView {
 
     func configure(_ candidate: Candidate, needsAttention: Bool, color: NSColor, textColor: NSColor,
                    showHost: Bool = false, hostWidth: CGFloat = 0, isPinned: Bool = false,
-                   isCurrent: Bool = false, shortcut: String = "", showsShortcut: Bool = true,
+                   isCurrent: Bool = false, shortcut: String = "", shortcutWidth: CGFloat = 24,
                    pinHint: String = "", closeHint: String = "", isWorking: Bool = false, agentImage: NSImage? = nil) {
         let pinned = candidate.kind == .session && isPinned
         if representedID != candidate.id {
@@ -128,9 +135,12 @@ final class SessionCellView: NSTableCellView {
         }
         let hintColor = textColor.withAlphaComponent(0.55)
         pin.contentTintColor = hintColor
+        currentSession.contentTintColor = textColor
+        currentSession.isHidden = !isCurrent
+        shortcutColumnWidth = shortcutWidth
         shortcutLabel.stringValue = shortcut
         shortcutLabel.textColor = hintColor
-        shortcutLabel.isHidden = !showsShortcut || shortcut.isEmpty
+        shortcutLabel.isHidden = isCurrent || shortcut.isEmpty
         pinHintLabel.stringValue = pinHint
         closeHintLabel.stringValue = closeHint
         for hint in [pinHintLabel, closeHintLabel] {
@@ -140,7 +150,7 @@ final class SessionCellView: NSTableCellView {
         hostColumnWidth = hostWidth
         hostLabel.stringValue = agent.map { $0.sessionTitle + " | " + candidate.hostLabel } ?? candidate.hostLabel
         hostLabel.textColor = hintColor
-        hostLabel.isHidden = !showHost && agent == nil
+        hostLabel.isHidden = !showHost
         toolTip = !attention.isHidden ? "Unread result or action required in this \(candidate.kind == .agent ? "pane" : "session")"
             : spins ? "Agent working" : nil
         let accessibleTitle = agent.map { "\($0.sessionTitle), \($0.app), \($0.title)" } ?? candidate.displayTitle
@@ -162,18 +172,22 @@ final class SessionCellView: NSTableCellView {
         let titleBaselineOffset = textField.firstBaselineOffsetFromTop
         hostLabel.frame = NSRect(x: bounds.width - 8 - hostWidth,
             y: 5 + hostLabel.firstBaselineOffsetFromTop - titleBaselineOffset, width: hostWidth, height: 17)
-        pin.frame = NSRect(x: 8, y: 6, width: 12, height: 14)
+        shortcutLabel.frame = NSRect(x: 8,
+            y: 5 + shortcutLabel.firstBaselineOffsetFromTop - titleBaselineOffset, width: shortcutColumnWidth, height: 17)
+        currentSession.frame = NSRect(x: 8 + (shortcutColumnWidth - 12) / 2, y: 6, width: 12, height: 14)
         let gap: CGFloat = 6
+        let titleStart = shortcutLabel.frame.maxX + gap
+        pin.frame = NSRect(x: titleStart, y: 6, width: 12, height: 14)
         var trailing = hostLabel.frame.minX - (hostLabel.isHidden ? 0 : gap)
         // Size each item to its text: a wide, right-aligned number field adds
         // invisible padding that makes the preceding gap look much larger.
-        for hint in [shortcutLabel, closeHintLabel, pinHintLabel] {
+        for hint in [closeHintLabel, pinHintLabel] {
             let width = hint.stringValue.isEmpty ? 0 : ceil(hint.cell?.cellSize.width ?? 0)
             hint.frame = NSRect(x: trailing - width,
                 y: 5 + hint.firstBaselineOffsetFromTop - titleBaselineOffset, width: width, height: 17)
             if width > 0 { trailing = hint.frame.minX - gap }
         }
-        var titleX: CGFloat = isPinned ? 26 : 8
+        var titleX = titleStart + (isPinned ? 18 : 0)
         let titleEnd = trailing - (working.isHidden ? 14 : 18)
         if !agentIcon.isHidden {
             agentIcon.frame = NSRect(x: titleX, y: 6, width: 14, height: 14)
@@ -301,6 +315,7 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
     private var shortcutTask: Task<Void, Never>?
     private var showsActions = true
     private var hostColumnWidth: CGFloat = 0
+    private var shortcutColumnWidth: CGFloat = 24
     private var showsHosts = false
     private var theme: RexTheme
     private var activeScope: SearchScope = .sessions
@@ -619,6 +634,10 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
 
     private func refreshCells() {
         refreshCreateHint()
+        let font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular)
+        shortcutColumnWidth = max(24, (1...9).map {
+            ceil((resultShortcut(for: $0) as NSString).size(withAttributes: [.font: font]).width) + 4
+        }.max() ?? 0)
         let visible = table.rows(in: table.visibleRect)
         if visible.location != NSNotFound {
             for row in visible.location..<NSMaxRange(visible) {
@@ -680,6 +699,12 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
             key: keymap.label(for: .create, modes: keyModes), host: model.newSessionHost?.label ?? "This Mac", hostWidth: hostColumnWidth)
     }
 
+    private func resultShortcut(for number: Int) -> String {
+        let preferred: UInt8 = modifiers & 7 == 0 ? 1 : modifiers
+        let label = keymap.label(for: .openResult(number), modifiers: preferred, modes: keyModes)
+        return label.isEmpty ? keymap.label(for: .openResult(number), modes: keyModes) : label
+    }
+
     private func configure(_ cell: SessionCellView, row: Int) {
         let entry = rows[row]
         let selected = table.selectedRow == row
@@ -694,10 +719,10 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
         }
         cell.configure(entry, needsAttention: (entry.kind == .agent ? attentionAgentIDs : attentionSessionIDs).contains(entry.id),
             color: theme.attentionColor.nsColor, textColor: selected ? .white : theme.foreground.nsColor,
-            showHost: showsHosts, hostWidth: hostColumnWidth, isPinned: pinnedSessionIDs.contains(entry.id),
+            showHost: selected && (showsHosts || entry.kind == .agent), hostWidth: hostColumnWidth,
+            isPinned: pinnedSessionIDs.contains(entry.id),
             isCurrent: entry.id == currentCandidateID,
-            shortcut: number.map { keymap.label(for: .openResult($0), modifiers: modifiers & 7 == 0 ? nil : modifiers, modes: keyModes) } ?? "",
-            showsShortcut: shortcutsVisible,
+            shortcut: number.map { resultShortcut(for: $0) } ?? "", shortcutWidth: shortcutColumnWidth,
             pinHint: pinHint, closeHint: closeHint, isWorking: workingAgentIDs.contains(entry.id),
             agentImage: entry.agent.flatMap { agentIcons.image(for: $0.app) })
     }
