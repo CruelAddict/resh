@@ -390,19 +390,23 @@ extension PickerTests {
         #expect(service.recentSessionIDs() == ["b", "a"])
     }
 
-    @Test @MainActor func liveUpdatesPreserveSearchAndSelection() async {
-        let tools = Tools(rex: "/not/rex", zoxide: nil, fd: nil, rexApp: "/not/Rex.app")
-        let service = ReshService(client: RexClient(tools: tools, target: RexTarget()), stateURL: nil)
+    @Test(arguments: [false, true])
+    @MainActor func liveUpdatesPreserveSearchAndSelection(_ floatUnread: Bool) async throws {
+        let stub = try CommandStub { _ in [:] }
+        let config = stub.directory.appendingPathComponent("config.toml")
+        try (floatUnread ? "" : "float_unread_sessions = false").write(to: config, atomically: true, encoding: .utf8)
+        let service = ReshService(client: RexClient(tools: stub.tools, target: RexTarget(), runner: stub), stateURL: nil)
         let sessions = [RexSession(sessionID: "first", label: "Session one"), RexSession(sessionID: "second", label: "Session two")]
-        let model = SearchModel(service: service, tools: tools, sessions: sessions,
+        let model = SearchModel(service: service, tools: stub.tools, sessions: sessions, configurationURL: config,
             readTheme: { _, _ in .fixture }, readPreferences: { ["Workspace.programActivitySeen": [:]] })
+        defer { model.clear() }
         model.query = "session"; model.selection = 1
-        let results = model.results
-        let record = RexAttentionRecord(sessionID: "first", blockID: "synthetic", state: "done", updatedAt: "2026-10-22T17:59:59Z")
+        let record = RexAttentionRecord(sessionID: "second", blockID: "synthetic", state: "done", updatedAt: "2026-10-22T17:59:59Z")
         model.updateAttention([record])
         await model.attentionTask?.value
-        #expect(model.attentionSessionIDs == ["first"])
-        #expect(model.results == results && model.query == "session" && model.selection == 1)
+        #expect(model.attentionSessionIDs == ["second"])
+        #expect(model.results.map(\.id) == (floatUnread ? ["second", "first"] : ["first", "second"]))
+        #expect(model.query == "session" && model.selected?.id == "second")
         model.receive(.success(.sessions([
             RexSession(sessionID: "new", label: "Session new"), sessions[0],
             RexSession(sessionID: "second", label: "Session renamed"),
@@ -419,6 +423,49 @@ extension PickerTests {
         #expect(model.attentionSessionIDs.isEmpty)
         model.prepare(service: service, sessions: sessions)
         #expect(model.attentionSessionIDs.isEmpty)
+    }
+
+    @Test @MainActor func unreadSessionsFollowPinsAndCurrentSession() async throws {
+        _ = NSApplication.shared
+        let stub = try CommandStub { _ in [:] }
+        let config = stub.directory.appendingPathComponent("config.toml")
+        try "".write(to: config, atomically: true, encoding: .utf8)
+        let service = ReshService(client: RexClient(tools: stub.tools, target: RexTarget(), runner: stub), stateURL: nil)
+        let sessions = ["read", "unread", "current", "pinned", "other"].map { RexSession(sessionID: $0, label: "Session " + $0) }
+        let model = SearchModel(service: service, tools: stub.tools, configurationURL: config,
+            readTheme: { _, _ in .fixture }, readPreferences: { ["Workspace.programActivitySeen": [:]] }, readFocusedSession: { _ in nil })
+        defer { model.clear() }
+        model.prepare(service: service, sessions: sessions, currentSessionID: "current")
+        let view = PanelView(model: model)
+        let panel = LauncherPanel(contentRect: view.bounds, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        panel.contentView = view
+        panel.orderFront(nil)
+        defer { panel.orderOut(nil) }
+        view.layoutSubtreeIfNeeded()
+        let tables = view.subviews.compactMap { ($0 as? NSScrollView)?.documentView as? NSTableView }
+        let table = try #require(tables.first)
+        model.selection = try #require(model.results.firstIndex { $0.id == "pinned" })
+        model.togglePin()
+        model.query = "session"
+        model.selection = try #require(model.results.firstIndex { $0.id == "read" })
+        model.updateAttention(["pinned", "current", "unread", "other"].map {
+            RexAttentionRecord(sessionID: $0, blockID: $0, state: "blocked", updatedAt: "2026-10-31T12:00:00Z")
+        })
+        await model.attentionTask?.value
+        #expect(model.results.map(\.id) == ["pinned", "current", "unread", "other", "read"])
+        #expect(model.selected?.id == "read" && model.query == "session")
+        #expect(table.selectedRow == model.selection)
+        #expect(model.results.indices.map { (table.view(atColumn: 0, row: $0, makeIfNecessary: true) as? SessionCellView)?.textField?.stringValue }
+            == model.results.map { Optional($0.title) })
+        model.query = "unread"
+        #expect(model.results.map(\.id) == ["unread"])
+        model.query = "missing"
+        #expect(model.results.isEmpty)
+        model.query = ""
+        model.selection = try #require(model.results.firstIndex { $0.id == "read" })
+        model.updateAttention([])
+        #expect(model.results.map(\.id) == ["pinned", "current", "read", "unread", "other"])
+        #expect(model.selected?.id == "read" && table.selectedRow == model.selection)
     }
 
     @Test @MainActor func agentSelectionDismissesPicker() async throws {
@@ -648,7 +695,7 @@ extension PickerTests {
         let config = stub.directory.appendingPathComponent("config.toml")
         try "".write(to: config, atomically: true, encoding: .utf8)
         let model = SearchModel(service: service, tools: stub.tools, sessions: [local],
-            recentSessionIDs: ["remote", "local"], configurationURL: config,
+            recentSessionIDs: ["local", "remote"], configurationURL: config,
             readTheme: { _, _ in .fixture }, readPreferences: { ["Workspace.programActivitySeen": [:]] })
         defer { model.clear() }
         model.loadInitial()
@@ -657,17 +704,21 @@ extension PickerTests {
         let host = try #require(model.hosts.first)
         model.receive(.success(.sessions([RexSession(sessionID: "remote", label: "api")])), host: host)
         #expect(model.results.count == 2 && model.showsHosts)
-        #expect(model.results.map(\.id) == ["host:build/remote", "local"])
+        #expect(model.results.map(\.id) == ["local", "host:build/remote"])
         model.query = "api build"
         #expect(model.results.count == 1 && model.selected?.host == host && model.showsHosts)
         let selectedID = model.selected?.id
         model.receive(.success(.sessions([RexSession(sessionID: "another", label: "api"), local])))
         #expect(model.selected?.id == selectedID && model.query == "api build")
+        model.query = "api"
+        model.selection = try #require(model.results.firstIndex { $0.id == selectedID })
         model.receive(.success(.records([RexAttentionRecord(sessionID: "remote", blockID: "b", state: "done",
             updatedAt: "2026-10-23T12:00:00Z", app: "codex")])), host: host)
         await model.attentionTask?.value
         #expect(model.attentionSessionIDs == [Candidate.identity("remote", host: host)])
         #expect(model.attentionAgentIDs == [RexAgent.identity(sessionID: "remote", blockID: "b", host: host)])
+        #expect(model.results.map(\.id) == ["host:build/remote", "local", "another"])
+        #expect(model.selected?.id == selectedID && model.query == "api")
         model.receive(.success(.sessions([RexSession(sessionID: "new", label: "api")])), host: host)
         #expect(model.sessionCount == 3)
         for _ in 0..<200 where model.visibleSources.map(\.id) != [.sessions] { try await Task.sleep(for: .milliseconds(10)) }
@@ -857,11 +908,12 @@ extension PickerTests {
         #expect(model.results.map(\.blockID) == ["first", "other", "left", "right", "tenth"])
     }
 
-    @Test(arguments: [false, true])
-    @MainActor func agentUnreadIndicatorsFollowPaneReceipts(_ seen: Bool) async throws {
+    @Test(arguments: [false, true], [false, true])
+    @MainActor func agentUnreadIndicatorsFollowPaneReceipts(seen: Bool, floatUnread: Bool) async throws {
         let stub = try CommandStub { _ in [:] }
         let config = stub.directory.appendingPathComponent("config.toml")
-        try "".write(to: config, atomically: true, encoding: .utf8)
+        try ("initial_source = 'Agents'\n" + (floatUnread ? "float_unread_sessions = false" : "float_unread_agents = false"))
+            .write(to: config, atomically: true, encoding: .utf8)
         let service = ReshService(client: RexClient(tools: stub.tools, target: RexTarget(), runner: stub), stateURL: nil)
         let time = "2026-10-31T12:00:00Z"
         let date = try Date.ISO8601FormatStyle().parse(time)
@@ -882,9 +934,12 @@ extension PickerTests {
         }
         model.updateAttention([report("read", state: "done"), report("unread", state: "idle"),
             report("unread", state: "blocked", id: "worker"), report("working", state: "working"), report("idle", state: "idle")])
+        let selectedID = model.selected?.id
         await model.attentionTask?.value
         let unread = RexAgent.identity(sessionID: "work", blockID: "unread")
         #expect(model.attentionSessionIDs == (seen ? [] : ["work"]))
         #expect(model.attentionAgentIDs == (seen ? [] : [unread]))
+        #expect(model.results.map(\.blockID) == (floatUnread && !seen ? ["unread", "idle", "read", "working"] : ["idle", "read", "unread", "working"]))
+        #expect(model.selected?.id == selectedID)
     }
 }

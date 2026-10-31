@@ -466,7 +466,6 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
         model.$attentionSessionIDs.sink { [weak self] sessionIDs in
             guard let self else { return }
             attentionSessionIDs = sessionIDs
-            // Status updates must not reload search results or move the selection.
             refreshCells()
         }.store(in: &subscriptions)
         model.$attentionAgentIDs.sink { [weak self] ids in
@@ -661,19 +660,20 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
         rows = entries
         if !entries.isEmpty { showsNewSession = false }
         isSelecting = true
-        if let id = model.animatedSessionID, window?.isVisible == true,
-           !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion,
-           let from = previous.firstIndex(where: { $0.id == id }), let to = entries.firstIndex(where: { $0.id == id }),
-           from != to, previous.filter({ $0.id != id }) == entries.filter({ $0.id != id }) {
+        if model.animatesResultChanges, window?.isVisible == true,
+            !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion,
+            previous.count == entries.count, Set(previous.map(\.id)) == Set(entries.map(\.id)) {
+            let selectedID = previous.indices.contains(table.selectedRow) ? previous[table.selectedRow].id : nil
+            let changes = entries.map(\.id).difference(from: previous.map(\.id)).inferringMoves()
             NSAnimationContext.runAnimationGroup { context in
                 context.duration = 0.24
                 context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
                 context.allowsImplicitAnimation = true
                 table.beginUpdates()
-                table.moveRow(at: from, to: to)
+                for case let .remove(from, _, to?) in changes { table.moveRow(at: from, to: to) }
                 table.endUpdates()
             }
-            selectRow(to)
+            selectRow(selectedID.flatMap { id in entries.firstIndex { $0.id == id } } ?? model.selection)
         } else {
             table.reloadData()
             selectRow(model.selection)

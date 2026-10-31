@@ -22,7 +22,7 @@ final class SearchModel: ObservableObject {
     @Published private(set) var pinnedSessionIDs: [String] = []
     @Published private(set) var currentCandidateID: String?
     private var currentSessionID: String?
-    private(set) var animatedSessionID: String?
+    private(set) var animatesResultChanges = false
     let configuration: ReshConfiguration
     @Published private(set) var keymap = Keymap.defaults
     @Published var keyModes = ["resh"]
@@ -284,11 +284,15 @@ final class SearchModel: ObservableObject {
         // from attachment order, a session label, or resh's MRU history.
         let currentID = currentSession?.id
         if currentCandidateID != currentID { currentCandidateID = currentID }
+        let floatingIDs = (configuration.floatUnreadSessions ? attentionSessionIDs : [])
+            .union(configuration.floatUnreadAgents ? attentionAgentIDs : [])
         let updated: [Candidate]
         if configuration.source(scope)?.kind == .agents {
             let matching = Set(search.filter(query: query, limit: search.entries.count).map(\.id))
-            updated = Array(search.entries.filter { matching.contains($0.id) }.prefix(100))
-        } else if pinnedSessionIDs.isEmpty, currentID == nil {
+            let entries = search.entries.filter { matching.contains($0.id) }
+            updated = Array((entries.filter { floatingIDs.contains($0.id) }
+                + entries.filter { !floatingIDs.contains($0.id) }).prefix(100))
+        } else if pinnedSessionIDs.isEmpty, currentID == nil, floatingIDs.isEmpty {
             updated = search.filter(query: query)
         } else {
             let matching = search.filter(query: query, limit: search.entries.count)
@@ -298,6 +302,9 @@ final class SearchModel: ObservableObject {
                 return byID.removeValue(forKey: entry.id)
             }
             if let currentID, let entry = byID.removeValue(forKey: currentID) { ordered.append(entry) }
+            for entry in matching where floatingIDs.contains(entry.id) {
+                if let entry = byID.removeValue(forKey: entry.id) { ordered.append(entry) }
+            }
             ordered += matching.filter { byID[$0.id] != nil }
             updated = Array(ordered.prefix(100))
         }
@@ -312,12 +319,12 @@ final class SearchModel: ObservableObject {
     func togglePin() {
         guard isConfigurationReady, !isOpening, !isConnecting, let selected, selected.kind == .session,
               let sessionID = selected.sessionID else { return }
-        animatedSessionID = selected.id
+        animatesResultChanges = true
+        defer { animatesResultChanges = false }
         pinnedSessionIDs = service.togglePin(sessionID: sessionID)
         catalog.refreshState()
         updateResults()
         selection = results.firstIndex { $0.id == selected.id } ?? 0
-        animatedSessionID = nil
     }
 
     func openResult(_ number: Int) {
@@ -868,7 +875,7 @@ final class SearchModel: ObservableObject {
         let records = attentionRecords, remoteRecords = hostAttentionRecords, hosts = hosts
         let request = generation, preferences = readPreferences
         guard !records.isEmpty || remoteRecords.values.contains(where: { !$0.isEmpty }) else {
-            attentionSessionIDs = []; attentionAgentIDs = []; attentionTask = nil
+            applyAttention(sessionIDs: [], agentIDs: []); attentionTask = nil
             reportDiagnostic(nil, source: "receipts")
             return
         }
@@ -887,16 +894,26 @@ final class SearchModel: ObservableObject {
                     return (sessions, agents)
                 }.value
                 guard !Task.isCancelled, generation == request else { return }
-                if attentionSessionIDs != unseen.0 { attentionSessionIDs = unseen.0 }
-                if attentionAgentIDs != unseen.1 { attentionAgentIDs = unseen.1 }
+                applyAttention(sessionIDs: unseen.0, agentIDs: unseen.1)
                 reportDiagnostic(nil, source: "receipts")
             } catch {
                 guard !Task.isCancelled, generation == request else { return }
-                attentionSessionIDs = []
-                attentionAgentIDs = []
+                applyAttention(sessionIDs: [], agentIDs: [])
                 reportDiagnostic(error, source: "receipts")
             }
         }
+    }
+
+    private func applyAttention(sessionIDs: Set<String>, agentIDs: Set<String>) {
+        guard attentionSessionIDs != sessionIDs || attentionAgentIDs != agentIDs else { return }
+        let selectedID = selected?.id, previousSelection = selection
+        animatesResultChanges = true
+        defer { animatesResultChanges = false }
+        if attentionSessionIDs != sessionIDs { attentionSessionIDs = sessionIDs }
+        if attentionAgentIDs != agentIDs { attentionAgentIDs = agentIDs }
+        updateResults()
+        selection = selectedID.flatMap { id in results.firstIndex { $0.id == id } }
+            ?? min(previousSelection, max(0, results.count - 1))
     }
 }
 
