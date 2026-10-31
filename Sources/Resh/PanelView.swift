@@ -565,7 +565,7 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
         for (index, button) in sourceButtons.enumerated() {
             let source = sources[index], selected = source.id == activeScope
             let text = NSMutableAttributedString(string: source.name, attributes: [
-                .font: NSFont.systemFont(ofSize: 11, weight: selected ? .medium : .regular),
+                .font: NSFont.systemFont(ofSize: 11, weight: .medium),
                 .foregroundColor: theme.foreground.nsColor.withAlphaComponent(selected ? 1 : 0.55),
             ])
             let shortcut = keymap.label(for: source.id, modes: keyModes)
@@ -592,7 +592,7 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
         sourceScroll.frame = NSRect(x: padding, y: PanelLayout.sourcesTop, width: width - padding * 2, height: PanelLayout.sourcesHeight)
         var x: CGFloat = 0
         for button in sourceButtons {
-            let size = ceil(button.attributedTitle.size().width) + 14
+            let size = ceil(button.attributedTitle.size().width) + 24
             button.frame = NSRect(x: x, y: 0, width: size, height: PanelLayout.sourcesHeight)
             x += size + 4
         }
