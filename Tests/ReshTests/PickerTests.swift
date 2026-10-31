@@ -161,6 +161,18 @@ extension PickerTests {
         }
     }
 
+    @Test func sessionCreationFollowsHostChanges() async throws {
+        let stub = try RexBridgeStub(), connection = RexDataConnection(tools: stub.tools)
+        defer { connection.stop(); connection.waitUntilStopped() }
+        let service = ReshService(client: RexClient(tools: stub.tools,
+            target: RexTarget(clientID: "client:test", server: "home"), apiCaller: connection))
+        for endpoint in ["https://first.example", "https://second.example"] {
+            try stub.saveHosts([RexHost(id: "host:build", label: "build", endpoints: [endpoint])])
+            let host = try #require(service.hosts().hosts.first)
+            #expect(try await service.createSession(name: "Scratch", host: host) == endpoint + "/Scratch")
+        }
+    }
+
     @Test @MainActor func creationWaitsForTheActiveHost() async throws {
         let stub = try CommandStub { arguments in
             if arguments.contains("hosts") {
@@ -274,7 +286,7 @@ extension PickerTests {
         controller.prepare(service: service, snapshot: RexSnapshot(client: "client:test", rexAppPID: 1,
             sessions: [RexSession(sessionID: "a", label: "Current"), RexSession(sessionID: "b", label: "Other")]), currentSessionID: "a")
         let json = """
-        {"bindings":[{"keys":["ctrl+j"],"mode":"resh","action":"dev_layout",
+        {"bindings":[{"keys":["ctrl+[KeyJ]"],"mode":"resh","action":"dev_layout",
           "args":{"layout":{"paths":["src",null],"scale":0.5,"count":2,"focus":true}}}],
          "modes":[{"name":"resh","exclusive":false}]}
         """
@@ -376,6 +388,28 @@ extension PickerTests {
         #expect(model.attentionSessionIDs.isEmpty)
         model.prepare(service: service, sessions: sessions)
         #expect(model.attentionSessionIDs.isEmpty)
+    }
+
+    @Test @MainActor func agentSelectionDismissesPicker() async throws {
+        let stub = try RexBridgeStub(), connection = RexDataConnection(tools: stub.tools)
+        defer { connection.stop(); connection.waitUntilStopped() }
+        let config = stub.directory.appendingPathComponent("config.toml")
+        try "".write(to: config, atomically: true, encoding: .utf8)
+        let service = ReshService(client: RexClient(tools: stub.tools,
+            target: RexTarget(clientID: "client:test", server: "home"), apiCaller: connection))
+        let model = SearchModel(service: service, tools: stub.tools, sessions: [RexSession(sessionID: "b", label: "Beta")],
+            configurationURL: config, readTheme: { _, _ in .fixture })
+        defer { model.clear() }
+        model.updateAttention([RexAttentionRecord(sessionID: "b", blockID: "pane", state: "idle",
+            updatedAt: "2026-10-31T12:00:00Z", app: "opencode", title: "Task", windowID: "tab")])
+        model.changeScope(.agents)
+        var dismissalRequested = false
+        model.onDismiss = { _ in dismissalRequested = true }
+        model.openSelection()
+        for _ in 0..<200 where !dismissalRequested && model.isConnecting {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(dismissalRequested)
     }
 
     @Test(arguments: [false, true])
@@ -516,16 +550,18 @@ extension PickerTests {
         let selectedID = model.selected?.id
         model.receive(.success(.sessions([RexSession(sessionID: "another", label: "api"), local])))
         #expect(model.selected?.id == selectedID && model.query == "api build")
-        model.receive(.success(.records([RexAttentionRecord(sessionID: "remote", blockID: "b", state: "done", updatedAt: "2026-10-23T12:00:00Z")])), host: host)
+        model.receive(.success(.records([RexAttentionRecord(sessionID: "remote", blockID: "b", state: "done",
+            updatedAt: "2026-10-23T12:00:00Z", app: "codex")])), host: host)
         await model.attentionTask?.value
         #expect(model.attentionSessionIDs == [Candidate.identity("remote", host: host)])
+        #expect(model.attentionAgentIDs == [RexAgent.identity(sessionID: "remote", blockID: "b", host: host)])
         model.receive(.success(.sessions([RexSession(sessionID: "new", label: "api")])), host: host)
         #expect(model.sessionCount == 3)
         for _ in 0..<200 where model.visibleSources.map(\.id) != [.sessions] { try await Task.sleep(for: .milliseconds(10)) }
         #expect(model.visibleSources.map(\.id) == [.sessions])
     }
 
-    @Test(arguments: ["none", "local", "remote", "projects", "custom"])
+    @Test(arguments: ["none", "local", "remote", "projects", "custom", "agents", "remote agents"])
     @MainActor func sourceAvailability(_ scenario: String) async throws {
         var enabled = scenario == "remote"
         let stub = try CommandStub { arguments in
@@ -552,8 +588,9 @@ extension PickerTests {
         let expected: [SearchScope]
         switch scenario {
         case "local": expected = [.sessions, .find]
-        case "remote": expected = [.sessions, .all, .directories]
-        case "projects": expected = [.sessions, .all, .configs]
+        case "remote": expected = [.sessions, .directories]
+        case "projects": expected = [.sessions, .configs]
+        case "agents", "remote agents": expected = [.sessions, .agents]
         default: expected = [.sessions]
         }
         func waitForSources(_ sources: [SearchScope]) async throws {
@@ -566,8 +603,18 @@ extension PickerTests {
         model.loadInitial()
         await model.loadingTask?.value
         await model.hostsTask?.value
+        if scenario == "agents" || scenario == "remote agents" {
+            #expect(!model.visibleSources.contains { $0.id == .agents })
+            let firstHost = try #require(model.hosts.first)
+            let host = scenario == "remote agents" ? firstHost : nil
+            model.receive(.success(.sessions([RexSession(sessionID: "work", label: "Work")])), host: host)
+            model.receive(.success(.records([RexAttentionRecord(sessionID: "work", blockID: "pane", state: "idle",
+                updatedAt: "2026-10-31T12:00:00Z", app: "new-agent")])), host: host)
+        }
         try await waitForSources(expected)
-        for host in model.hosts { model.receive(.success(.sessions([])), host: host) }
+        if scenario != "remote agents" {
+            for host in model.hosts { model.receive(.success(.sessions([])), host: host) }
+        }
         for source in Array(expected.dropFirst()) + [.sessions] {
             model.cycleSource(1)
             #expect(model.scope == source)
@@ -592,5 +639,83 @@ extension PickerTests {
             model.cycleSource(1)
             #expect(model.scope == .sessions)
         }
+        if scenario == "agents" || scenario == "remote agents" {
+            model.changeScope(.agents)
+            model.query = "missing"
+            #expect(model.results.isEmpty && model.visibleSources.map(\.id) == expected)
+            let firstHost = try #require(model.hosts.first)
+            let host = scenario == "remote agents" ? firstHost : nil
+            model.receive(.success(.records([])), host: host)
+            #expect(model.scope == .sessions && !model.visibleSources.contains { $0.id == .agents })
+        }
+    }
+
+    @Test @MainActor func agentsFollowSessionHistoryAndPaneOrder() async throws {
+        let stub = try CommandStub { _ in [:] }
+        let config = stub.directory.appendingPathComponent("config.toml")
+        try "".write(to: config, atomically: true, encoding: .utf8)
+        let service = ReshService(client: RexClient(tools: stub.tools, target: RexTarget(clientID: "client:test"), runner: stub))
+        let sessions = [RexSession(sessionID: "a", label: "Alpha"), RexSession(sessionID: "b", label: "Beta")]
+        let model = SearchModel(service: service, tools: stub.tools, configurationURL: config,
+            readTheme: { _, _ in .fixture })
+        defer { model.clear() }
+        model.prepare(service: service, sessions: sessions, recentSessionIDs: ["b", "a"], currentSessionID: "a")
+        func report(_ session: String, _ block: String, _ window: Int, _ pane: Int, app: String = "opencode",
+                    title: String = "Task", id: String? = nil, state: String = "working") -> RexAttentionRecord {
+            RexAttentionRecord(sessionID: session, blockID: block, recordID: id, state: state, updatedAt: "2026-10-31T12:00:00Z",
+                app: app, title: title, terminalTitle: (app == "opencode" ? "OC" : app) + " | Current task",
+                windowID: "w\(window)", windowIndex: window, paneIndex: pane)
+        }
+        var records = [report("a", "first", 1, 1), report("b", "tenth", 10, 1), report("b", "right", 2, 2),
+            report("b", "left", 2, 1, state: "idle"), report("b", "left", 2, 1, title: "Background task", id: "worker"),
+            report("a", "other", 1, 2, app: "new-agent")]
+        model.updateAttention(records)
+        model.changeScope(.agents)
+        #expect(model.results.map(\.blockID) == ["left", "right", "tenth", "first", "other"])
+        #expect(model.results.first?.title == "Beta / OC | Current task")
+        #expect(model.results.last?.title == "Alpha / new-agent | Current task")
+        #expect(model.workingAgentIDs.count == 5)
+        model.query = "task"
+        model.selection = 1
+        let selected = model.selected?.id
+        records[2] = report("b", "right", 2, 2, title: "Renamed task", state: "idle")
+        model.updateAttention(records)
+        #expect(model.selected?.id == selected && model.query == "task")
+        #expect(!model.workingAgentIDs.contains(try #require(selected)))
+        #expect(model.results.map(\.blockID) == ["left", "right", "tenth", "first", "other"])
+        model.prepare(service: service, sessions: sessions, recentSessionIDs: ["a", "b"])
+        model.changeScope(.agents)
+        #expect(model.results.map(\.blockID) == ["first", "other", "left", "right", "tenth"])
+    }
+
+    @Test(arguments: [false, true])
+    @MainActor func agentUnreadIndicatorsFollowPaneReceipts(_ seen: Bool) async throws {
+        let stub = try CommandStub { _ in [:] }
+        let config = stub.directory.appendingPathComponent("config.toml")
+        try "".write(to: config, atomically: true, encoding: .utf8)
+        let service = ReshService(client: RexClient(tools: stub.tools, target: RexTarget(), runner: stub))
+        let time = "2026-10-31T12:00:00Z"
+        let date = try Date.ISO8601FormatStyle().parse(time)
+        let model = SearchModel(service: service, tools: stub.tools,
+            sessions: [RexSession(sessionID: "work", label: "Work")], configurationURL: config,
+            readTheme: { _, _ in .fixture }, readPreferences: {
+                var receipts: [[String: Any]] = [["block": "read", "record": "", "date": date]]
+                if seen {
+                    receipts += [["block": "unread", "record": "", "date": date],
+                                 ["block": "unread", "record": "worker", "date": date]]
+                }
+                return ["Workspace.programActivitySeen": ["receipts": receipts,
+                    "alerted": [["block": "unread", "record": "", "date": date]]]]
+            })
+        defer { model.clear() }
+        func report(_ block: String, state: String, id: String? = nil) -> RexAttentionRecord {
+            RexAttentionRecord(sessionID: "work", blockID: block, recordID: id, state: state, updatedAt: time, app: "opencode")
+        }
+        model.updateAttention([report("read", state: "done"), report("unread", state: "idle"),
+            report("unread", state: "blocked", id: "worker"), report("working", state: "working"), report("idle", state: "idle")])
+        await model.attentionTask?.value
+        let unread = RexAgent.identity(sessionID: "work", blockID: "unread")
+        #expect(model.attentionSessionIDs == (seen ? [] : ["work"]))
+        #expect(model.attentionAgentIDs == (seen ? [] : [unread]))
     }
 }

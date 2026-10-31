@@ -2,7 +2,7 @@
 
 # Controls both view order and visibility: unlisted sources are hidden.
 # Omit to keep the default views and append custom sources automatically.
-source_order = ["Sessions", "All", "Projects", "Work", "Repositories", "Recent", "Find"]
+source_order = ["Sessions", "Agents", "All", "Projects", "Work", "Repositories", "Recent", "Find"]
 # Must be one of the names in source_order; defaults to "Sessions".
 initial_source = "All"
 
@@ -40,11 +40,12 @@ sources = ["Sessions", "Projects", "Work", "Repositories", "Recent"]
 
 # Other source types reuse built-in providers:
 #   sessions — open Rex sessions
+#   agents   — panes reporting program statuses; hidden when there are none
 #   projects — [[session]] entries
 #   zoxide   — directories in zoxide's order
 #   find     — fd search under ~, two levels deep, including hidden folders except .Trash
 # command/cwd/format apply only to command; paths only to paths; sources only to union.
-# The default All includes sessions, projects and zoxide.
+# All includes sessions, projects and zoxide, and is hidden by default.
 
 # Bind these sources in Rex's init.lua, after the resh integration:
 # rex.bind("resh/ctrl+[KeyW]", "resh_source", { name = "Work" })

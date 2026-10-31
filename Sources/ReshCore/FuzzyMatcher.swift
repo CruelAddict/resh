@@ -8,7 +8,7 @@ public struct FuzzyMatcher: Sendable {
     public init(_ entries: [Candidate], reusing previous: Self? = nil) {
         self.entries = entries
         let cached = previous.map { Dictionary(zip($0.entries, $0.keys), uniquingKeysWith: { first, _ in first }) } ?? [:]
-        keys = entries.map { cached[$0] ?? (Array(Self.normalized($0.searchText)), Array(Self.normalized($0.title))) }
+        keys = entries.map { cached[$0] ?? (Array(Self.normalized($0.searchText)), Array(Self.normalized($0.agent?.title ?? $0.title))) }
     }
 
     /// A subsequence matcher with bonuses for contiguous, boundary, and title matches.

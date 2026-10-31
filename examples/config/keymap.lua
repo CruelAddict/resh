@@ -4,7 +4,7 @@
 -- normal keyboard controls. [KeyX] names a physical key; x follows the layout.
 
 rex.bind("resh/ctrl+[KeyT]", "resh_source", { name = "Sessions" })
-rex.bind("resh/ctrl+[KeyA]", "resh_source", { name = "All" })
+rex.bind("resh/ctrl+[KeyA]", "resh_source", { name = "Agents" })
 rex.bind("resh/ctrl+[KeyG]", "resh_source", { name = "Projects" })
 rex.bind("resh/ctrl+[KeyX]", "resh_source", { name = "Recent" })
 rex.bind("resh/ctrl+[KeyF]", "resh_source", { name = "Find" })

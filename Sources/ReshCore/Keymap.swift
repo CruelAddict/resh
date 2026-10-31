@@ -245,7 +245,7 @@ public struct Keymap: Equatable, Sendable {
         func bind(_ keys: [String], _ action: String, _ args: [String: KeyArgument]? = nil) {
             for key in keys { result.append(.init(keys: [key], action: action, args: args)) }
         }
-        for (key, source) in [("E", SearchScope.sessions), ("A", .all), ("R", .directories), ("F", .find), ("P", .configs)] {
+        for (key, source) in [("E", SearchScope.sessions), ("A", .agents), ("R", .directories), ("F", .find), ("P", .configs)] {
             bind(["cmd+[Key\(key)]"], "resh_source", ["name": .string(source.rawValue)])
         }
         bind(["cmd+shift+[KeyN]"], "resh_create")

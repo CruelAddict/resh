@@ -31,9 +31,9 @@ func isRexTransportFailure(_ message: String) -> Bool {
         || message == "EOF" || message == "unexpected EOF"
 }
 
-/// Request/reply bridge for cold openings, explicit reloads and diagnostics.
-/// Normal openings use SessionStore, without issuing a new request.
-final class RexDataConnection: RexSnapshotProviding, @unchecked Sendable {
+/// One supported CLI request/reply connection per server, shared by snapshots
+/// and session operations. Only reads may be retried after a lost reply.
+final class RexDataConnection: RexSnapshotProviding, RexAPICalling, @unchecked Sendable {
     private final class Connection {
         let process: RexProcess
         let server: String
@@ -42,36 +42,84 @@ final class RexDataConnection: RexSnapshotProviding, @unchecked Sendable {
     }
     private struct ClosedConnection: Error {}
     private struct ConnectionTimeout: Error {}
+    private struct RequestFailure: Error { let message: String }
     private let tools: Tools
     private let timeout: TimeInterval
     private let requests = NSLock()
     private let state = NSLock()
-    private var connection: Connection?
+    private var connections: [String: Connection] = [:]
+    private var hosts: [String: RexHost] = [:]
     private var generation = 0
     init(tools: Tools, timeout: TimeInterval = 5) { self.tools = tools; self.timeout = timeout }
     deinit { stop() }
 
-    func snapshot(target: RexTarget, rexAppPID: Int32? = nil) throws -> RexSnapshot {
-        let request = currentGeneration()
-        let deadline = ProcessInfo.processInfo.systemUptime + timeout
+    func updateHosts(_ hosts: [RexHost]) {
+        let updated = Dictionary(hosts.map { ($0.server, $0) }, uniquingKeysWith: { first, _ in first })
+        // Serialize with requests so a connection being opened cannot repopulate
+        // the cache with an old endpoint after invalidation.
         requests.lock(); defer { requests.unlock() }
+        state.lock()
+        let old = connections.keys.filter { self.hosts[$0] != updated[$0] }
+            .compactMap { connections.removeValue(forKey: $0) }
+        self.hosts = updated
+        state.unlock()
+        for connection in old { connection.process.stop() }
+    }
+
+    func snapshot(target: RexTarget, rexAppPID: Int32? = nil) throws -> RexSnapshot {
         guard target.clientID != nil || rexAppPID != nil else {
             throw ReshError("Open resh while Rex is the active app, or pass --client CLIENT_ID.")
         }
-        // Only reads are retried, within one total deadline including reconnects.
-        // The first retry is immediate; further failures back off while Rex starts.
+        var arguments: [String: Any] = [:]
+        if let client = target.clientID { arguments["client"] = client }
+        else if let rexAppPID { arguments["rex_app_pid"] = rexAppPID }
+        let response = try request(arguments, server: target.server, timeout: timeout, retryRead: true)
+        return try JSONDecoder().decode(RexSnapshot.self, from: response)
+    }
+
+    func call(_ method: String, arguments: Data, server: String, timeout: TimeInterval) throws -> Data {
+        let args = try JSONSerialization.jsonObject(with: arguments)
+        let response = try request(["method": method, "args": args], server: server, timeout: timeout, retryRead: false)
+        let value = try JSONSerialization.jsonObject(with: response) as? [String: Any]
+        var result = value?["result"] ?? NSNull()
+        // Lua encodes empty tables as objects and drops null fields. Restore
+        // session.list's array so an empty Rex server can create its first session.
+        if method == "session.list", var listed = result as? [String: Any],
+           listed["sessions"] == nil || (listed["sessions"] as? [String: Any])?.isEmpty == true {
+            listed["sessions"] = [Any]()
+            result = listed
+        }
+        return try JSONSerialization.data(withJSONObject: result, options: [.fragmentsAllowed])
+    }
+
+    func prepare(server: String) {
+        let request = currentGeneration()
+        DispatchQueue.global(qos: .userInitiated).async { [self] in
+            requests.lock(); defer { requests.unlock() }
+            do {
+                _ = try startIfNeeded(server: server, request: request,
+                    deadline: ProcessInfo.processInfo.systemUptime + timeout)
+            } catch {
+                if !(error is CancellationError) { DebugLog.shared.record(error, source: "rex:prepare") }
+            }
+        }
+    }
+
+    private func request(_ arguments: [String: Any], server: String, timeout: TimeInterval, retryRead: Bool) throws -> Data {
+        let request = currentGeneration()
+        let deadline = ProcessInfo.processInfo.systemUptime + timeout
+        requests.lock(); defer { requests.unlock() }
         var retryDelay: TimeInterval = 0
         while true {
+            var sent = false
             do {
-                let connection = try startIfNeeded(server: target.server, request: request, deadline: deadline)
-                var arguments: [String: Any] = [:]
-                if let client = target.clientID { arguments["client"] = client }
-                else if let rexAppPID { arguments["rex_app_pid"] = rexAppPID }
+                let connection = try startIfNeeded(server: server, request: request, deadline: deadline)
                 var data = try JSONSerialization.data(withJSONObject: arguments)
                 data.append(10)
                 try check(request)
                 guard let input = connection.process.input else { throw ClosedConnection() }
                 let written = data.withUnsafeBytes { Darwin.write(input.fileDescriptor, $0.baseAddress, $0.count) }
+                sent = written > 0
                 guard written == data.count else { throw ClosedConnection() }
                 let response = try readLine(connection, request: request, deadline: deadline)
                 try check(request)
@@ -79,15 +127,25 @@ final class RexDataConnection: RexSnapshotProviding, @unchecked Sendable {
                    let error = object["error"] as? String {
                     // Rex.app can register a little after the restarted server
                     // starts accepting connections. Keep the same native opening.
-                    let waitingForApp = retryDelay > 0 && rexAppPID != nil && target.clientID == nil
+                    let waitingForApp = retryDelay > 0 && arguments["rex_app_pid"] != nil && arguments["client"] == nil
                         && error.hasPrefix("Cannot find the requested Rex app.")
                     if isRexTransportFailure(error) || waitingForApp { throw ClosedConnection() }
-                    throw ReshError(error)
+                    throw RequestFailure(message: error)
                 }
-                return try JSONDecoder().decode(RexSnapshot.self, from: response)
+                return response
+            } catch let error as RequestFailure {
+                throw ReshError(error.message)
             } catch {
-                discard(request: request)
+                discard(server: server, request: request)
                 try check(request)
+                if !retryRead {
+                    if sent {
+                        throw ReshError("Rex did not confirm the request. It may have completed; the request was not retried.\n\(error.localizedDescription)",
+                            userMessage: "Rex didn’t confirm the operation. Check Rex before trying again.")
+                    }
+                    if error is ClosedConnection || error is ConnectionTimeout { throw ReshError("Can’t connect to Rex.") }
+                    throw error
+                }
                 if error is ConnectionTimeout { throw ReshError("Can’t connect to Rex.") }
                 if error is ClosedConnection {
                     let retryAt = min(deadline, ProcessInfo.processInfo.systemUptime + retryDelay)
@@ -107,9 +165,9 @@ final class RexDataConnection: RexSnapshotProviding, @unchecked Sendable {
     private func startIfNeeded(server: String, request: Int, deadline: TimeInterval) throws -> Connection {
         try check(request)
         guard ProcessInfo.processInfo.systemUptime < deadline else { throw ConnectionTimeout() }
-        state.lock(); let existing = connection; state.unlock()
-        if let existing, existing.process.isRunning, existing.server == server { return existing }
-        discard(request: request)
+        state.lock(); let existing = connections[server]; state.unlock()
+        if let existing, existing.process.isRunning { return existing }
+        discard(server: server, request: request)
         guard let script = Bundle.module.url(forResource: "resh-data", withExtension: "lua") else {
             throw ReshError("Missing bundled resource: resh-data.lua. Reinstall resh.")
         }
@@ -118,15 +176,30 @@ final class RexDataConnection: RexSnapshotProviding, @unchecked Sendable {
         let created = Connection(process: child, server: server)
         state.lock()
         let cancelled = generation != request
-        if !cancelled { connection = created }
+        if !cancelled { connections[server] = created }
         state.unlock()
         if cancelled { child.stop(); throw CancellationError() }
         do {
             let hello = try JSONSerialization.jsonObject(with: readLine(created, request: request, deadline: deadline)) as? [String: Any]
             guard hello?["ready"] as? Bool == true else { throw ReshError("Invalid Rex data connection handshake.") }
             try check(request)
+            // Session-scoped calls need attachment on this same stream. Observe
+            // all sessions without joining them or taking ownership of panes.
+            let bootstrap: [String: Any] = ["method": "session.attach_all", "args": ["event_scope": "session"]]
+            var data = try JSONSerialization.data(withJSONObject: bootstrap)
+            data.append(10)
+            guard let input = child.input else { throw ClosedConnection() }
+            let written = data.withUnsafeBytes { Darwin.write(input.fileDescriptor, $0.baseAddress, $0.count) }
+            guard written == data.count else { throw ClosedConnection() }
+            let response = try JSONSerialization.jsonObject(with: readLine(created, request: request, deadline: deadline)) as? [String: Any]
+            if let error = response?["error"] as? String {
+                if isRexTransportFailure(error) { throw ClosedConnection() }
+                throw ReshError(error)
+            }
+            guard response?["result"] != nil else { throw ReshError("Invalid Rex session attachment reply.") }
+            try check(request)
             return created
-        } catch { discard(request: request); throw error }
+        } catch { discard(server: server, request: request); throw error }
     }
 
     private func readLine(_ connection: Connection, request: Int, deadline: TimeInterval) throws -> Data {
@@ -161,19 +234,18 @@ final class RexDataConnection: RexSnapshotProviding, @unchecked Sendable {
     private func check(_ request: Int) throws {
         if currentGeneration() != request || Task.isCancelled { throw CancellationError() }
     }
-    private func discard(request: Int) {
+    private func discard(server: String, request: Int) {
         state.lock()
-        let old = generation == request ? connection : nil
-        if generation == request { connection = nil }
+        let old = generation == request ? connections.removeValue(forKey: server) : nil
         state.unlock()
         old?.process.stop()
     }
     func stop() {
         state.lock()
         generation += 1
-        let old = connection; connection = nil
+        let old = Array(connections.values); connections = [:]
         state.unlock()
-        old?.process.stop()
+        for connection in old { connection.process.stop() }
     }
 
     /// Shutdown barrier, only used off the UI thread after stop().
