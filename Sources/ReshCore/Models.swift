@@ -3,11 +3,11 @@ import Foundation
 public struct SearchScope: RawRepresentable, Hashable, Codable, Sendable {
     public let rawValue: String
     public init(rawValue: String) { self.rawValue = rawValue }
-    public static let sessions = Self(rawValue: "sessions")
-    public static let all = Self(rawValue: "all")
-    public static let directories = Self(rawValue: "directories")
-    public static let find = Self(rawValue: "find")
-    public static let configs = Self(rawValue: "configs")
+    public static let sessions = Self(rawValue: "Sessions")
+    public static let all = Self(rawValue: "All")
+    public static let directories = Self(rawValue: "Recent")
+    public static let find = Self(rawValue: "Find")
+    public static let configs = Self(rawValue: "Projects")
 }
 
 public struct Candidate: Identifiable, Hashable, Codable, Sendable {

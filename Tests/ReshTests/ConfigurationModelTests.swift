@@ -13,9 +13,12 @@ extension PickerTests {
         let service = ReshService(client: RexClient(tools: tools, target: RexTarget()))
         let sessions = [RexSession(sessionID: "s", label: "Live session")]
         try """
-        source_order = ["sessions", "configs"]
+        source_order = ["Sessions", "Work projects"]
         [keymap]
-        "ctrl+t" = "source:configs"
+        "ctrl+t" = "source:Work projects"
+        [[sources]]
+        name = "Work projects"
+        type = "projects"
         [[session]]
         name = "Project one"
         path = "project"
@@ -25,19 +28,20 @@ extension PickerTests {
         defer { model.clear() }
         model.startBackground()
         await model.loadingTask?.value
-        #expect(model.configuration.visibleSources.map(\.id) == [.sessions, .configs])
-        #expect(model.configuration.keymap.action(for: try KeyChord("ctrl+t")) == .scope(.configs))
-        model.changeScope(.configs)
+        let projects = SearchScope(rawValue: "Work projects")
+        #expect(model.configuration.visibleSources.map(\.id) == [.sessions, projects])
+        #expect(model.configuration.keymap.action(for: try KeyChord("ctrl+t")) == .scope(projects))
+        model.changeScope(projects)
         await model.loadingTask?.value
         #expect(model.results.map(\.title) == ["Project one"])
         model.query = "one"
         model.endPresentation()
         #expect(model.results.map(\.title) == ["Live session"] && model.query.isEmpty)
         try """
-        initial_source = "configs"
-        source_order = ["configs"]
+        initial_source = "Projects"
+        source_order = ["Projects"]
         [keymap]
-        "ctrl+w" = "source:configs"
+        "ctrl+w" = "source:Projects"
         [[session]]
         name = "Project two"
         path = "project"
@@ -47,11 +51,11 @@ extension PickerTests {
         await model.loadingTask?.value
         model.prepare(service: service, sessions: sessions)
         #expect(model.scope == .sessions)
-        model.changeScope(.configs)
+        model.changeScope(projects)
         model.retry()
         await model.loadingTask?.value
-        #expect(model.configuration.visibleSources.map(\.id) == [.sessions, .configs])
-        #expect(model.configuration.keymap.action(for: try KeyChord("ctrl+t")) == .scope(.configs))
+        #expect(model.configuration.visibleSources.map(\.id) == [.sessions, projects])
+        #expect(model.configuration.keymap.action(for: try KeyChord("ctrl+t")) == .scope(projects))
         #expect(model.results.map(\.title) == ["Project one"])
 
         let restarted = SearchModel(service: service, tools: tools, sessions: sessions, configurationURL: url,
@@ -188,16 +192,16 @@ extension PickerTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let url = root.appendingPathComponent("config.toml")
         try """
-        initial_source = "all"
+        initial_source = "All"
         [[session]]
         name = "Project"
         path = "project"
         [[sources]]
-        id = "all"
+        name = "All"
         type = "union"
-        sources = ["sessions", "configs", "slow"]
+        sources = ["Sessions", "Projects", "Slow"]
         [[sources]]
-        id = "slow"
+        name = "Slow"
         type = "command"
         cwd = "."
         command = ["/bin/sh", "-c", "touch started; sleep 10"]
@@ -235,20 +239,20 @@ extension PickerTests {
         let url = root.appendingPathComponent("config.toml"), paths = root.appendingPathComponent("folders.txt")
         try "test-folder-one\n".write(to: paths, atomically: true, encoding: .utf8)
         try """
-        initial_source = "all"
+        initial_source = "All"
         [[session]]
         name = "Test project"
         path = "project"
         [[sources]]
-        id = "all"
+        name = "All"
         type = "union"
-        sources = ["configs", "nested"]
+        sources = ["Projects", "Nested"]
         [[sources]]
-        id = "nested"
+        name = "Nested"
         type = "union"
-        sources = ["folders", "sessions", "configs"]
+        sources = ["Folders", "Sessions", "Projects"]
         [[sources]]
-        id = "folders"
+        name = "Folders"
         type = "command"
         cwd = "."
         command = ["/bin/sh", "-c", "touch started; while [ ! -f ready ]; do sleep 0.01; done; cat folders.txt"]

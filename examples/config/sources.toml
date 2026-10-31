@@ -1,26 +1,23 @@
 # Copy to ~/.config/resh/config.toml, or merge the sections you want into it.
-# Built-in IDs: sessions, all, directories (Recent), find, configs (Projects).
 
 # Controls both view order and visibility: unlisted sources are hidden.
 # Omit to keep the default views and append custom sources automatically.
-source_order = ["sessions", "all", "configs", "work", "repositories", "directories", "find"]
-# Must be one of the IDs in source_order; defaults to "sessions".
-initial_source = "all"
+source_order = ["Sessions", "All", "Projects", "Work", "Repositories", "Recent", "Find"]
+# Must be one of the names in source_order; defaults to "Sessions".
+initial_source = "All"
 
 [[sources]]
-# IDs are used by source_order, unions and source:ID shortcuts.
-# Use lowercase letters, digits, underscores or hyphens, starting with a letter.
-id = "work"
-# Optional view label; defaults to the ID.
-title = "Work"
+# The name is both the view label and the key used by source_order, unions and shortcuts.
+# Names must be nonempty and unique; spaces and Unicode are allowed.
+# References are case-sensitive. Update them when renaming a source.
+name = "Work"
 # A fixed list of directories. Other examples below use command and union.
 type = "paths"
 # ~ expands; relative paths start beside this config file. Missing folders are skipped.
 paths = ["~/work/backend", "~/work/frontend"]
 
 [[sources]]
-id = "repositories"
-title = "Repositories"
+name = "Repositories"
 type = "command"
 # Working directory; defaults to the directory containing this config file.
 # Relative output paths and relative executable paths resolve against cwd.
@@ -34,13 +31,12 @@ format = "paths"
 timeout = 5
 
 [[sources]]
-# Reusing a built-in ID replaces that source. Here All also includes our own lists.
-id = "all"
-title = "All"
+# Reusing a built-in name replaces that source. Here All also includes our own lists.
+name = "All"
 type = "union"
 # Members are combined in this order; duplicate paths appear only once.
 # Unions can include other unions, but cannot refer back to themselves.
-sources = ["sessions", "configs", "work", "repositories", "directories"]
+sources = ["Sessions", "Projects", "Work", "Repositories", "Recent"]
 
 # Other source types reuse built-in providers:
 #   sessions — open Rex sessions
@@ -51,5 +47,5 @@ sources = ["sessions", "configs", "work", "repositories", "directories"]
 # The default All includes sessions, projects and zoxide.
 
 [keymap]
-"ctrl+w" = "source:work"
-"ctrl+r" = "source:repositories"
+"ctrl+w" = "source:Work"
+"ctrl+r" = "source:Repositories"
