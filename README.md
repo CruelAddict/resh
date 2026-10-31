@@ -1,6 +1,6 @@
 # resh
 
-A macOS session manager for [Rex](https://www.superlogical.com/), inspired by
+A macOS session manager for [Rex](https://www.superlogical.com/rex), inspired by
 [sesh](https://github.com/joshmedeski/sesh). Resh lets you instantly jump
 between sessions and agents across multiple hosts.
 

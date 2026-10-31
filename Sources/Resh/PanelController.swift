@@ -23,8 +23,10 @@ final class PanelController: NSObject, NSWindowDelegate {
     private var picker: PanelView?
     private var rexAppPID: Int32?
     private var presentationAppPID: Int32?
-    private var positioningTask: Task<Void, Never>?
+    private(set) var positioningTask: Task<Void, Never>?
+    private var lastScreenID: CGDirectDisplayID?
     private let readWindowFrame: @Sendable (Int32?) -> CGRect?
+    private let readScreens: () -> [NSScreen]
     private var isDismissing = false
     private var keyRuntime = KeymapRuntime()
     private static let permissionPromptBundleID = "com.apple.UserNotificationCenter"
@@ -32,11 +34,13 @@ final class PanelController: NSObject, NSWindowDelegate {
     init(service: ReshService, tools: Tools, sessions: [RexSession] = [], configurationURL: URL? = nil,
          snapshotProvider: (any RexSnapshotProviding)? = nil,
          readWindowFrame: @escaping @Sendable (Int32?) -> CGRect? = { $0.flatMap { PanelPlacement.windowFrame(rexAppPID: $0) } },
+         readScreens: @escaping () -> [NSScreen] = { NSScreen.screens },
          readTheme: @escaping @Sendable (String, Bool) throws -> RexTheme = { try RexTheme.read(rexApp: $0, systemIsDark: $1) }) {
         self.model = SearchModel(service: service, tools: tools, sessions: sessions, configurationURL: configurationURL,
             snapshotProvider: snapshotProvider, readTheme: readTheme)
         self.attentionConnection = RexEventConnection(tools: tools)
         self.readWindowFrame = readWindowFrame
+        self.readScreens = readScreens
         panel = LauncherPanel(contentRect: NSRect(x: 0, y: 0, width: PanelLayout.width,
             height: PanelLayout.height(resultCount: sessions.count)),
             styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
@@ -90,10 +94,12 @@ final class PanelController: NSObject, NSWindowDelegate {
 
     func prepare(service: ReshService, snapshot: RexSnapshot, recentSessionIDs: [String] = [], currentSessionID: String? = nil) {
         let pendingQuery = model.isOpening ? model.query : nil
+        let previousPID = rexAppPID
         rexAppPID = snapshot.rexAppPID
         model.prepare(service: service, sessions: snapshot.sessions, recentSessionIDs: recentSessionIDs,
             rexAppPID: snapshot.rexAppPID, currentSessionID: currentSessionID)
         if let pendingQuery { model.query = pendingQuery }
+        if panel.isVisible, positioningTask == nil, rexAppPID != previousPID { updatePosition() }
     }
 
     func presentLoading() {
@@ -151,30 +157,40 @@ final class PanelController: NSObject, NSWindowDelegate {
     }
 
     private func display() {
-        guard positioningTask == nil else { return }
         isDismissing = false
         resize(resultCount: model.results.count, hasError: model.error != nil)
         if panel.isVisible {
-            displayPositioned()
+            if rexAppPID != nil, model.isConfigurationReady { startAttention() }
             return
         }
+        guard positioningTask == nil else { return }
         let frontmost = NSWorkspace.shared.frontmostApplication
         presentationAppPID = frontmost?.processIdentifier
+        if let lastScreenID, let screen = readScreens().first(where: { screenID($0) == lastScreenID }) {
+            position(on: screen)
+            displayPositioned()
+        }
+        updatePosition()
+    }
+
+    private func updatePosition() {
+        let frontmost = NSWorkspace.shared.frontmostApplication
         let pid = rexAppPID ?? (frontmost?.bundleIdentifier == RexAppMonitor.bundleIdentifier ? frontmost?.processIdentifier : nil)
         let readWindowFrame = self.readWindowFrame
-        // Keep WindowServer queries off the AppKit thread. Show only on Rex's display.
+        // Reuse the last display for immediate keyboard focus, then correct it once.
         positioningTask = Task { [weak self] in
             let frame = await Task.detached { readWindowFrame(pid) }.value
             guard !Task.isCancelled, let self else { return }
             self.positioningTask = nil
             if let resolvedPID = self.rexAppPID, resolvedPID != pid {
-                self.display()
+                self.updatePosition()
                 return
             }
-            let screens = NSScreen.screens
+            let screens = self.readScreens()
             guard let frame, let index = PanelPlacement.screenIndex(windowFrame: frame, screens: screens.map(\.frame)) else { return }
-            self.position(on: screens[index])
-            self.displayPositioned()
+            let screen = screens[index]
+            if !self.panel.isVisible || self.screenID(screen) != self.lastScreenID { self.position(on: screen) }
+            if !self.panel.isVisible { self.displayPositioned() }
         }
     }
 
@@ -301,11 +317,16 @@ final class PanelController: NSObject, NSWindowDelegate {
     }
 
     private func position(on screen: NSScreen) {
+        lastScreenID = screenID(screen)
         let visible = screen.visibleFrame
         let size = panel.frame.size
         let x = max(visible.minX + 10, min(visible.midX - size.width / 2, visible.maxX - size.width - 10))
         let y = max(visible.minY + 10, min(visible.midY - size.height / 2 + 65, visible.maxY - size.height - 10))
         panel.setFrameOrigin(NSPoint(x: x, y: y))
+    }
+
+    private func screenID(_ screen: NSScreen) -> CGDirectDisplayID? {
+        (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value
     }
 
     func windowDidResignKey(_ notification: Notification) {
