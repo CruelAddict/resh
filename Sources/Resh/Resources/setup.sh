@@ -11,7 +11,7 @@ Usage: resh setup [options]
   --remote            Install only the remote folder-source adapter
 
 Rex must be installed and running as the installing account.
-Setup previews the configuration change and saves a backup before applying it.
+Setup asks for confirmation and saves a backup before applying changes.
 EOF
 }
 
@@ -183,18 +183,11 @@ LUA
 }
 
 confirm_setup() {
-    say 'This will install resh files and reload the Rex configuration.'
+    say 'This will configure resh in Rex and reload its configuration.'
     say "Rex config: $config"
-    say "resh files: $destination"
-    if [[ $linked == true ]]; then say "Homebrew source: $bundle (linked, not copied)"; fi
-    if cmp -s "$work/config.before" "$work/config.after"; then
-        say 'Rex integration is already configured; the config will be preserved.'
-    else
-        diff -u "$work/config.before" "$work/config.after" || true
-    fi
     if [[ $yes == true ]]; then return 0; fi
     local answer
-    if ! IFS= read -r -p 'Continue with installation? [y/N] ' answer < /dev/tty; then
+    if ! IFS= read -r -p 'Continue? [y/N] ' answer < /dev/tty; then
         die 'Confirmation requires a terminal. Use --yes to apply changes non-interactively.'
     fi
     case "$answer" in
