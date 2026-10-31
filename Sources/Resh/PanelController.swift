@@ -14,6 +14,7 @@ final class PanelController: NSObject, NSWindowDelegate {
     let model: SearchModel
     var onDismiss: (() -> Void)?
     private var monitor: Any?
+    private var outsideClickMonitor: Any?
     private var themeTimer: Timer?
     private let attentionConnection: RexEventConnection
     private var remoteConnections: [String: (RexHost, RexEventConnection)] = [:]
@@ -21,8 +22,10 @@ final class PanelController: NSObject, NSWindowDelegate {
     private var subscriptions = Set<AnyCancellable>()
     private var picker: PanelView?
     private var rexAppPID: Int32?
+    private var presentationAppPID: Int32?
     private var isDismissing = false
     private var keyRuntime = KeymapRuntime()
+    private static let permissionPromptBundleID = "com.apple.UserNotificationCenter"
 
     init(service: ReshService, tools: Tools, sessions: [RexSession] = [], configurationURL: URL? = nil,
          snapshotProvider: (any RexSnapshotProviding)? = nil,
@@ -59,6 +62,13 @@ final class PanelController: NSObject, NSWindowDelegate {
         }.store(in: &subscriptions)
         Publishers.CombineLatest(model.$results, model.$error).dropFirst().sink { [weak self] entries, error in
             self?.resize(resultCount: entries.count, hasError: error != nil)
+        }.store(in: &subscriptions)
+        NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.didActivateApplicationNotification).sink { [weak self] event in
+            guard let self, self.panel.isVisible,
+                  let application = event.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
+                  application.activationPolicy == .regular,
+                  !self.isPresentationApplication(application) else { return }
+            self.dismissForOutsideInteraction("Application activated: \(application.bundleIdentifier ?? String(application.processIdentifier))")
         }.store(in: &subscriptions)
         apply(theme: model.theme)
         if let picker { panel.makeFirstResponder(picker.searchField) }
@@ -140,23 +150,36 @@ final class PanelController: NSObject, NSWindowDelegate {
         isDismissing = false
         keyRuntime.reset()
         if model.keyModes != keyRuntime.modes { model.keyModes = keyRuntime.modes }
-        if let monitor { NSEvent.removeMonitor(monitor); self.monitor = nil }
+        stopEventMonitoring()
         themeTimer?.invalidate()
         resize(resultCount: model.results.count, hasError: model.error != nil)
-        if !panel.isVisible { position() }
+        if !panel.isVisible {
+            presentationAppPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
+            position()
+        }
         panel.makeKeyAndOrderFront(nil)
         picker?.updateModifiers(NSEvent.modifierFlags)
         if let picker { panel.makeFirstResponder(picker.searchField) }
         panel.contentView?.layoutSubtreeIfNeeded()
         panel.displayIfNeeded()
-        monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .flagsChanged]) { [weak self] event in
-            guard let self, self.panel.isKeyWindow else { return event }
+        monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .flagsChanged, .leftMouseDown, .rightMouseDown, .otherMouseDown]) { [weak self] event in
+            guard let self else { return event }
+            switch event.type {
+            case .leftMouseDown, .rightMouseDown, .otherMouseDown:
+                self.handleClick(event)
+                return event
+            default: break
+            }
+            guard self.panel.isKeyWindow else { return event }
             if event.type == .flagsChanged {
                 self.picker?.updateModifiers(event.modifierFlags)
                 return event
             }
             guard event.window === self.panel else { return event }
             return self.handle(event) ? nil : event
+        }
+        outsideClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]) { [weak self] event in
+            self?.handleClick(event)
         }
         themeTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
@@ -265,9 +288,50 @@ final class PanelController: NSObject, NSWindowDelegate {
     }
 
     func windowDidResignKey(_ notification: Notification) {
-        guard !model.isConnecting, NSApp.modalWindow == nil else { return }
+        // System permission prompts can take focus repeatedly without the user leaving the picker.
         DebugLog.shared.record("Panel lost key window", source: "panel")
+        picker?.updateModifiers([])
+    }
+
+    func windowDidBecomeKey(_ notification: Notification) {
+        picker?.updateModifiers(NSEvent.modifierFlags)
+    }
+
+    private func isPresentationApplication(_ application: NSRunningApplication) -> Bool {
+        application.processIdentifier == presentationAppPID
+            || application.processIdentifier == ProcessInfo.processInfo.processIdentifier
+            || application.bundleIdentifier == Self.permissionPromptBundleID
+    }
+
+    private func handleClick(_ event: NSEvent) {
+        guard panel.isVisible, !isDismissing, !model.isConnecting, NSApp.modalWindow == nil,
+              event.windowNumber != panel.windowNumber else { return }
+        guard event.windowNumber > 0 else {
+            DebugLog.shared.record("Click has no target window", source: "panel")
+            return
+        }
+        // Query only the clicked window. Core Graphics expects raw window IDs, not CFNumber objects.
+        var windowID = UnsafeRawPointer(bitPattern: event.windowNumber)
+        guard let windowIDs = CFArrayCreate(nil, &windowID, 1, nil),
+              let windows = CGWindowListCreateDescriptionFromArray(windowIDs) as? [[String: Any]],
+              let pid = windows.first?[kCGWindowOwnerPID as String] as? Int32,
+              let application = NSRunningApplication(processIdentifier: pid) else {
+            DebugLog.shared.record("Could not identify owner of clicked window \(event.windowNumber)", source: "panel")
+            return
+        }
+        guard application.bundleIdentifier != Self.permissionPromptBundleID else { return }
+        dismissForOutsideInteraction("Click in window \(event.windowNumber) (\(application.bundleIdentifier ?? String(pid)))")
+    }
+
+    private func dismissForOutsideInteraction(_ reason: String) {
+        guard panel.isVisible, !isDismissing, !model.isConnecting, NSApp.modalWindow == nil else { return }
+        DebugLog.shared.record(reason, source: "panel")
         dismiss(focusRex: false)
+    }
+
+    private func stopEventMonitoring() {
+        if let monitor { NSEvent.removeMonitor(monitor); self.monitor = nil }
+        if let outsideClickMonitor { NSEvent.removeMonitor(outsideClickMonitor); self.outsideClickMonitor = nil }
     }
 
     func dismiss(focusRex: Bool) {
@@ -276,7 +340,7 @@ final class PanelController: NSObject, NSWindowDelegate {
         keyRuntime.reset()
         DebugLog.shared.record("Hiding panel (focusRex: \(focusRex))", source: "panel")
         onDismiss?()
-        if let monitor { NSEvent.removeMonitor(monitor); self.monitor = nil }
+        stopEventMonitoring()
         themeTimer?.invalidate()
         stopAttention()
         panel.orderOut(nil)
