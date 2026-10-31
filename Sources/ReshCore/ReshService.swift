@@ -18,7 +18,11 @@ public actor ReshService {
     }
 
     public nonisolated var target: RexTarget { client.target }
-    public nonisolated func hosts() throws -> (hosts: [RexHost], warnings: [String]) { try RexHostCatalog(client: client).read() }
+    public nonisolated func hosts() throws -> (hosts: [RexHost], warnings: [String]) {
+        let catalog = try RexHostCatalog(client: client).read()
+        client.apiCaller?.updateHosts(catalog.hosts)
+        return catalog
+    }
     public nonisolated func remote(_ host: RexHost) -> RexRemote { RexRemote(client: client.at(host)) }
     public nonisolated func sessions(host: RexHost? = nil, timeout: TimeInterval = 5) throws -> [RexSession] { try (host.map(client.at) ?? client).sessions(timeout: timeout) }
 

@@ -18,6 +18,7 @@ public struct RexSession: Codable, Sendable {
 }
 
 public protocol RexAPICalling: Sendable {
+    func updateHosts(_ hosts: [RexHost])
     func call(_ method: String, arguments: Data, server: String, timeout: TimeInterval) throws -> Data
 }
 

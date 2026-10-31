@@ -48,9 +48,23 @@ final class RexDataConnection: RexSnapshotProviding, RexAPICalling, @unchecked S
     private let requests = NSLock()
     private let state = NSLock()
     private var connections: [String: Connection] = [:]
+    private var hosts: [String: RexHost] = [:]
     private var generation = 0
     init(tools: Tools, timeout: TimeInterval = 5) { self.tools = tools; self.timeout = timeout }
     deinit { stop() }
+
+    func updateHosts(_ hosts: [RexHost]) {
+        let updated = Dictionary(hosts.map { ($0.server, $0) }, uniquingKeysWith: { first, _ in first })
+        // Serialize with requests so a connection being opened cannot repopulate
+        // the cache with an old endpoint after invalidation.
+        requests.lock(); defer { requests.unlock() }
+        state.lock()
+        let old = connections.keys.filter { self.hosts[$0] != updated[$0] }
+            .compactMap { connections.removeValue(forKey: $0) }
+        self.hosts = updated
+        state.unlock()
+        for connection in old { connection.process.stop() }
+    }
 
     func snapshot(target: RexTarget, rexAppPID: Int32? = nil) throws -> RexSnapshot {
         guard target.clientID != nil || rexAppPID != nil else {

@@ -161,6 +161,18 @@ extension PickerTests {
         }
     }
 
+    @Test func sessionCreationFollowsHostChanges() async throws {
+        let stub = try RexBridgeStub(), connection = RexDataConnection(tools: stub.tools)
+        defer { connection.stop(); connection.waitUntilStopped() }
+        let service = ReshService(client: RexClient(tools: stub.tools,
+            target: RexTarget(clientID: "client:test", server: "home"), apiCaller: connection))
+        for endpoint in ["https://first.example", "https://second.example"] {
+            try stub.saveHosts([RexHost(id: "host:build", label: "build", endpoints: [endpoint])])
+            let host = try #require(service.hosts().hosts.first)
+            #expect(try await service.createSession(name: "Scratch", host: host) == endpoint + "/Scratch")
+        }
+    }
+
     @Test @MainActor func creationWaitsForTheActiveHost() async throws {
         let stub = try CommandStub { arguments in
             if arguments.contains("hosts") {
