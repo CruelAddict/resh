@@ -12,6 +12,7 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 cp "$root/integration/rex-actions.lua" "$stage/rex-actions.lua"
 cp "$root/install.sh" "$stage/install.sh"
+cp "$root/Sources/Resh/Resources/setup.sh" "$stage/setup.sh"
 cp "$root/LICENSE" "$stage/LICENSE"
 tar -czf "$out/resh-remote.tar.gz" -C "$stage" .
 if [ -f "$root/dist/resh/resh" ]; then
