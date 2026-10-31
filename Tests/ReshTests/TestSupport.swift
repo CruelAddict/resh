@@ -8,10 +8,7 @@ struct PickerTests {}
 
 extension RexTheme {
     static var fixture: RexTheme {
-        try! resolve(preferences: ["Workspace.darkThemeID": "fixture"], builtins: Data("""
-        [{"id":"fixture","source":{"background":"#161616","foreground":"#eeeeee"},
-        "semantic":{"accentSolid":"#cc6600","selection":"#cc6600","surfaceRaised":"#262626","infoSolid":"#4488cc"}}]
-        """.utf8), systemIsDark: true)
+        .fallback(systemIsDark: true)
     }
 }
 

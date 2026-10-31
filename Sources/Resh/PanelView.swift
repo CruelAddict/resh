@@ -3,6 +3,14 @@ import Combine
 import QuartzCore
 import ReshCore
 
+private final class OverlayScrollView: NSScrollView {
+    // AppKit reapplies the system style after presentation; keep scrollers overlaid.
+    override var scrollerStyle: NSScroller.Style {
+        get { super.scrollerStyle }
+        set { super.scrollerStyle = .overlay }
+    }
+}
+
 private final class SelectionRow: NSTableRowView {
     var color = NSColor.selectedContentBackgroundColor
     override func drawSelection(in dirtyRect: NSRect) {
@@ -295,15 +303,15 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
     private let createHintLabel = NSTextField(labelWithString: "")
     private let progress = NSProgressIndicator()
     private let table = NSTableView()
-    private let scroll = NSScrollView()
+    private let scroll = OverlayScrollView()
     private let emptyLabel = NSTextField(labelWithString: "")
     private let errorLabel = NSTextField(wrappingLabelWithString: "")
-    private let errorScroll = NSScrollView()
+    private let errorScroll = OverlayScrollView()
     private let retry = NSButton(title: "Retry", target: nil, action: nil)
     private var sources: [SourceDefinition] = []
     private var keymap = Keymap.defaults
     private var keyModes = ["resh"]
-    private let sourceScroll = NSScrollView()
+    private let sourceScroll = OverlayScrollView()
     private let sourceContainer = NSView()
     private var sourceButtons: [NSButton] = []
     private var rows: [Candidate] = []

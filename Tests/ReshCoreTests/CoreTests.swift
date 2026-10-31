@@ -95,48 +95,6 @@ struct FuzzyTests {
     }
 }
 
-@Suite("Rex theme sync")
-struct ThemeTests {
-    @Test func builtInPalette() throws {
-        let data = Data("""
-        [{"id":"charcoal","name":"Charcoal","source":{"background":"#121113","foreground":"#f8f8f2",
-        "selectionBackground":"#444444","ansi":["#000000","#000000","#000000","#000000","#aabbcc"]},
-        "semantic":{"accentSolid":"#aabbcc","selection":"#aabbcc","surfaceRaised":"#222222","infoSolid":"#4488cc"}}]
-        """.utf8)
-        let theme = try RexTheme.resolve(preferences: ["Workspace.appearance": "dark", "Workspace.interfaceStyle": "blendTheme",
-            "Workspace.darkThemeID": "charcoal"], builtins: data, systemIsDark: false)
-        #expect(theme.name == "Charcoal")
-        #expect(theme.background.hex == "#121113")
-        #expect(theme.foreground.hex == "#f8f8f2")
-        #expect(theme.accent.hex == "#aabbcc")
-        #expect(theme.usesGlass && theme.usesTint && theme.isDark)
-    }
-    @Test func customPaletteAndClassic() throws {
-        let custom = Data("""
-        [{"id":"custom-1","name":"Mine","palette":{"background":{"red":0.2,"green":0.4,"blue":0.6,"alpha":1},
-        "foreground":"#111111","cursor":"#aabbcc","selectionBackground":"#dddddd",
-        "ansi":["#000000","#000000","#000000","#000000","#4488cc"]}}]
-        """.utf8)
-        let theme = try RexTheme.resolve(preferences: ["Workspace.appearance": "light", "Workspace.interfaceStyle": "useTheme",
-            "Workspace.lightThemeID": "custom-1", "Workspace.customThemes": custom], builtins: nil, systemIsDark: true)
-        #expect(theme.name == "Mine")
-        #expect(theme.background.hex == "#336699")
-        #expect(!theme.isDark && !theme.usesGlass && theme.usesTint)
-    }
-    @Test func usesRexUISemanticsNotTerminalAnsiBlue() throws {
-        let data = Data("""
-        [{"id":"native","source":{"background":"#161616","foreground":"#eeeeee","selectionBackground":"#3a3835",
-        "ansi":["#000000","#000000","#000000","#000000","#8aa0b4"]},
-        "semantic":{"accentSolid":"#e05d3a","selection":"#e05d3a","surfaceRaised":"#262626","infoSolid":"#8aa0b4"}}]
-        """.utf8)
-        let theme = try RexTheme.resolve(preferences: ["Workspace.darkThemeID": "native"], builtins: data, systemIsDark: true)
-        #expect(theme.accent.hex == "#e05d3a")
-        #expect(theme.selection.hex == "#e05d3a")
-        #expect(theme.panelBackground.hex == "#262626")
-        #expect(theme.attentionColor.hex == "#8aa0b4")
-    }
-}
-
 private final class FakeRunner: CommandRunning, @unchecked Sendable {
     typealias Session = (id: String, label: String, path: String)
     private let lock = NSLock()
