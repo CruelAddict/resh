@@ -9,7 +9,7 @@ public struct RexAgent: Sendable {
         Candidate.identity("agent:" + sessionID + "/" + blockID, host: host)
     }
 
-    public static func panes(in records: [RexAttentionRecord], session: Candidate) -> [Self] {
+    public static func panes(in records: [RexAttentionRecord], session: Candidate, workingBlockIDs: Set<String>? = nil) -> [Self] {
         let blocks = Dictionary(grouping: records.filter { $0.sessionID == session.sessionID }, by: \.blockID)
         let ordered = blocks.keys.sorted {
             let a = blocks[$0]!.first!, b = blocks[$1]!.first!
@@ -40,7 +40,7 @@ public struct RexAgent: Sendable {
                 kind: .agent, title: session.title + " / " + label + " | " + title,
                 sessionID: sessionID, host: session.host, blockID: blockID, windowID: report.windowID,
                 agent: Candidate.Agent(app: app, sessionTitle: session.title, title: title))
-            return Self(candidate: candidate, isWorking: reports.contains { $0.state == "working" })
+            return Self(candidate: candidate, isWorking: workingBlockIDs?.contains(blockID) ?? reports.contains { $0.state == "working" })
         }
     }
 }

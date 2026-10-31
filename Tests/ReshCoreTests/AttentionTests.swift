@@ -66,6 +66,78 @@ struct AttentionTests {
         #expect(try RexAttention.unseenSessionIDs(in: [record("idle", time: "2026-10-22T18:21:56.924Z")], preferences: unread).isEmpty)
     }
 
+    @Test func mirroredTaskLifecycle() throws {
+        var attention = RexAttention()
+        let working = ["task", "other"].flatMap { block in
+            [nil, "worker"].map { id in
+                RexAttentionRecord(sessionID: block, blockID: block, recordID: id, state: "working", updatedAt: time,
+                    app: "builder", title: "Build", terminalTitle: block == "task" ? "Harness | Build" : "Harness | Notes")
+            }
+        }
+        attention.update(working)
+        #expect(attention.workingBlockIDs == ["task"])
+        attention.update(working.filter { $0.recordID == nil })
+        #expect(attention.workingBlockIDs == ["task"])
+        let completed = working.filter { $0.recordID == nil }.map {
+            RexAttentionRecord(sessionID: $0.sessionID, blockID: $0.blockID, state: "idle", updatedAt: time,
+                app: $0.app, terminalTitle: $0.terminalTitle)
+        }
+        attention.update(completed)
+        #expect(attention.workingBlockIDs.isEmpty)
+        let date = try Date.ISO8601FormatStyle(includingFractionalSeconds: true).parse(time)
+        let alerted = completed.map { ["block": $0.blockID, "record": "", "date": date] as [String: Any] }
+        let unread = ["Workspace.programActivitySeen": ["alerted": alerted]]
+        #expect(try attention.unseenRecords(preferences: unread).map(\.blockID) == ["task"])
+        let read = ["Workspace.programActivitySeen": ["alerted": alerted, "receipts": [alerted[0]]]]
+        #expect(try attention.unseenRecords(preferences: read).isEmpty)
+
+        // A newly attached observer has no evidence about the completed task.
+        var attached = RexAttention()
+        attached.update(completed)
+        #expect(try attached.unseenRecords(preferences: unread).count == 2)
+    }
+
+    @Test(arguments: ["done", "blocked", "error"])
+    func mirroredTaskReports(_ state: String) throws {
+        var attention = RexAttention()
+        let reports = ["task", "other"].flatMap { block in
+            [nil, "worker"].map { id in
+                RexAttentionRecord(sessionID: block, blockID: block, recordID: id, state: state, updatedAt: time,
+                    app: "another-agent", title: "Review", terminalTitle: block == "task" ? "Review | Project" : "Notes")
+            }
+        }
+        attention.update(reports)
+        let unseen = try attention.unseenRecords(preferences: ["Workspace.programActivitySeen": [:]])
+        #expect(Set(unseen.map(\.blockID)) == ["task"])
+        #expect(unseen.count == 2)
+    }
+
+    @Test(arguments: ["Build", "Notes"], ["working", "blocked"])
+    func backgroundTaskReports(_ paneTitle: String, state: String) throws {
+        var attention = RexAttention()
+        let reports = ["first", "second"].map { block in
+            RexAttentionRecord(sessionID: block, blockID: block, recordID: "build", state: state, updatedAt: time,
+                app: "builder", title: "Build", terminalTitle: paneTitle)
+        }
+        attention.update(reports)
+        #expect(attention.workingBlockIDs == (state == "working" ? ["first", "second"] : []))
+        #expect(try attention.unseenRecords(preferences: ["Workspace.programActivitySeen": [:]]).count == (state == "blocked" ? 2 : 0))
+    }
+
+    @Test func taskIDsStayLocalToEachProgram() throws {
+        var attention = RexAttention()
+        let reports = [
+            RexAttentionRecord(sessionID: "s", blockID: "first", recordID: "build", state: "blocked", updatedAt: time,
+                app: "builder", title: "Build", terminalTitle: "Build"),
+            RexAttentionRecord(sessionID: "s", blockID: "second", recordID: "build", state: "blocked", updatedAt: time,
+                app: "other-builder", title: "Build", terminalTitle: "Notes"),
+            RexAttentionRecord(sessionID: "s", blockID: "third", recordID: "build", state: "blocked", updatedAt: time,
+                app: "builder", title: "Release", terminalTitle: "Notes"),
+        ]
+        attention.update(reports)
+        #expect(try attention.unseenRecords(preferences: ["Workspace.programActivitySeen": [:]]) == reports)
+    }
+
     @Test func nativeReadReceiptsUseMillisecondsNotProtocolMicroseconds() throws {
         let preferences = try preferences(time: "2026-10-22T17:59:59.092Z")
         #expect(try RexAttention.unseenSessionIDs(in: [record()], preferences: preferences).isEmpty)

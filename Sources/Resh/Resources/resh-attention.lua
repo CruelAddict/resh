@@ -1,5 +1,5 @@
--- Read-only activity stream. Started after the panel is visible and stopped on
--- dismissal. No polling, terminal output parsing, focus changes or read receipts.
+-- Read-only activity stream. Kept alive to retain task provenance when programs
+-- clear completed reports. No polling, output parsing, focus changes or receipts.
 local terminal = "com.superlogical.terminal"
 local sessions = {}
 local previous
@@ -144,7 +144,7 @@ publish()
 -- launchd sends SIGTERM to the old process group when the UI crashes, but
 -- does not promise escalation for a child ignoring it. A quiet event stream
 -- must also notice its stdout reader disappeared. No RPC/terminal polling;
--- this timer exists only for the lifetime of the visible panel's stream.
+-- this timer exists only for the lifetime of the activity stream.
 rex.every(10, function()
   local written = io.stdout:write('{"heartbeat":true}\n')
   if not written then rex.stop(0) end

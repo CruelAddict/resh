@@ -73,6 +73,12 @@ final class SearchModel: ObservableObject {
     private var themeTaskID: UUID?
     private var attentionRecords: [RexAttentionRecord] = []
     private var hostAttentionRecords: [String: [RexAttentionRecord]] = [:]
+    private var attention = RexAttention()
+    private var hostAttention: [String: RexAttention] = [:]
+    private let attentionConnection: RexEventConnection
+    private var remoteAttentionConnections: [String: (RexHost, RexEventConnection)] = [:]
+    private var attentionGeneration = 0
+    private var isAttentionActive = false
     var onDismiss: ((Bool) -> Void)?
     var onRetryOpening: (() -> Void)?
     private var generation = 0
@@ -86,6 +92,7 @@ final class SearchModel: ObservableObject {
          readKeyboardLayouts: @escaping @MainActor () -> KeyboardLayouts = { .enabled() }) {
         self.service = service; self.tools = tools
         self.catalog = SessionStore(tools: tools, service: service)
+        self.attentionConnection = RexEventConnection(tools: tools)
         self.configurationURL = (configurationURL ?? ConfigurationFile.url()).standardizedFileURL
         do {
             self.configuration = try ConfigurationFile.load(configurationURL)
@@ -123,6 +130,9 @@ final class SearchModel: ObservableObject {
         }.store(in: &subscriptions)
         catalog.$stateError.sink { [weak self] message in
             self?.reportDiagnostic(message.map { ReshError($0) }, source: "state")
+        }.store(in: &subscriptions)
+        $hosts.dropFirst().sink { [weak self] hosts in
+            self?.updateRemoteAttentionConnections(hosts)
         }.store(in: &subscriptions)
         tracker?.onChange = { [weak self] in self?.refreshFocus() }
         tracker?.onDiagnostic = { [weak self] in self?.reportDiagnostic($0, source: "focus") }
@@ -174,15 +184,73 @@ final class SearchModel: ObservableObject {
 
     func startBackground() {
         catalog.start()
-        guard !isBackgroundActive else { return }
+        if isBackgroundActive {
+            startAttention()
+            updateRemoteAttentionConnections(hosts)
+            return
+        }
         isBackgroundActive = true
+        attentionGeneration += 1
+        startAttention()
+        updateRemoteAttentionConnections(hosts)
         watchFocus()
         loadInitial()
+    }
+
+    private func startAttention() {
+        guard isConfigurationReady, !isAttentionActive else { return }
+        isAttentionActive = true
+        let request = attentionGeneration
+        attentionConnection.start(target: service.target) { [weak self] result in
+            Task { @MainActor [weak self] in
+                guard let self, attentionGeneration == request, isBackgroundActive else { return }
+                receiveAttention(result)
+            }
+        }
+    }
+
+    private func updateRemoteAttentionConnections(_ hosts: [RexHost]) {
+        let ids = Set(hosts.map(\.id))
+        for id in Array(remoteAttentionConnections.keys) where !ids.contains(id) {
+            remoteAttentionConnections.removeValue(forKey: id)?.1.stop()
+        }
+        guard isBackgroundActive, isConfigurationReady else { return }
+        for host in hosts {
+            if remoteAttentionConnections[host.id]?.0 == host { continue }
+            remoteAttentionConnections.removeValue(forKey: host.id)?.1.stop()
+            let connection = RexEventConnection(tools: tools), request = attentionGeneration
+            remoteAttentionConnections[host.id] = (host, connection)
+            connection.start(target: RexTarget(server: host.server)) { [weak self] result in
+                Task { @MainActor [weak self] in
+                    guard let self, attentionGeneration == request, isBackgroundActive,
+                          remoteAttentionConnections[host.id]?.0 == host else { return }
+                    receiveAttention(result, host: host)
+                }
+            }
+        }
+    }
+
+    private func receiveAttention(_ result: Result<RexEventUpdate, Error>, host: RexHost? = nil) {
+        if case .success(.reconnecting) = result {
+            if let host { hostAttention[host.id] = nil }
+            else { attention = RexAttention() }
+        }
+        if case .failure = result {
+            if let host { remoteAttentionConnections.removeValue(forKey: host.id)?.1.stop() }
+            else { isAttentionActive = false }
+        }
+        receive(result, host: host)
     }
 
     @discardableResult
     func stopBackground() -> [RexEventConnection] {
         isBackgroundActive = false
+        isAttentionActive = false
+        attentionGeneration += 1
+        let connections = [attentionConnection] + remoteAttentionConnections.values.map { $0.1 }
+        remoteAttentionConnections = [:]
+        for connection in connections { connection.stop() }
+        attention = RexAttention(); hostAttention = [:]
         focusTracker?.stop()
         stateReconciliationTask?.cancel(); stateReconciliationTask = nil
         generation += 1
@@ -196,7 +264,7 @@ final class SearchModel: ObservableObject {
         attentionTask?.cancel(); attentionTask = nil
         themeTask?.cancel(); themeTask = nil; themeTaskID = nil
         isLoading = false
-        return catalog.stop()
+        return connections + catalog.stop()
     }
 
     func configure(target: RexTarget) {
@@ -265,6 +333,7 @@ final class SearchModel: ObservableObject {
         pendingHosts = []
         hostAttentionRecords = [:]; isRemoteLoading = false
         attentionRecords = []; attentionSessionIDs = []; attentionAgentIDs = []; workingAgentIDs = []; agentSnapshot = []
+        attention = RexAttention(); hostAttention = [:]
         sessionSnapshot = []; sessionRanks = [:]; search = FuzzyMatcher([])
         pinnedSessionIDs = []; currentSessionID = nil; currentCandidateID = nil
         observedFocus = nil; pendingCreation = nil
@@ -355,8 +424,11 @@ final class SearchModel: ObservableObject {
             updateResults()
             return
         }
+        let workingBlocks = attention.workingBlockIDs
+        let remoteWorkingBlocks = hostAttention.mapValues(\.workingBlockIDs)
         let agents = allSessions.flatMap { session in
-            RexAgent.panes(in: session.host.map { hostAttentionRecords[$0.id] ?? [] } ?? attentionRecords, session: session)
+            RexAgent.panes(in: session.host.map { hostAttentionRecords[$0.id] ?? [] } ?? attentionRecords, session: session,
+                workingBlockIDs: session.host.map { remoteWorkingBlocks[$0.id] ?? [] } ?? workingBlocks)
         }
         agentSnapshot = agents.map(\.candidate)
         let working = Set(agents.filter(\.isWorking).map(\.candidate.id))
@@ -523,10 +595,12 @@ final class SearchModel: ObservableObject {
                 hostSessions = hostSessions.filter { ids.contains($0.key) }
                 hostSources = hostSources.filter { ids.contains($0.key) }
                 hostAttentionRecords = hostAttentionRecords.filter { ids.contains($0.key) }
+                hostAttention = hostAttention.filter { ids.contains($0.key) }
                 pendingHosts.formIntersection(ids)
                 for host in updated where previousHosts[host.id] != host {
                     verifiedSessionHosts.remove(host.id)
                     hostSessions[host.id] = nil; hostSources[host.id] = nil; hostAttentionRecords[host.id] = nil
+                    hostAttention[host.id] = nil
                     pendingHosts.insert(host.id)
                 }
                 hosts = updated
@@ -854,7 +928,11 @@ final class SearchModel: ObservableObject {
             else { discoverHosts() }
         case let .success(.records(records)):
             reportDiagnostic(nil, source: key)
-            if let host { hostAttentionRecords[host.id] = records; refreshEntries(); refreshAttention() }
+            if let host {
+                hostAttentionRecords[host.id] = records
+                hostAttention[host.id, default: RexAttention()].update(records)
+                refreshEntries(); refreshAttention()
+            }
             else { updateAttention(records) }
         case let .success(.sessions(sessions)):
             if let host { pendingHosts.remove(host.id); updateRemoteLoading() }
@@ -879,6 +957,7 @@ final class SearchModel: ObservableObject {
     func updateAttention(_ records: [RexAttentionRecord]) {
         reportDiagnostic(nil, source: "attention")
         attentionRecords = records
+        attention.update(records)
         refreshEntries()
         refreshAttention()
     }
@@ -886,6 +965,7 @@ final class SearchModel: ObservableObject {
     func refreshAttention() {
         attentionTask?.cancel()
         let records = attentionRecords, remoteRecords = hostAttentionRecords, hosts = hosts
+        let attention = attention, hostAttention = hostAttention
         let request = generation, preferences = readPreferences
         guard !records.isEmpty || remoteRecords.values.contains(where: { !$0.isEmpty }) else {
             applyAttention(sessionIDs: [], agentIDs: []); attentionTask = nil
@@ -896,11 +976,11 @@ final class SearchModel: ObservableObject {
             do {
                 let unseen = try await Task.detached {
                     let ledger = preferences()
-                    let local = try RexAttention.unseenRecords(in: records, preferences: ledger)
+                    let local = try attention.unseenRecords(preferences: ledger)
                     var sessions = Set(local.map(\.sessionID))
                     var agents = Set(local.map { RexAgent.identity(sessionID: $0.sessionID, blockID: $0.blockID) })
                     for host in hosts {
-                        let unseen = try RexAttention.unseenRecords(in: remoteRecords[host.id] ?? [], preferences: ledger)
+                        let unseen = try hostAttention[host.id]?.unseenRecords(preferences: ledger) ?? []
                         sessions.formUnion(unseen.map { Candidate.identity($0.sessionID, host: host) })
                         agents.formUnion(unseen.map { RexAgent.identity(sessionID: $0.sessionID, blockID: $0.blockID, host: host) })
                     }

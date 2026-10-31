@@ -30,10 +30,82 @@ public struct RexAttentionRecord: Codable, Equatable, Sendable {
     }
 }
 
-public enum RexAttention {
-    private struct Identity: Hashable {
+public struct RexAttention: Sendable {
+    private struct Identity: Hashable, Sendable {
         let block: String
         let record: String
+    }
+
+    private struct Task: Hashable, Sendable {
+        let app: String
+        let id: String
+        let title: String
+    }
+
+    private var records: [RexAttentionRecord] = []
+    private var tasks: [Identity: Set<Task>] = [:]
+
+    public init() {}
+
+    public mutating func update(_ records: [RexAttentionRecord]) {
+        let previous = Dictionary(self.records.map { (Self.identity($0), $0) }, uniquingKeysWith: { _, last in last })
+        let panes = Dictionary(grouping: records, by: \.blockID)
+        var updated: [Identity: Set<Task>] = [:]
+        for record in records {
+            let identity = Self.identity(record)
+            if let id = record.recordID, let app = record.app, let title = record.title, !title.isEmpty {
+                updated[identity] = [Task(app: app, id: id, title: title)]
+            } else if record.recordID == nil {
+                let children = (panes[record.blockID] ?? []).filter {
+                    $0.recordID != nil && $0.app == record.app && (record.title == nil || $0.title == record.title)
+                }
+                let sources = Set(children.compactMap { child -> Task? in
+                    guard let app = child.app, let id = child.recordID, let title = child.title, !title.isEmpty else { return nil }
+                    return Task(app: app, id: id, title: title)
+                })
+                if !sources.isEmpty { updated[identity] = sources }
+            }
+            if updated[identity] == nil, let old = previous[identity], old.app == record.app,
+               record.title == nil || record.title == old.title {
+                // Aggregators often clear child reports before returning the
+                // root to idle. Retain task provenance, not unread state.
+                updated[identity] = tasks[identity]
+            }
+        }
+        self.records = records
+        tasks = updated
+    }
+
+    public var workingBlockIDs: Set<String> {
+        Set(scopedRecords().filter { $0.state == "working" }.map(\.blockID))
+    }
+
+    public func unseenRecords(preferences: [String: Any]) throws -> [RexAttentionRecord] {
+        try Self.unseenRecords(in: scopedRecords(), preferences: preferences)
+    }
+
+    private func scopedRecords() -> [RexAttentionRecord] {
+        var owners: [Task: Set<String>] = [:]
+        for record in records {
+            guard let title = record.terminalTitle else { continue }
+            for task in tasks[Self.identity(record)] ?? [] where title == task.title
+                || title.hasSuffix(" | " + task.title) || title.hasPrefix(task.title + " | ") {
+                owners[task, default: []].insert(record.blockID)
+            }
+        }
+        return records.filter { record in
+            guard let sources = tasks[Self.identity(record)], !sources.isEmpty else { return true }
+            // IDs are terminal-local. Suppress a mirrored report only when the
+            // same app, ID and title identify a task displayed in another pane.
+            return sources.contains { task in
+                guard let panes = owners[task], !panes.isEmpty else { return true }
+                return panes.contains(record.blockID)
+            }
+        }
+    }
+
+    private static func identity(_ record: RexAttentionRecord) -> Identity {
+        Identity(block: record.blockID, record: record.recordID ?? "")
     }
 
     /// Rex's read receipts are client-side, not part of the server API. Like theme
