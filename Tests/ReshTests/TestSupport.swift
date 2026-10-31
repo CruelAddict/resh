@@ -31,7 +31,7 @@ final class SnapshotStub: RexSnapshotProviding, @unchecked Sendable {
     }
 }
 
-final class RexBridgeStub {
+final class RexBridgeStub: CommandRunning {
     let directory: URL
     let tools: Tools
 
@@ -49,9 +49,6 @@ final class RexBridgeStub {
         def reply(value):
             print(json.dumps(value), flush=True)
         hosts = json.loads((Path(__file__).parent / 'hosts.json').read_text())
-        if 'hosts' in sys.argv:
-            reply({'hosts': [{'host': host} for host in hosts]})
-            sys.exit(0)
         server = sys.argv[sys.argv.index('--server') + 1]
         host = next((host for host in hosts if host['label'] == server), None)
         endpoint = host['endpoints'][0] if host else server
@@ -81,6 +78,16 @@ final class RexBridgeStub {
 
     func saveHosts(_ hosts: [RexHost]) throws {
         try JSONEncoder().encode(hosts).write(to: directory.appendingPathComponent("hosts.json"), options: .atomic)
+    }
+
+    func run(_ executable: String, _ arguments: [String], timeout: TimeInterval, directory: String?) throws -> CommandResult {
+        guard executable == tools.rex, arguments.contains("hosts") else { throw ReshError("Unexpected command: \(arguments)") }
+        // Keep Python startup outside the host catalog's two-second command budget.
+        // The bridge still reads this same file when each real connection starts.
+        let hosts = try JSONDecoder().decode([RexHost].self, from: Data(contentsOf: self.directory.appendingPathComponent("hosts.json")))
+        return CommandResult(stdout: try JSONSerialization.data(withJSONObject: [
+            "hosts": hosts.map { ["host": ["id": $0.id, "label": $0.label, "endpoints": $0.endpoints]] },
+        ]))
     }
 
     deinit { try? FileManager.default.removeItem(at: directory) }
