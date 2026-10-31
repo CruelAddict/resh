@@ -11,7 +11,7 @@ let package = Package(
         .target(name: "RexFocusTracking"),
         .executableTarget(name: "Resh", dependencies: ["ReshCore", "RexFocusTracking"], resources: [.process("Resources")]),
         .testTarget(name: "ReshCoreTests", dependencies: ["ReshCore"]),
-        .testTarget(name: "ReshTests", dependencies: ["Resh", "ReshCore"]),
+        .testTarget(name: "ReshTests", dependencies: ["Resh", "ReshCore"], resources: [.copy("Fixtures")]),
     ],
     swiftLanguageModes: [.v5]
 )

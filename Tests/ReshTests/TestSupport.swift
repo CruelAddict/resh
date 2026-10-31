@@ -1,10 +1,52 @@
+import Combine
 import Foundation
 import ReshCore
 import Testing
 @testable import Resh
 
-@Suite("Picker behavior", .serialized)
+@Suite("Picker behavior", .serialized, .timeLimit(.minutes(1)))
 struct PickerTests {}
+
+extension ConfigurationFile {
+    static let emptyFixture = Bundle.module.url(forResource: "empty", withExtension: "toml", subdirectory: "Fixtures")!
+}
+
+@MainActor
+func waitForValue<P: Publisher>(_ publisher: P, matching predicate: (P.Output) -> Bool) async throws where P.Failure == Never {
+    let (values, continuation) = AsyncStream<P.Output>.makeStream(bufferingPolicy: .bufferingNewest(1))
+    let subscription = publisher.sink { continuation.yield($0) }
+    defer { subscription.cancel(); continuation.finish() }
+    for await value in values where predicate(value) { return }
+    throw CancellationError()
+}
+
+final class SourceCommandStub: CommandRunning, @unchecked Sendable {
+    private let condition = NSCondition()
+    private var released = false
+    private let starts = AsyncStream<Void>.makeStream()
+    private let reply: @Sendable () throws -> CommandResult
+
+    init(_ reply: @escaping @Sendable () throws -> CommandResult = { CommandResult() }) { self.reply = reply }
+
+    func waitUntilStarted() async throws {
+        var iterator = starts.stream.makeAsyncIterator()
+        try #require(await iterator.next() != nil)
+    }
+
+    func release() {
+        condition.lock(); defer { condition.unlock() }
+        released = true
+        condition.broadcast()
+    }
+
+    func run(_ executable: String, _ arguments: [String], timeout: TimeInterval, directory: String?) throws -> CommandResult {
+        starts.continuation.yield(())
+        condition.lock()
+        while !released { condition.wait() }
+        condition.unlock()
+        return try reply()
+    }
+}
 
 extension RexTheme {
     static var fixture: RexTheme {
