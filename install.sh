@@ -311,7 +311,6 @@ main() {
     remote=false verify=false download=false
     source_dir="" config=""
     repository=${RESH_REPOSITORY:-CruelAddict/resh}
-    if [[ -n ${RESH_REPOSITORY:-} ]]; then download=true; fi
     version=latest
     explicit_config=false
     work="" pending_file="" module=""
