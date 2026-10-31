@@ -1,10 +1,10 @@
 import AppKit
-import ReshCore
 
 /// App lifetime, not frontmost-app lifetime: switching to an editor must not
 /// make the next Cmd+S cold. Keep only the native host when Rex is absent/asleep.
 @MainActor
 final class RexAppMonitor {
+    static let bundleIdentifier = "com.superlogical.rex"
     private static let preferences = UserDefaults(suiteName: "com.superlogical.rex")
     private var observers: [NSObjectProtocol] = []
     private var sleeping = false
@@ -37,7 +37,7 @@ final class RexAppMonitor {
 
     func refresh() {
         let available = !sleeping && NSWorkspace.shared.runningApplications.contains {
-            !$0.isTerminated && PanelShortcut.launcherIsEnabled(frontmostBundleID: $0.bundleIdentifier)
+            !$0.isTerminated && $0.bundleIdentifier == Self.bundleIdentifier
         }
         guard available != isAvailable else { return }
         isAvailable = available

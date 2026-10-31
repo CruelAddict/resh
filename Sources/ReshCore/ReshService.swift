@@ -29,6 +29,15 @@ public actor ReshService {
 
     public func resolveClient() throws -> (id: String, rexAppPID: Int32?) { try client.resolveClient() }
 
+    public func perform(_ invocation: KeyInvocation, sessionID: String?) throws {
+        try Task.checkCancellation()
+        let clientID = try client.target.clientID ?? client.resolveClient().id
+        let args = String(decoding: try JSONEncoder().encode(invocation.args), as: UTF8.self)
+        var arguments = ["-C", clientID, "do", "--args", args, "--json"]
+        if let sessionID { arguments += ["-s", sessionID] }
+        _ = try client.command(arguments + ["--", invocation.action], timeout: 30)
+    }
+
     public func recentSessionIDs() throws -> [String] {
         let clientID = try client.target.clientID ?? client.resolveClient().id
         return history.withVisits { visits in

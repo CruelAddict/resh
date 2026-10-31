@@ -20,9 +20,5 @@ public enum PanelLayout {
 }
 
 public enum PanelShortcut: Equatable, Sendable {
-    case scope(SearchScope), move(Int), open, openResult(Int), create, pin, dismiss, delete, ignore, nextSource, previousSource
-    public static let launcherKeyCode: UInt16 = 1
-    public static func launcherIsEnabled(frontmostBundleID: String?) -> Bool {
-        frontmostBundleID == "com.superlogical.rex"
-    }
+    case scope(SearchScope), move(Int), open, openResult(Int), create, pin, dismiss, delete, last, nextSource, previousSource
 }

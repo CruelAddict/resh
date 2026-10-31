@@ -25,7 +25,7 @@ final class SessionStore {
     init(tools: Tools, service: ReshService) {
         self.tools = tools; self.service = service
         self.target = RexTarget(server: service.target.server)
-        connection = RexEventConnection(tools: tools, kind: .catalog)
+        connection = RexEventConnection(tools: tools, kind: .catalog, includesKeymap: true)
     }
 
     func start() {

@@ -21,6 +21,9 @@ final class SearchModel: ObservableObject {
     private var currentSessionID: String?
     private(set) var animatedSessionID: String?
     let configuration: ReshConfiguration
+    @Published private(set) var keymap = Keymap.defaults
+    @Published var keyModes = ["resh"]
+    private(set) var isKeymapReady = false
     @Published private(set) var visibleSources = ReshConfiguration.defaults.visibleSources
     let configurationURL: URL
     let configurationError: String?
@@ -40,6 +43,7 @@ final class SearchModel: ObservableObject {
     private var remoteRequest = UUID()
     private var rexAppPID: Int32?
     let catalog: SessionStore
+    private(set) var keymapError: String?
     private var focusTimer: Timer?
     private var observedFocus: [String: String] = [:]
     private var pendingCreation: (name: String, sessionID: String, host: RexHost?)?
@@ -53,6 +57,7 @@ final class SearchModel: ObservableObject {
     private(set) var service: ReshService
     let tools: Tools
     var loadingTask: Task<Void, Never>?
+    private(set) var actionTask: Task<Void, Never>?
     private(set) var attentionTask: Task<Void, Never>?
     private var themeTask: Task<Void, Never>?
     private var themeTaskID: UUID?
@@ -166,6 +171,7 @@ final class SearchModel: ObservableObject {
         for task in remoteTasks.values { task.cancel() }
         remoteTasks = [:]
         loadingTask?.cancel(); loadingTask = nil
+        actionTask?.cancel(); actionTask = nil
         attentionTask?.cancel(); attentionTask = nil
         themeTask?.cancel(); themeTask = nil; themeTaskID = nil
         isLoading = false
@@ -190,7 +196,7 @@ final class SearchModel: ObservableObject {
     func beginOpening() {
         isOpening = true
         isLoading = true
-        error = configurationError
+        error = configurationError ?? keymapError
     }
 
     func prepare(service: ReshService, sessions: [RexSession], recentSessionIDs: [String] = [], rexAppPID: Int32? = nil,
@@ -213,7 +219,7 @@ final class SearchModel: ObservableObject {
 
     func failOpening(_ error: Error, retry: @escaping () -> Void) {
         isOpening = false; isLoading = false
-        self.error = configurationError ?? error.localizedDescription
+        self.error = configurationError ?? keymapError ?? error.localizedDescription
         onRetryOpening = retry
     }
 
@@ -222,7 +228,7 @@ final class SearchModel: ObservableObject {
         query = ""; scope = configuration.initialSource; selection = 0
         isOpening = false; isConnecting = false
         isLoading = loadingTask != nil
-        error = configurationError
+        error = configurationError ?? keymapError
         onRetryOpening = nil
         showAvailableEntries()
     }
@@ -241,6 +247,9 @@ final class SearchModel: ObservableObject {
         sourceSnapshots = [:]
         rexAppPID = nil
         diagnostics = [:]
+        keymapError = nil
+        keymap = .defaults
+        isKeymapReady = false
         isOpening = false
         onRetryOpening = nil
         query = ""; scope = configuration.initialSource; selection = 0
@@ -545,7 +554,7 @@ final class SearchModel: ObservableObject {
         loadingTask?.cancel()
         if !keepingSnapshots { sourceSnapshots = [:]; hostSources = [:] }
         let request = generation
-        error = nil
+        error = keymapError
         showAvailableEntries()
         loadRemoteSources()
         if !refreshSessions, configuration.source(scope)?.kind == .sessions {
@@ -595,7 +604,7 @@ final class SearchModel: ObservableObject {
     func changeScope(_ scope: SearchScope) {
         guard isConfigurationReady, !isOpening, !isConnecting, self.scope != scope else { return }
         guard visibleSources.contains(where: { $0.id == scope }) else { return }
-        self.scope = scope; selection = 0; error = configurationError
+        self.scope = scope; selection = 0; error = configurationError ?? keymapError
         load()
     }
     func cycleSource(_ delta: Int) {
@@ -676,6 +685,27 @@ final class SearchModel: ObservableObject {
             }
         }
     }
+    func performRexAction(_ invocation: KeyInvocation) {
+        guard isConfigurationReady, !isOpening else { return }
+        let previous = actionTask, request = generation, service = service, sessionID = currentSessionID
+        actionTask = Task {
+            await previous?.value
+            guard generation == request, !Task.isCancelled else { return }
+            let source = "action:\(invocation.action)"
+            let message = "Couldn’t run Rex action ‘\(invocation.action)’."
+            do {
+                try await service.perform(invocation, sessionID: sessionID)
+                guard generation == request else { return }
+                reportDiagnostic(nil, source: source)
+                if error == message { error = configurationError ?? keymapError }
+            } catch {
+                guard generation == request, !Task.isCancelled else { return }
+                reportDiagnostic(error, source: source)
+                self.error = configurationError ?? keymapError ?? message
+            }
+        }
+    }
+
     func deleteSelection() {
         guard isConfigurationReady, !isOpening, !isConnecting, let selected, let sessionID = selected.sessionID else { return }
         isConnecting = true
@@ -690,6 +720,28 @@ final class SearchModel: ObservableObject {
                 reportDiagnostic(error, source: "close:\(selected.id)")
             }
             if generation == request { isConnecting = false }
+        }
+    }
+    func openPreviousSession() {
+        guard isConfigurationReady, !isOpening, !isConnecting else { return }
+        isConnecting = true
+        let service = service, current = currentSession, request = generation
+        let currentID = currentSessionID, candidates = sessionCandidates
+        Task {
+            defer { if generation == request { isConnecting = false } }
+            do {
+                var source = current
+                if source == nil, let currentID {
+                    source = try await Task.detached { try service.session(currentID, candidates: candidates) }.value
+                    guard generation == request else { return }
+                }
+                if try await service.connectLast(from: source) != nil {
+                    guard generation == request else { return }
+                    await catalog.refreshHistory().value
+                    guard generation == request else { return }
+                    onDismiss?(true)
+                }
+            } catch { reportDiagnostic(error, source: "last") }
         }
     }
     func refreshTheme() {
@@ -721,6 +773,16 @@ final class SearchModel: ObservableObject {
     func receive(_ result: Result<RexEventUpdate, Error>, host: RexHost? = nil) {
         let key = host.map { "attention:\($0.id)" } ?? "attention"
         switch result {
+        case let .success(.keymap(map)):
+            guard host == nil else { return }
+            keymap = map
+            isKeymapReady = true
+            validateKeymap()
+        case let .success(.keymapError(message)):
+            guard host == nil else { return }
+            keymapError = message
+            reportDiagnostic(ReshError(message), source: "keymap")
+            error = configurationError ?? keymapError
         case .success(.clients): watchFocus()
         case let .success(.destroyed(sessionID)):
             removeSession(sessionID, host: host)
@@ -744,6 +806,14 @@ final class SearchModel: ObservableObject {
             if let host { pendingHosts.remove(host.id); updateRemoteLoading() }
             reportDiagnostic(error, source: key)
         }
+    }
+
+    private func validateKeymap() {
+        let previousError = keymapError
+        let diagnostics = keymap.diagnostics(sources: Set(configuration.sources.map(\.id)))
+        keymapError = diagnostics.isEmpty ? nil : diagnostics.joined(separator: "\n")
+        if error == nil || error == previousError || keymapError != nil { error = configurationError ?? keymapError }
+        reportDiagnostic(keymapError.map { ReshError($0) }, source: "keymap")
     }
 
     func updateAttention(_ records: [RexAttentionRecord]) {

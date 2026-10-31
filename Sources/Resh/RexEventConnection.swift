@@ -16,6 +16,8 @@ enum RexEventUpdate: Sendable {
     case reconnecting
     case hostsChanged
     case capabilitiesChanged
+    case keymap(Keymap)
+    case keymapError(String)
 }
 
 /// Supported CLI event streams for the persistent catalog and visible-only activity.
@@ -30,13 +32,17 @@ final class RexEventConnection: @unchecked Sendable {
         let error: String?
         let heartbeat: Bool?
         let sessionID: String?
+        let keymap: RexKeymap?
+        let keymapError: String?
         private enum CodingKeys: String, CodingKey {
             case type, sessions, clients, records, error, heartbeat
             case sessionID = "session_id"
+            case keymap, keymapError = "keymap_error"
         }
     }
     private let tools: Tools
     private let kind: Kind
+    private let includesKeymap: Bool
     private let queue = DispatchQueue(label: "resh.events", qos: .utility)
     private let state = NSLock()
     private var requestedGeneration = 0
@@ -51,7 +57,9 @@ final class RexEventConnection: @unchecked Sendable {
     private var childPID: pid_t?
     var processID: pid_t? { state.lock(); defer { state.unlock() }; return childPID }
 
-    init(tools: Tools, kind: Kind = .attention) { self.tools = tools; self.kind = kind }
+    init(tools: Tools, kind: Kind = .attention, includesKeymap: Bool = false) {
+        self.tools = tools; self.kind = kind; self.includesKeymap = includesKeymap
+    }
 
     deinit {
         output?.readabilityHandler = nil
@@ -80,8 +88,12 @@ final class RexEventConnection: @unchecked Sendable {
             return
         }
         do {
-            let child = try RexProcess(executable: tools.rex,
-                arguments: ["--autostart=false", "--server", target.server, "do", script.path, "--all", "--fail-fast"])
+            var arguments = ["--autostart=false", "--server", target.server, "do", script.path, "--all", "--fail-fast"]
+            if includesKeymap {
+                let data = try JSONSerialization.data(withJSONObject: Keymap.request)
+                arguments.append("keymap=" + String(decoding: data, as: UTF8.self))
+            }
+            let child = try RexProcess(executable: tools.rex, arguments: arguments)
             process = child
             state.lock(); childPID = child.pid; state.unlock()
             guard isCurrent(request) else { closeConnection(); return }
@@ -166,6 +178,9 @@ final class RexEventConnection: @unchecked Sendable {
                     case "clients": onUpdate?(.success(.clients(update.clients ?? [])))
                     case "hosts": onUpdate?(.success(.hostsChanged))
                     case "capabilities": onUpdate?(.success(.capabilitiesChanged))
+                    case "keymap":
+                        if let keymap = update.keymap { onUpdate?(.success(.keymap(Keymap(keymap)))) }
+                        else { onUpdate?(.success(.keymapError(update.keymapError ?? "Rex returned no picker keymap."))) }
                     case nil: onUpdate?(.success(.records(update.records ?? [])))
                     default: break
                     }

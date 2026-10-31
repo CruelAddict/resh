@@ -22,6 +22,7 @@ final class PanelController: NSObject, NSWindowDelegate {
     private var picker: PanelView?
     private var rexAppPID: Int32?
     private var isDismissing = false
+    private var keyRuntime = KeymapRuntime()
 
     init(service: ReshService, tools: Tools, sessions: [RexSession] = [], configurationURL: URL? = nil,
          snapshotProvider: (any RexSnapshotProviding)? = nil,
@@ -51,6 +52,11 @@ final class PanelController: NSObject, NSWindowDelegate {
             self.updateRemoteConnections(hosts)
         }.store(in: &subscriptions)
         model.$theme.dropFirst().sink { [weak self] theme in self?.apply(theme: theme) }.store(in: &subscriptions)
+        model.$keymap.removeDuplicates().sink { [weak self] keymap in
+            guard let self else { return }
+            keyRuntime.reset(keymap: keymap)
+            model.keyModes = keyRuntime.modes
+        }.store(in: &subscriptions)
         Publishers.CombineLatest(model.$results, model.$error).dropFirst().sink { [weak self] entries, error in
             self?.resize(resultCount: entries.count, hasError: error != nil)
         }.store(in: &subscriptions)
@@ -132,6 +138,8 @@ final class PanelController: NSObject, NSWindowDelegate {
 
     private func display() {
         isDismissing = false
+        keyRuntime.reset()
+        if model.keyModes != keyRuntime.modes { model.keyModes = keyRuntime.modes }
         if let monitor { NSEvent.removeMonitor(monitor); self.monitor = nil }
         themeTimer?.invalidate()
         resize(resultCount: model.results.count, hasError: model.error != nil)
@@ -203,24 +211,34 @@ final class PanelController: NSObject, NSWindowDelegate {
 
     func handle(_ event: NSEvent) -> Bool {
         let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-        let keymap = model.configuration.keymap
-        guard let shortcut = keymap.action(for: KeyChord(code: event.keyCode,
-            command: modifiers.contains(.command), control: modifiers.contains(.control),
-            option: modifiers.contains(.option), shift: modifiers.contains(.shift))) else { return false }
+        let flags: UInt8 = (modifiers.contains(.command) ? 1 : 0) | (modifiers.contains(.control) ? 2 : 0)
+            | (modifiers.contains(.option) ? 4 : 0) | (modifiers.contains(.shift) ? 8 : 0)
+        let decision = keyRuntime.handle(code: event.keyCode, character: event.characters(byApplyingModifiers: []),
+            modifiers: flags, isRepeat: event.isARepeat)
+        if model.keyModes != keyRuntime.modes { model.keyModes = keyRuntime.modes }
+        switch decision {
+        case .passThrough: return false
+        case .consumed: return true
+        case let .action(shortcut): perform(shortcut)
+        case let .invoke(invocation): model.performRexAction(invocation)
+        }
+        return true
+    }
+
+    func perform(_ shortcut: PanelShortcut) {
         switch shortcut {
         case let .scope(scope): model.changeScope(scope)
         case let .move(delta): model.move(delta)
         case .open: model.openSelection()
         case let .openResult(number): model.openResult(number)
-        case .create: if !event.isARepeat { model.createSession() }
-        case .pin: if !event.isARepeat { model.togglePin() }
+        case .create: model.createSession()
+        case .pin: model.togglePin()
         case .dismiss: if !model.isConnecting { dismiss(focusRex: true) }
-        case .delete: if !event.isARepeat { model.deleteSelection() }
-        case .ignore: break
+        case .delete: model.deleteSelection()
+        case .last: model.openPreviousSession()
         case .nextSource: model.cycleSource(1)
         case .previousSource: model.cycleSource(-1)
         }
-        return true
     }
 
     private func resize(resultCount: Int, hasError: Bool) {
@@ -255,6 +273,7 @@ final class PanelController: NSObject, NSWindowDelegate {
     func dismiss(focusRex: Bool) {
         guard !isDismissing else { return }
         isDismissing = true
+        keyRuntime.reset()
         DebugLog.shared.record("Hiding panel (focusRex: \(focusRex))", source: "panel")
         onDismiss?()
         if let monitor { NSEvent.removeMonitor(monitor); self.monitor = nil }

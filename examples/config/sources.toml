@@ -7,7 +7,7 @@ source_order = ["Sessions", "All", "Projects", "Work", "Repositories", "Recent",
 initial_source = "All"
 
 [[sources]]
-# The name is both the view label and the key used by source_order, unions and shortcuts.
+# The name is both the view label and the key used by source_order, unions and resh_source.
 # Names must be nonempty and unique; spaces and Unicode are allowed.
 # References are case-sensitive. Update them when renaming a source.
 name = "Work"
@@ -46,6 +46,6 @@ sources = ["Sessions", "Projects", "Work", "Repositories", "Recent"]
 # command/cwd/format apply only to command; paths only to paths; sources only to union.
 # The default All includes sessions, projects and zoxide.
 
-[keymap]
-"ctrl+w" = "source:Work"
-"ctrl+r" = "source:Repositories"
+# Bind these sources in Rex's init.lua, after the resh integration:
+# rex.bind("resh/ctrl+[KeyW]", "resh_source", { name = "Work" })
+# rex.bind("resh/ctrl+[KeyR]", "resh_source", { name = "Repositories" })
