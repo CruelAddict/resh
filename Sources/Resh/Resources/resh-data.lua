@@ -1,5 +1,5 @@
--- Read-only, persistent CLI connection for the native panel. Every line requests
--- a NEW snapshot; there is no retained session list and no polling timer.
+-- Persistent supported CLI bridge. Requests are processed one at a time;
+-- snapshots are fresh and mutations are never replayed by the native client.
 local function reply(value)
   io.stdout:write(assert(rex.json.encode(value)), "\n")
   io.stdout:flush()
@@ -10,6 +10,11 @@ for line in io.lines() do
   local request, decode_err = rex.json.decode(line)
   local ok, result = pcall(function()
     if not request then error(decode_err, 0) end
+    if request.method then
+      local result, err = rex.call(request.method, request.args or {})
+      if err then error(err, 0) end
+      return { result = result }
+    end
     local clients, client_err = rex.call("client.list", { kinds = { "app" } })
     if not clients then error(client_err, 0) end
     local selected

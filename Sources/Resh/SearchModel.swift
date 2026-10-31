@@ -16,6 +16,8 @@ final class SearchModel: ObservableObject {
     @Published var theme: RexTheme
     @Published private(set) var results: [Candidate] = []
     @Published private(set) var attentionSessionIDs = Set<String>()
+    @Published private(set) var attentionAgentIDs = Set<String>()
+    @Published private(set) var workingAgentIDs = Set<String>()
     @Published private(set) var pinnedSessionIDs: [String] = []
     @Published private(set) var currentCandidateID: String?
     private var currentSessionID: String?
@@ -30,6 +32,7 @@ final class SearchModel: ObservableObject {
     var isConfigurationReady: Bool { configurationError == nil }
     private var search = FuzzyMatcher([])
     private var sessionSnapshot: [Candidate] = []
+    private var agentSnapshot: [Candidate] = []
     private var sessionRanks: [String: Int] = [:]
     private var sourceSnapshots: [SearchScope: [Candidate]] = [:]
     private var hostSessions: [String: [Candidate]] = [:]
@@ -142,6 +145,7 @@ final class SearchModel: ObservableObject {
         if isLoading || isRemoteLoading { return "Loading…" }
         if !isNewSessionHostResolved { return "Active session host unavailable" }
         if !query.isEmpty { return "No matches" }
+        if configuration.source(scope)?.kind == .agents { return "No agents" }
         return configuration.source(scope)?.kind == .sessions ? "No sessions" : "No folders or projects"
     }
 
@@ -240,7 +244,7 @@ final class SearchModel: ObservableObject {
         visibleSources = configuration.visibleSources
         pendingHosts = []
         hostAttentionRecords = [:]; isRemoteLoading = false
-        attentionRecords = []; attentionSessionIDs = []
+        attentionRecords = []; attentionSessionIDs = []; attentionAgentIDs = []; workingAgentIDs = []; agentSnapshot = []
         sessionSnapshot = []; sessionRanks = [:]; search = FuzzyMatcher([])
         pinnedSessionIDs = []; currentSessionID = nil; currentCandidateID = nil
         observedFocus = [:]; pendingCreation = nil
@@ -270,7 +274,10 @@ final class SearchModel: ObservableObject {
         let currentID = currentSession?.id
         if currentCandidateID != currentID { currentCandidateID = currentID }
         let updated: [Candidate]
-        if pinnedSessionIDs.isEmpty, currentID == nil {
+        if configuration.source(scope)?.kind == .agents {
+            let matching = Set(search.filter(query: query, limit: search.entries.count).map(\.id))
+            updated = Array(search.entries.filter { matching.contains($0.id) }.prefix(100))
+        } else if pinnedSessionIDs.isEmpty, currentID == nil {
             updated = search.filter(query: query)
         } else {
             let matching = search.filter(query: query, limit: search.entries.count)
@@ -316,6 +323,12 @@ final class SearchModel: ObservableObject {
             updateResults()
             return
         }
+        let agents = allSessions.flatMap { session in
+            RexAgent.panes(in: session.host.map { hostAttentionRecords[$0.id] ?? [] } ?? attentionRecords, session: session)
+        }
+        agentSnapshot = agents.map(\.candidate)
+        let working = Set(agents.filter(\.isWorking).map(\.candidate.id))
+        if workingAgentIDs != working { workingAgentIDs = working }
         var visible = configuration.visibleSources.filter {
             sourceIsAvailable($0.id, includeSessions: $0.id != .all || $0.kind != .union)
         }
@@ -326,7 +339,8 @@ final class SearchModel: ObservableObject {
         if visibleSources != visible { visibleSources = visible }
         if needsFallback, scope != .sessions, isConfigurationReady {
             scope = .sessions
-            load()
+            if isConnecting { refreshEntries() }
+            else { load() }
             return
         }
         let selectedID = selected?.id, previousSelection = selection
@@ -335,7 +349,7 @@ final class SearchModel: ObservableObject {
             for (source, entries) in hostSources[host.id] ?? [:] { snapshots[source, default: []] += entries }
         }
         let entries = SourceLoader(tools: tools).availableEntries(scope,
-            configuration: configuration, sessions: allSessions, snapshots: snapshots)
+            configuration: configuration, sessions: allSessions, snapshots: snapshots, agents: agentSnapshot)
         if entries != search.entries {
             DebugLog.shared.record("\(scope.rawValue): \(entries.count) entries from \(hosts.count + 1) hosts", source: "results")
             search = FuzzyMatcher(entries, reusing: search)
@@ -354,6 +368,7 @@ final class SearchModel: ObservableObject {
         }
         switch source.kind {
         case .sessions: return includeSessions
+        case .agents: return !agentSnapshot.isEmpty
         case .projects: return !configuration.projects.isEmpty
         case .paths: return !source.paths.isEmpty
         case .command: return true
@@ -557,7 +572,7 @@ final class SearchModel: ObservableObject {
         error = keymapError
         showAvailableEntries()
         loadRemoteSources()
-        if !refreshSessions, configuration.source(scope)?.kind == .sessions {
+        if !refreshSessions, let kind = configuration.source(scope)?.kind, kind == .sessions || kind == .agents {
             isLoading = false; loadingTask = nil
             return
         }
@@ -583,10 +598,10 @@ final class SearchModel: ObservableObject {
                     }
                     showAvailableEntries()
                 }
-                let loader = SourceLoader(tools: tools), sessions = sessionSnapshot
+                let loader = SourceLoader(tools: tools), sessions = sessionSnapshot, agents = agentSnapshot
                 let source = scope, configuration = configuration
                 let worker = Task.detached {
-                    let result = try loader.load(source, configuration: configuration, sessions: sessions)
+                    let result = try loader.load(source, configuration: configuration, sessions: sessions, agents: agents)
                     return (FuzzyMatcher(result.entries), result)
                 }
                 let result = try await withTaskCancellationHandler(operation: { try await worker.value }, onCancel: { worker.cancel() })
@@ -632,8 +647,7 @@ final class SearchModel: ObservableObject {
                 }
                 try await service.connect(candidate, from: source)
                 guard generation == request else { return }
-                await catalog.refreshHistory().value
-                guard generation == request else { return }
+                catalog.refreshHistory()
                 onDismiss?(true)
             } catch {
                 guard generation == request else { return }
@@ -673,8 +687,7 @@ final class SearchModel: ObservableObject {
                 try await service.connect(Candidate(id: Candidate.identity(sessionID, host: host), kind: .session,
                     title: name, sessionID: sessionID, host: host), from: current)
                 guard generation == request else { return }
-                await catalog.refreshHistory().value
-                guard generation == request else { return }
+                catalog.refreshHistory()
                 pendingCreation = nil
                 onDismiss?(true)
             } catch {
@@ -707,7 +720,8 @@ final class SearchModel: ObservableObject {
     }
 
     func deleteSelection() {
-        guard isConfigurationReady, !isOpening, !isConnecting, let selected, let sessionID = selected.sessionID else { return }
+        guard isConfigurationReady, !isOpening, !isConnecting, let selected, selected.kind == .session,
+              let sessionID = selected.sessionID else { return }
         isConnecting = true
         let request = generation, service = service
         Task {
@@ -737,8 +751,7 @@ final class SearchModel: ObservableObject {
                 }
                 if try await service.connectLast(from: source) != nil {
                     guard generation == request else { return }
-                    await catalog.refreshHistory().value
-                    guard generation == request else { return }
+                    catalog.refreshHistory()
                     onDismiss?(true)
                 }
             } catch { reportDiagnostic(error, source: "last") }
@@ -795,7 +808,7 @@ final class SearchModel: ObservableObject {
             else { discoverHosts() }
         case let .success(.records(records)):
             reportDiagnostic(nil, source: key)
-            if let host { hostAttentionRecords[host.id] = records; refreshAttention() }
+            if let host { hostAttentionRecords[host.id] = records; refreshEntries(); refreshAttention() }
             else { updateAttention(records) }
         case let .success(.sessions(sessions)):
             if let host { pendingHosts.remove(host.id); updateRemoteLoading() }
@@ -819,6 +832,7 @@ final class SearchModel: ObservableObject {
     func updateAttention(_ records: [RexAttentionRecord]) {
         reportDiagnostic(nil, source: "attention")
         attentionRecords = records
+        refreshEntries()
         refreshAttention()
     }
 
@@ -827,7 +841,7 @@ final class SearchModel: ObservableObject {
         let records = attentionRecords, remoteRecords = hostAttentionRecords, hosts = hosts
         let request = generation, preferences = readPreferences
         guard !records.isEmpty || remoteRecords.values.contains(where: { !$0.isEmpty }) else {
-            attentionSessionIDs = []; attentionTask = nil
+            attentionSessionIDs = []; attentionAgentIDs = []; attentionTask = nil
             reportDiagnostic(nil, source: "receipts")
             return
         }
@@ -835,19 +849,24 @@ final class SearchModel: ObservableObject {
             do {
                 let unseen = try await Task.detached {
                     let ledger = preferences()
-                    var unseen = try RexAttention.unseenSessionIDs(in: records, preferences: ledger)
+                    let local = try RexAttention.unseenRecords(in: records, preferences: ledger)
+                    var sessions = Set(local.map(\.sessionID))
+                    var agents = Set(local.map { RexAgent.identity(sessionID: $0.sessionID, blockID: $0.blockID) })
                     for host in hosts {
-                        let ids = try RexAttention.unseenSessionIDs(in: remoteRecords[host.id] ?? [], preferences: ledger)
-                        unseen.formUnion(ids.map { Candidate.identity($0, host: host) })
+                        let unseen = try RexAttention.unseenRecords(in: remoteRecords[host.id] ?? [], preferences: ledger)
+                        sessions.formUnion(unseen.map { Candidate.identity($0.sessionID, host: host) })
+                        agents.formUnion(unseen.map { RexAgent.identity(sessionID: $0.sessionID, blockID: $0.blockID, host: host) })
                     }
-                    return unseen
+                    return (sessions, agents)
                 }.value
                 guard !Task.isCancelled, generation == request else { return }
-                if attentionSessionIDs != unseen { attentionSessionIDs = unseen }
+                if attentionSessionIDs != unseen.0 { attentionSessionIDs = unseen.0 }
+                if attentionAgentIDs != unseen.1 { attentionAgentIDs = unseen.1 }
                 reportDiagnostic(nil, source: "receipts")
             } catch {
                 guard !Task.isCancelled, generation == request else { return }
                 attentionSessionIDs = []
+                attentionAgentIDs = []
                 reportDiagnostic(error, source: "receipts")
             }
         }

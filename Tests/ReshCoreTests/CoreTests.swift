@@ -76,6 +76,19 @@ struct FuzzyTests {
         #expect(entry.displayTitle == "~/work/api")
         #expect(entry.searchText == "~/work/api This Mac")
     }
+    @Test func agentTitlesAndContext() {
+        let host = RexHost(id: "build", label: "Build", endpoints: ["https://build.example"])
+        let session = Candidate(id: "work", kind: .session, title: "Work", sessionID: "work", host: host)
+        let records = [("parser", "opencode", "Fix parser"), ("notes", "codex", "Release notes"),
+            ("integration", "new-agent", "OpenCode integration")].map { block, app, title in
+            RexAttentionRecord(sessionID: "work", blockID: block, state: "idle",
+                updatedAt: "2026-10-31T12:00:00Z", app: app, title: title)
+        }
+        let search = FuzzyMatcher(RexAgent.panes(in: records, session: session).map(\.candidate))
+        #expect(search.filter(query: "code").map(\.blockID) == ["integration"])
+        #expect(search.filter(query: "parser").map(\.blockID) == ["parser"])
+        #expect(search.filter(query: "work build").count == 3)
+    }
     @Test func hostNamesDisambiguateSessionsAndRemotePathsStayRemote() {
         let host = RexHost(id: "host:build", label: "Build", endpoints: ["https://build.example"])
         let local = Candidate(id: "local", kind: .session, title: "api", sessionID: "local")
@@ -305,6 +318,27 @@ struct ServiceTests {
         _ = try await service.delete(sessionID: first, host: host)
         #expect(runner.serverSessions[host.server]?.isEmpty == true)
         #expect(runner.sessions.map(\.id) == ["session:local"])
+    }
+
+    @Test(arguments: [false, true])
+    func agentNavigationTargetsThePane(_ remote: Bool) async throws {
+        let temporary = try TemporaryDirectory(), runner = FakeRunner()
+        let host = remote ? RexHost(id: "host:build", label: "build", endpoints: ["https://build.example"]) : nil
+        let service = service(runner, temporary)
+        let candidate = Candidate(id: RexAgent.identity(sessionID: "work", blockID: "pane", host: host),
+            kind: .agent, title: "Work / OC | Task", sessionID: "work", host: host, blockID: "pane", windowID: "tab")
+        #expect(try await service.connect(candidate, from: session("previous")) == "work")
+        #expect(runner.selections == ["work"] && runner.selectionServers == ["test"])
+        let selection = try #require(runner.calls.first { $0.1.contains("session.select") }?.1)
+        let argsIndex = try #require(selection.firstIndex(of: "--args"))
+        let args = try JSONDecoder().decode([String: String].self, from: Data(selection[argsIndex + 1].utf8))
+        #expect(args == ["session_id": "work", "window_id": "tab"])
+        let focus = try #require(runner.calls.first { $0.1.contains("session.focus_block") }?.1)
+        let serverIndex = try #require(focus.firstIndex(of: "--server"))
+        #expect(focus[serverIndex + 1] == (host?.server ?? "test"))
+        #expect(try JSONDecoder().decode([String: String].self, from: Data(focus.last!.utf8))
+            == ["session_id": "work", "block_id": "pane"])
+        #expect(try await service.recentSessionIDs() == [Candidate.identity("work", host: host), "previous"])
     }
 
     private func directory(_ path: String) -> Candidate {

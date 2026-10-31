@@ -30,3 +30,41 @@ final class SnapshotStub: RexSnapshotProviding, @unchecked Sendable {
         return try responses.removeFirst().get()
     }
 }
+
+final class RexBridgeStub {
+    let directory: URL
+    let tools: Tools
+
+    init() throws {
+        directory = FileManager.default.temporaryDirectory.appendingPathComponent("resh-bridge-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let executable = directory.appendingPathComponent("rex")
+        tools = Tools(rex: executable.path, zoxide: nil, fd: nil, rexApp: "/not/Rex.app")
+        try #"""
+        #!/usr/bin/python3 -u
+        import json, sys
+        attached = False
+        def reply(value):
+            print(json.dumps(value), flush=True)
+        reply({'ready': True})
+        for line in sys.stdin:
+            request = json.loads(line)
+            method, args = request.get('method'), request.get('args', {})
+            if method == 'session.attach_all':
+                attached = True
+                reply({'result': {'sessions': []}})
+            elif method == 'client.perform':
+                reply({'result': {'performed_by': args['client_id']}})
+            elif method == 'session.focus_block':
+                if attached:
+                    reply({'result': {'revision': 1}})
+                else:
+                    reply({'error': 'stream is not attached to session ' + args['session_id']})
+            else:
+                reply({'error': 'Unexpected method: ' + str(method)})
+        """#.write(to: executable, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: executable.path)
+    }
+
+    deinit { try? FileManager.default.removeItem(at: directory) }
+}

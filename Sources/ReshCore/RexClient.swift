@@ -17,16 +17,25 @@ public struct RexSession: Codable, Sendable {
     enum CodingKeys: String, CodingKey { case sessionID = "session_id", label }
 }
 
+public protocol RexAPICalling: Sendable {
+    func call(_ method: String, arguments: Data, server: String, timeout: TimeInterval) throws -> Data
+}
+
 public struct RexClient: Sendable {
     public let tools: Tools
     public let target: RexTarget
     public let runner: any CommandRunning
-    public init(tools: Tools, target: RexTarget, runner: any CommandRunning = SystemCommandRunner()) {
-        self.tools = tools; self.target = target; self.runner = runner
+    public let apiCaller: (any RexAPICalling)?
+    public init(tools: Tools, target: RexTarget, runner: any CommandRunning = SystemCommandRunner(), apiCaller: (any RexAPICalling)? = nil) {
+        self.tools = tools; self.target = target; self.runner = runner; self.apiCaller = apiCaller
+    }
+
+    public func at(_ target: RexTarget) -> RexClient {
+        RexClient(tools: tools, target: target, runner: runner, apiCaller: apiCaller)
     }
 
     public func at(_ host: RexHost) -> RexClient {
-        RexClient(tools: tools, target: RexTarget(server: host.server), runner: runner)
+        at(RexTarget(server: host.server))
     }
 
     public func command(_ arguments: [String], timeout: TimeInterval = 5) throws -> Data {
@@ -57,16 +66,29 @@ public struct RexClient: Sendable {
         return nil
     }
     public func api(_ method: String, _ arguments: [String: Any]) throws -> Data {
-        let json = String(decoding: try JSONSerialization.data(withJSONObject: arguments), as: UTF8.self)
+        let data = try JSONSerialization.data(withJSONObject: arguments)
+        if let apiCaller {
+            let started = ProcessInfo.processInfo.systemUptime
+            defer { DebugLog.shared.record("\(method): \((ProcessInfo.processInfo.systemUptime - started) * 1000) ms", source: "rex:\(target.server)") }
+            do { return try apiCaller.call(method, arguments: data, server: target.server, timeout: 5) }
+            catch {
+                let message = error.localizedDescription
+                throw ReshError(message, userMessage: Self.userMessage(for: message, operation: "api call " + method)
+                    ?? (error as? ReshError)?.userMessage)
+            }
+        }
+        let json = String(decoding: data, as: UTF8.self)
         return try command(["api", "call", method, json])
     }
     public func sessions(timeout: TimeInterval = 5) throws -> [RexSession] {
-        let reply = try JSONDecoder().decode([String: [RexSession]?].self, from: command(["ls", "--json"], timeout: timeout))
+        let data = try apiCaller?.call("session.list", arguments: Data("{}".utf8), server: target.server, timeout: timeout)
+            ?? command(["ls", "--json"], timeout: timeout)
+        let reply = try JSONDecoder().decode([String: [RexSession]?].self, from: data)
         guard let sessions = reply["sessions"] else { throw ReshError("Rex returned an invalid session list.") }
         return sessions ?? []
     }
     public func resolveClient() throws -> (id: String, rexAppPID: Int32?) {
-        let data = try command(["client", "list", "--json"])
+        let data = try apiCaller == nil ? command(["client", "list", "--json"]) : api("client.list", [:])
         let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
         let clients = (json?["clients"] as? [[String: Any]] ?? []).filter {
             let info = $0["info"] as? [String: Any]
@@ -80,8 +102,20 @@ public struct RexClient: Sendable {
         }
         return (id, (selected["principal"] as? [String: Any])?["pid"] as? Int32)
     }
-    public func select(_ sessionID: String, clientID: String) throws {
-        let arguments = String(decoding: try JSONSerialization.data(withJSONObject: ["session_id": sessionID]), as: UTF8.self)
+    public func select(_ sessionID: String, clientID: String, windowID: String? = nil) throws {
+        var values = ["session_id": sessionID]
+        if let windowID { values["window_id"] = windowID }
+        if apiCaller != nil {
+            do {
+                _ = try api("client.perform", ["client_id": clientID, "action": "session.select", "args": values, "timeout_ms": 5000])
+            } catch {
+                let message = error.localizedDescription
+                throw ReshError(message, userMessage: Self.userMessage(for: message, operation: "do session.select")
+                    ?? (error as? ReshError)?.userMessage)
+            }
+            return
+        }
+        let arguments = String(decoding: try JSONSerialization.data(withJSONObject: values), as: UTF8.self)
         _ = try command(["-C", clientID, "do", "session.select", "--args", arguments, "--json"])
     }
 }

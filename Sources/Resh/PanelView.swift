@@ -38,6 +38,8 @@ private final class AttentionIndicatorView: NSView {
 @MainActor
 final class SessionCellView: NSTableCellView {
     private let attention = AttentionIndicatorView()
+    private let working = NSProgressIndicator()
+    let agentIcon = NSImageView()
     let hostLabel = NSTextField(labelWithString: "")
     let pin = NSImageView()
     let shortcutLabel = NSTextField(labelWithString: "")
@@ -55,9 +57,20 @@ final class SessionCellView: NSTableCellView {
         label.lineBreakMode = .byTruncatingMiddle
         textField = label
         addSubview(label)
+        agentIcon.imageScaling = .scaleProportionallyUpOrDown
+        agentIcon.setAccessibilityElement(false)
+        agentIcon.isHidden = true
+        addSubview(agentIcon)
         attention.setAccessibilityElement(false)
         attention.isHidden = true
         addSubview(attention)
+        working.style = .spinning
+        working.controlSize = .mini
+        working.isIndeterminate = true
+        working.isDisplayedWhenStopped = false
+        working.isHidden = true
+        working.setAccessibilityElement(false)
+        addSubview(working)
         pin.image = NSImage(systemSymbolName: "pin.fill", accessibilityDescription: nil)
         pin.imageScaling = .scaleProportionallyUpOrDown
         pin.setAccessibilityElement(false)
@@ -86,7 +99,7 @@ final class SessionCellView: NSTableCellView {
     func configure(_ candidate: Candidate, needsAttention: Bool, color: NSColor, textColor: NSColor,
                    showHost: Bool = false, hostWidth: CGFloat = 0, isPinned: Bool = false,
                    isCurrent: Bool = false, shortcut: String = "", showsShortcut: Bool = true,
-                   pinHint: String = "", closeHint: String = "") {
+                   pinHint: String = "", closeHint: String = "", isWorking: Bool = false, agentImage: NSImage? = nil) {
         let pinned = candidate.kind == .session && isPinned
         if representedID != candidate.id {
             animatesPinChange = false
@@ -97,10 +110,21 @@ final class SessionCellView: NSTableCellView {
         }
         representedID = candidate.id
         self.isPinned = pinned
-        textField?.stringValue = candidate.displayTitle
+        let agent = candidate.kind == .agent ? candidate.agent : nil
+        textField?.stringValue = agent?.title ?? candidate.displayTitle
         textField?.textColor = textColor
-        attention.isHidden = candidate.kind != .session || !needsAttention
+        agentIcon.image = agentImage
+        agentIcon.isHidden = agent == nil
+        agentIcon.contentTintColor = textColor
+        agentIcon.toolTip = agent?.app
+        attention.isHidden = !needsAttention || (candidate.kind != .session && candidate.kind != .agent)
         attention.color = color
+        let spins = candidate.kind == .agent && isWorking && attention.isHidden
+        if spins != !working.isHidden {
+            working.isHidden = !spins
+            if spins { working.startAnimation(nil) }
+            else { working.stopAnimation(nil) }
+        }
         let hintColor = textColor.withAlphaComponent(0.55)
         pin.contentTintColor = hintColor
         shortcutLabel.stringValue = shortcut
@@ -113,15 +137,18 @@ final class SessionCellView: NSTableCellView {
             hint.isHidden = hint.stringValue.isEmpty
         }
         hostColumnWidth = hostWidth
-        hostLabel.stringValue = candidate.hostLabel
+        hostLabel.stringValue = agent.map { $0.sessionTitle + " | " + candidate.hostLabel } ?? candidate.hostLabel
         hostLabel.textColor = hintColor
-        hostLabel.isHidden = !showHost
-        toolTip = attention.isHidden ? nil : "Unread result or action required in this session"
-        setAccessibilityLabel("\(candidate.kind == .session ? "Session" : "Folder"), \(candidate.displayTitle)"
-            + (showHost ? ", \(candidate.hostLabel)" : "")
+        hostLabel.isHidden = !showHost && agent == nil
+        toolTip = !attention.isHidden ? "Unread result or action required in this \(candidate.kind == .agent ? "pane" : "session")"
+            : spins ? "Agent working" : nil
+        let accessibleTitle = agent.map { "\($0.sessionTitle), \($0.app), \($0.title)" } ?? candidate.displayTitle
+        setAccessibilityLabel("\(candidate.kind == .agent ? "Agent" : candidate.kind == .session ? "Session" : "Folder"), \(accessibleTitle)"
+            + (showHost || agent != nil ? ", \(candidate.hostLabel)" : "")
             + (pinned ? ", pinned" : "")
             + (isCurrent ? ", current session" : "")
-            + (attention.isHidden ? "" : ", unread activity"))
+            + (attention.isHidden ? "" : ", unread activity")
+            + (spins ? ", working" : ""))
         needsLayout = true
     }
 
@@ -129,7 +156,7 @@ final class SessionCellView: NSTableCellView {
         super.layout()
         guard let textField else { return }
         let hostWidth = hostLabel.isHidden ? 0 : min(bounds.width * 0.3,
-            hostColumnWidth > 0 ? hostColumnWidth : ceil(hostLabel.cell?.cellSize.width ?? 0))
+            max(hostColumnWidth, ceil(hostLabel.cell?.cellSize.width ?? 0)))
         // Smaller metadata text shares the title's baseline, not its frame origin.
         let titleBaselineOffset = textField.firstBaselineOffsetFromTop
         hostLabel.frame = NSRect(x: bounds.width - 8 - hostWidth,
@@ -145,14 +172,20 @@ final class SessionCellView: NSTableCellView {
                 y: 5 + hint.firstBaselineOffsetFromTop - titleBaselineOffset, width: width, height: 17)
             if width > 0 { trailing = hint.frame.minX - gap }
         }
-        let titleX: CGFloat = isPinned ? 26 : 8
-        let available = max(0, trailing - titleX - 14)
+        var titleX: CGFloat = isPinned ? 26 : 8
+        let titleEnd = trailing - (working.isHidden ? 14 : 18)
+        if !agentIcon.isHidden {
+            agentIcon.frame = NSRect(x: titleX, y: 6, width: 14, height: 14)
+            titleX = agentIcon.frame.maxX + 6
+        }
+        let available = max(0, titleEnd - titleX)
         // NSTextField's intrinsic width omits NSTextFieldCell's horizontal
         // drawing insets. Using it clips even "resh" despite ample row space.
         let fitting = ceil(textField.cell?.cellSize.width ?? available)
         let width = min(available, fitting)
         let titleFrame = NSRect(x: titleX, y: 5, width: width, height: 17)
         let attentionFrame = NSRect(x: titleFrame.maxX + 5, y: 9, width: 9, height: 9)
+        working.frame = NSRect(x: titleFrame.maxX + 4, y: 7, width: 12, height: 12)
         if animatesPinChange {
             animatesPinChange = false
             NSAnimationContext.runAnimationGroup { context in
@@ -239,6 +272,7 @@ private final class NewSessionCellView: NSTableCellView {
 final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTextFieldDelegate {
     let searchField = NSTextField()
     private let model: SearchModel
+    private let agentIcons: RexAgentIcons
     private let searchBackground = NSView()
     private let createHintLabel = NSTextField(labelWithString: "")
     private let progress = NSProgressIndicator()
@@ -257,6 +291,8 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
     private var rows: [Candidate] = []
     private var showsNewSession = false
     private var attentionSessionIDs = Set<String>()
+    private var attentionAgentIDs = Set<String>()
+    private var workingAgentIDs = Set<String>()
     private var pinnedSessionIDs = Set<String>()
     private var currentCandidateID: String?
     private var modifiers: UInt8 = 0
@@ -274,6 +310,7 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
 
     init(model: SearchModel) {
         self.model = model; self.theme = model.theme
+        self.agentIcons = RexAgentIcons(rexApp: model.tools.rexApp)
         self.keymap = model.keymap
         super.init(frame: NSRect(x: 0, y: 0, width: PanelLayout.width, height: model.panelHeight))
         autoresizingMask = [.width, .height]
@@ -409,6 +446,14 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
             attentionSessionIDs = sessionIDs
             // Status updates must not reload search results or move the selection.
             refreshCells()
+        }.store(in: &subscriptions)
+        model.$attentionAgentIDs.sink { [weak self] ids in
+            self?.attentionAgentIDs = ids
+            self?.refreshCells()
+        }.store(in: &subscriptions)
+        model.$workingAgentIDs.sink { [weak self] ids in
+            self?.workingAgentIDs = ids
+            self?.refreshCells()
         }.store(in: &subscriptions)
         model.$pinnedSessionIDs.sink { [weak self] ids in
             guard let self else { return }
@@ -645,13 +690,14 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
             if !pinKey.isEmpty { pinHint = pinKey + (pinnedSessionIDs.contains(entry.id) ? "  Unpin" : "  Pin") }
             if !closeKey.isEmpty { closeHint = closeKey + "  Close" }
         }
-        cell.configure(entry, needsAttention: attentionSessionIDs.contains(entry.id),
+        cell.configure(entry, needsAttention: (entry.kind == .agent ? attentionAgentIDs : attentionSessionIDs).contains(entry.id),
             color: theme.attentionColor.nsColor, textColor: selected ? .white : theme.foreground.nsColor,
             showHost: showsHosts, hostWidth: hostColumnWidth, isPinned: pinnedSessionIDs.contains(entry.id),
             isCurrent: entry.id == currentCandidateID,
             shortcut: number.map { keymap.label(for: .openResult($0), modifiers: modifiers & 7 == 0 ? nil : modifiers, modes: keyModes) } ?? "",
             showsShortcut: shortcutsVisible,
-            pinHint: pinHint, closeHint: closeHint)
+            pinHint: pinHint, closeHint: closeHint, isWorking: workingAgentIDs.contains(entry.id),
+            agentImage: entry.agent.flatMap { agentIcons.image(for: $0.app) })
     }
 
     func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {

@@ -13,14 +13,15 @@ end
 local function publish()
   local records = {}
   for session_id, blocks in pairs(sessions) do
-    for block_id, statuses in pairs(blocks) do
-      for _, record in ipairs(statuses) do
-        -- Rex can retain a completion announcement for an idle agent. Swift
-        -- matches it against Rex's own ledger; plain idle still shows no dot.
-        if record.state == "done" or record.state == "blocked" or record.state == "error" or record.state == "idle" then
-          table.insert(records, { session_id = session_id, block_id = block_id,
-            record_id = record.id, state = record.state, updated_at = record.updated_at })
-        end
+    for block_id, block in pairs(blocks) do
+      for _, record in ipairs(block.records) do
+        -- Keep working/idle programs for Agents. Swift derives unread dots from
+        -- these same records using Rex's own read receipts.
+        table.insert(records, { session_id = session_id, block_id = block_id,
+          record_id = record.id, state = record.state, updated_at = record.updated_at,
+          app = record.effective_app or record.app, title = record.title,
+          terminal_title = block.title, window_id = block.window_id,
+          window_index = block.window_index, pane_index = block.pane_index })
       end
     end
   end
@@ -48,15 +49,41 @@ local function statuses(session_id, block_id)
 end
 
 local function scan(session_id)
-  local listed, err = rex.call("session.list_blocks", { session_id = session_id })
+  local listed, err = rex.call("session.view", { session_id = session_id })
   if not listed then
     if tostring(err):find("session_not_found", 1, true) then sessions[session_id] = nil; return end
     fail(err)
   end
-  local blocks = {}
-  for _, block in ipairs(listed.blocks or {}) do
-    if block.creator_name == terminal and block.placement == "placed" and block.block_id then
-      blocks[block.block_id] = statuses(session_id, block.block_id)
+  local blocks, previous_blocks = {}, sessions[session_id] or {}
+  for window_index, window in ipairs(listed.windows or {}) do
+    local pane_index = 0
+    for _, layer in ipairs(window.layers or {}) do
+      local metadata = {}
+      for _, block in ipairs(layer.blocks or {}) do metadata[block.block_id] = block end
+      local function visit(node)
+        if not node then return end
+        if node.split then visit(node.split.before); visit(node.split.after); return end
+        if not node.block_id then return end
+        pane_index = pane_index + 1
+        local block = metadata[node.block_id]
+        if not block or block.creator_name ~= terminal then return end
+        local entry = previous_blocks[block.block_id]
+        if not entry then
+          entry = { records = statuses(session_id, block.block_id) }
+          if #entry.records > 0 then
+            local result, err = rex.call(terminal .. ".title", {
+              session_id = session_id, block_id = block.block_id, args = {},
+            })
+            if not result then fail(err) end
+            entry.title = result.title
+          end
+        end
+        entry.window_id = window.window_id
+        entry.window_index = window_index
+        entry.pane_index = pane_index
+        blocks[block.block_id] = entry
+      end
+      visit(layer.layout)
     end
   end
   sessions[session_id] = blocks
@@ -65,7 +92,15 @@ end
 local function status_changed(ctx, ev)
   local blocks = sessions[ctx.session_id]
   if blocks and blocks[ev.block_id] then
-    blocks[ev.block_id] = statuses(ctx.session_id, ev.block_id)
+    local block = blocks[ev.block_id]
+    block.records = statuses(ctx.session_id, ev.block_id)
+    if not block.title and #block.records > 0 then
+      local result, err = rex.call(terminal .. ".title", {
+        session_id = ctx.session_id, block_id = ev.block_id, args = {},
+      })
+      if not result then fail(err) end
+      block.title = result.title
+    end
   else
     scan(ctx.session_id)
   end
@@ -74,6 +109,13 @@ end
 
 rex.on("terminal.program_status_changed", status_changed)
 rex.on("terminal.program_status_removed", status_changed)
+rex.on("terminal.title_changed", function(ctx, ev)
+  local blocks = sessions[ctx.session_id]
+  if blocks and blocks[ev.block_id] then
+    blocks[ev.block_id].title = ev.title
+    publish()
+  end
+end)
 rex.on("session_view_changed", function(ctx)
   scan(ctx.session_id)
   publish()

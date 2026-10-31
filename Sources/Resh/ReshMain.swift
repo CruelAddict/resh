@@ -79,9 +79,9 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
     private var isStopping = false
     private var isExecutingCommand = false
 
-    init(service: ReshService, tools: Tools, options: Options) {
+    init(service: ReshService, tools: Tools, options: Options, dataConnection: RexDataConnection) {
         self.service = service; self.tools = tools; self.options = options
-        dataConnection = RexDataConnection(tools: tools)
+        self.dataConnection = dataConnection
     }
     func applicationDidFinishLaunching(_ notification: Notification) {
         let cache = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Caches/resh")
@@ -112,6 +112,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let self, !self.isStopping else { return }
             if available {
                 self.controller?.model.startBackground()
+                self.dataConnection.prepare(server: self.controller?.model.service.target.server ?? self.service.target.server)
             } else {
                 self.dataConnection.stop()
                 self.openingID = nil
@@ -176,6 +177,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         let currentSessionID = request.currentSessionID ?? RexAppMonitor.focusedSessionID(rexAppPID: rexAppPID)
         controller.model.configure(target: target)
         controller.model.startBackground()
+        dataConnection.prepare(server: target.server)
         if let snapshot = controller.model.catalog.snapshot(clientID: target.clientID, rexAppPID: rexAppPID) {
             let selected = RexTarget(clientID: snapshot.client, server: target.server)
             let service = service.at(selected)
@@ -254,7 +256,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
                 let commands = LauncherCommands(service: service, configuration: controller.model.configuration,
                     sessions: sameServer ? controller.model.sessionCandidates : [])
                 let result = try await commands.run(command)
-                await controller.model.catalog.refreshHistory().value
+                controller.model.catalog.refreshHistory()
                 if result["session_id"] != nil, controller.panel.isVisible { controller.dismiss(focusRex: false) }
                 return result
             } catch {
@@ -332,7 +334,7 @@ struct ReshMain {
                 --debug: write diagnostics to ~/Library/Logs/resh/debug.log
 
                 ⌘S open/close resh in Rex · ⌘L previous session in Rex
-                ⌘E Sessions · ⌘A All · ⌘R Recent · ⌘F Find · ⌘P Projects
+                ⌘E Sessions · ⌘A Agents · ⌘R Recent · ⌘F Find · ⌘P Projects
                 ⌘1…9 open a result · ⌘⇧P pin/unpin a session (memory only)
                 ⌘⇧N create a session named after the search text
                 ↑/↓ or Ctrl+P/Ctrl+N navigate · Enter open · Esc or Ctrl+[ dismiss
@@ -396,13 +398,13 @@ struct ReshMain {
             }
             let tools = try Tools.discover()
             let target = RexTarget(clientID: options.client, server: options.server)
-            let client = RexClient(tools: tools, target: target)
+            let connection = RexDataConnection(tools: tools)
+            let client = RexClient(tools: tools, target: target, apiCaller: connection)
             let service = ReshService(client: client)
             if options.diagnose {
                 Task.detached {
                     do {
                         let app = try await service.resolveClient()
-                        let connection = RexDataConnection(tools: tools)
                         defer { connection.stop() }
                         let snapshot = try connection.snapshot(target: RexTarget(clientID: app.id, server: target.server))
                         let folders = try SourceLoader(tools: tools).load(.directories, configuration: .defaults, sessions: [])
@@ -420,7 +422,7 @@ struct ReshMain {
             }
             let app = NSApplication.shared
             app.setActivationPolicy(.accessory)
-            let delegate = AppDelegate(service: service, tools: tools, options: options)
+            let delegate = AppDelegate(service: service, tools: tools, options: options, dataConnection: connection)
             app.delegate = delegate
             withExtendedLifetime(delegate) { app.run() }
         } catch { report(error); exit(1) }

@@ -14,7 +14,7 @@ public actor ReshService {
     }
 
     public nonisolated func at(_ target: RexTarget) -> ReshService {
-        ReshService(client: RexClient(tools: client.tools, target: target, runner: client.runner), registry: registry, history: history)
+        ReshService(client: client.at(target), registry: registry, history: history)
     }
 
     public nonisolated var target: RexTarget { client.target }
@@ -102,7 +102,9 @@ public actor ReshService {
     @discardableResult
     public func connect(_ candidate: Candidate, from current: Candidate? = nil) throws -> String {
         try history.withVisits { visits in
-            let targetClient = try client.resolveClient().id
+            let targetClient: String
+            if candidate.sessionID != nil, let knownClient = client.target.clientID { targetClient = knownClient }
+            else { targetClient = try client.resolveClient().id }
             let sessionID = try open(candidate, clientID: targetClient)
             SessionHistory.record(sessionID, host: candidate.host, clientID: targetClient, server: client.target.server, from: current, visits: &visits)
             return sessionID
@@ -123,7 +125,10 @@ public actor ReshService {
 
     private func open(_ candidate: Candidate, clientID targetClient: String) throws -> String {
         if let sessionID = candidate.sessionID {
-            try client.select(sessionID, clientID: targetClient)
+            try client.select(sessionID, clientID: targetClient, windowID: candidate.windowID)
+            if let blockID = candidate.blockID {
+                _ = try (candidate.host.map(client.at) ?? client).api("session.focus_block", ["session_id": sessionID, "block_id": blockID])
+            }
             return sessionID
         }
         guard let rawPath = candidate.path else { throw ReshError("The selected folder has no path.") }
@@ -149,7 +154,7 @@ public actor ReshService {
     @discardableResult
     public func connectLast(from current: Candidate? = nil) throws -> String? {
         try history.withVisits { visits in
-            let clientID = try client.resolveClient().id
+            let clientID = try client.target.clientID ?? client.resolveClient().id
             let recent = visits.filter { $0.belongs(to: clientID, server: client.target.server) }
             let previous = recent.filter { visit in
                 if let current, let id = current.sessionID { return !visit.matches(id, host: current.host) }

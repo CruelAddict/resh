@@ -11,7 +11,7 @@ public struct ProjectDefinition: Equatable, Sendable {
 }
 
 public struct SourceDefinition: Identifiable, Equatable, Sendable {
-    public enum Kind: String, Decodable, Sendable { case sessions, union, zoxide, find, projects, paths, command }
+    public enum Kind: String, Decodable, Sendable { case sessions, agents, union, zoxide, find, projects, paths, command }
     public let name: String
     public var id: SearchScope { SearchScope(rawValue: name) }
     public let kind: Kind
@@ -57,6 +57,7 @@ public struct ReshConfiguration: Equatable, Sendable {
         }
         var sources: [SourceDefinition] = [
             .init(name: SearchScope.sessions.rawValue, kind: .sessions),
+            .init(name: SearchScope.agents.rawValue, kind: .agents),
             .init(name: SearchScope.all.rawValue, kind: .union, members: [.sessions, .configs, .directories]),
             .init(name: SearchScope.directories.rawValue, kind: .zoxide),
             .init(name: SearchScope.find.rawValue, kind: .find, timeout: 12),
@@ -96,7 +97,10 @@ public struct ReshConfiguration: Equatable, Sendable {
         }
         for source in sources { try validate(source.id, ancestors: []) }
         let visibleIDs = raw.source_order?.map { SearchScope(rawValue: $0) }
-            ?? sources.filter { $0.id != .configs || !projects.isEmpty || declared.contains(.configs) }.map(\.id)
+            ?? sources.filter {
+                if $0.id == .all { return declared.contains(.all) || raw.initial_source == $0.name }
+                return $0.id != .configs || !projects.isEmpty || declared.contains(.configs)
+            }.map(\.id)
         guard !visibleIDs.isEmpty, Set(visibleIDs).count == visibleIDs.count, Set(visibleIDs).isSubset(of: ids) else {
             throw ReshError("source_order must contain unique, existing source names and cannot be empty.")
         }

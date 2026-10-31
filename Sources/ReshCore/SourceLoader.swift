@@ -15,33 +15,35 @@ public struct SourceLoader: Sendable {
     }
     /// Already available rows can be displayed while filesystem providers run.
     public func availableEntries(_ id: SearchScope, configuration: ReshConfiguration, sessions: [Candidate],
-                                 snapshots: [SearchScope: [Candidate]] = [:]) -> [Candidate] {
+                                 snapshots: [SearchScope: [Candidate]] = [:], agents: [Candidate] = []) -> [Candidate] {
         guard let source = configuration.source(id) else { return [] }
         switch source.kind {
         case .sessions: return sessions
+        case .agents: return agents
         case .projects: return configuration.projects.map(\.candidate)
         case .union:
             var seen = Set<String>()
-            return source.members.flatMap { availableEntries($0, configuration: configuration, sessions: sessions, snapshots: snapshots) }
+            return source.members.flatMap { availableEntries($0, configuration: configuration, sessions: sessions, snapshots: snapshots, agents: agents) }
                 .filter { seen.insert($0.deduplicationID).inserted }
         default: return snapshots[id] ?? []
         }
     }
-    public func load(_ id: SearchScope, configuration: ReshConfiguration, sessions: [Candidate]) throws -> SourceResult {
-        var result = try loadSource(id, configuration: configuration, sessions: sessions)
+    public func load(_ id: SearchScope, configuration: ReshConfiguration, sessions: [Candidate], agents: [Candidate] = []) throws -> SourceResult {
+        var result = try loadSource(id, configuration: configuration, sessions: sessions, agents: agents)
         if configuration.source(id)?.kind != .union { result.snapshots[id] = result.entries }
         return result
     }
-    private func loadSource(_ id: SearchScope, configuration: ReshConfiguration, sessions: [Candidate]) throws -> SourceResult {
+    private func loadSource(_ id: SearchScope, configuration: ReshConfiguration, sessions: [Candidate], agents: [Candidate]) throws -> SourceResult {
         try Task.checkCancellation()
         guard let source = configuration.source(id) else { throw ReshError("Unknown source: \(id.rawValue)") }
         switch source.kind {
         case .sessions: return SourceResult(entries: sessions)
+        case .agents: return SourceResult(entries: agents)
         case .projects: return SourceResult(entries: configuration.projects.map(\.candidate))
         case .union:
             var result = SourceResult(), seen = Set<String>()
             for member in source.members {
-                let part = try load(member, configuration: configuration, sessions: sessions)
+                let part = try load(member, configuration: configuration, sessions: sessions, agents: agents)
                 result.warnings += part.warnings
                 result.snapshots.merge(part.snapshots) { _, latest in latest }
                 result.entries += part.entries.filter { seen.insert($0.deduplicationID).inserted }

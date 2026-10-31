@@ -10,6 +10,7 @@ Rex's stunning UI.
 - Configure projects with a session name, directory, and startup command (e.g. open
   an editor or start a dev server)
 - Switch between local and remote Rex sessions
+- Manage your agents across multiple machines
 - Add custom views populated by directory lists or commands
 - Customize keyboard shortcuts. Make them tmux-style if that's where you're
   coming from.
@@ -34,9 +35,12 @@ track the directories you visit.
 ## Using resh
 
 Press `⌘S` in Rex to open resh. Choose the `Sessions` view to switch to an open
-session, `Recent` to find a directory you've visited, `Find` to discover another
-directory, or `Projects` to open a configured project. Selecting a directory creates
-a session there, or returns to the one you opened through resh before.
+session, `Recent` to find a directory you've visited, or `Find` to discover
+another directory. Selecting a directory creates a session there, or returns to
+the one you opened through resh before.
+
+If you have a harness open in one of your sessions, the `Agents` view appears so
+you can use it for status monitoring and navigation.
 
 ### Default shortcuts
 
@@ -47,8 +51,8 @@ a session there, or returns to the one you opened through resh before.
 | `⌘E` | `Sessions` — switch to an open session |
 | `⌘R` | `Recent` — open a `zoxide` directory as a session |
 | `⌘F` | `Find` — search directories under your home folder with `fd` |
-| `⌘P` | `Projects` — open a configured project |
-| `⌘A` | `All` — sessions, configured projects, and recently visited directories |
+| `⌘P` | `Projects` — open a configured project (the view is visible if you have at least one configured) |
+| `⌘A` | `Agents` — agent panes across all sessions, when available |
 | `⌘1–9` | Open by number |
 | `⌘⇧P` | Pin or unpin the selected session |
 | `⌘⇧N` | Create a session named after the search text |

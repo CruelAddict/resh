@@ -8,8 +8,8 @@ struct ConfigurationTests {
 
     @Test func defaultSources() throws {
         let config = ReshConfiguration.defaults
-        #expect(config.visibleSources.map(\.id) == [.sessions, .all, .directories, .find])
-        #expect(config.visibleSources.map(\.name) == ["Sessions", "All", "Recent", "Find"])
+        #expect(config.visibleSources.map(\.id) == [.sessions, .agents, .directories, .find])
+        #expect(config.visibleSources.map(\.name) == ["Sessions", "Agents", "Recent", "Find"])
         #expect(config.projects.isEmpty)
     }
     @Test func configurationExamples() throws {
@@ -94,6 +94,7 @@ struct ConfigurationTests {
         let map = Keymap.defaults
         var input = KeymapRuntime(keymap: map)
         #expect(input.handle(code: 14, character: "у", modifiers: 1) == .action(.scope(.sessions)))
+        #expect(input.handle(code: 0, character: "ф", modifiers: 1) == .action(.scope(.agents)))
         #expect(input.handle(code: 14, character: "e", modifiers: 9) == .passThrough)
         #expect(input.handle(code: 48, character: nil, modifiers: 0) == .action(.nextSource))
         #expect(input.handle(code: 48, character: nil, modifiers: 8) == .action(.previousSource))
