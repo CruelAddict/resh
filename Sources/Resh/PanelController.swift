@@ -94,10 +94,12 @@ final class PanelController: NSObject, NSWindowDelegate {
 
     func prepare(service: ReshService, snapshot: RexSnapshot, recentSessionIDs: [String] = [], currentSessionID: String? = nil) {
         let pendingQuery = model.isOpening ? model.query : nil
+        let previousPID = rexAppPID
         rexAppPID = snapshot.rexAppPID
         model.prepare(service: service, sessions: snapshot.sessions, recentSessionIDs: recentSessionIDs,
             rexAppPID: snapshot.rexAppPID, currentSessionID: currentSessionID)
         if let pendingQuery { model.query = pendingQuery }
+        if panel.isVisible, positioningTask == nil, rexAppPID != previousPID { updatePosition() }
     }
 
     func presentLoading() {

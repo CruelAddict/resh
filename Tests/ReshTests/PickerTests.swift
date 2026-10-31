@@ -276,19 +276,19 @@ extension PickerTests {
         #expect(controller.panel.isVisible)
     }
 
-    @Test(arguments: ["unchanged", "moved", "disconnected"])
-    @MainActor func launcherUpdatesDisplayWithoutInterruptingInput(_ change: String) async throws {
+    @Test(arguments: [("unchanged", false), ("moved", false), ("disconnected", false), ("moved", true)])
+    @MainActor func launcherUpdatesDisplayWithoutInterruptingInput(_ change: String, resolveClient: Bool) async throws {
         _ = NSApplication.shared
         let primary = ScreenStub(1, frame: CGRect(x: 0, y: 0, width: 1440, height: 900))
         let secondary = ScreenStub(2, frame: CGRect(x: 1440, y: 0, width: 1920, height: 1080))
         var screens = [primary, secondary]
-        let frames = WindowFrameStub([
-            CGRect(x: 100, y: 100, width: 800, height: 600),
-            CGRect(x: change == "unchanged" ? 100 : 1600, y: 100, width: 800, height: 600),
-        ])
+        let frames = WindowFrameStub([CGRect(x: 100, y: 100, width: 800, height: 600)]
+            + (resolveClient ? [nil] : [])
+            + [CGRect(x: change == "unchanged" ? 100 : 1600, y: 100, width: 800, height: 600)])
         let tools = Tools(rex: "/not/rex", zoxide: nil, fd: nil, rexApp: "/not/Rex.app")
         let service = ReshService(client: RexClient(tools: tools, target: RexTarget(clientID: "client:test")), stateURL: nil)
-        let controller = PanelController(service: service, tools: tools,
+        let sessions = [RexSession(sessionID: "a", label: "Session A"), RexSession(sessionID: "b", label: "Session B")]
+        let controller = PanelController(service: service, tools: tools, sessions: sessions,
             readWindowFrame: { _ in frames.read() }, readScreens: { screens }, readTheme: { _, _ in .fixture })
         defer { frames.ready.signal(); controller.dismiss(focusRex: false); controller.model.clear() }
         controller.presentLoading()
@@ -307,9 +307,10 @@ extension PickerTests {
             return
         }
         #expect(controller.panel.isKeyWindow)
-        controller.model.prepare(service: service, sessions: [
-            RexSession(sessionID: "a", label: "Session A"), RexSession(sessionID: "b", label: "Session B"),
-        ])
+        if resolveClient {
+            frames.ready.signal()
+            await controller.positioningTask?.value
+        }
         controller.model.query = "session"
         let json = """
         {"bindings":[{"keys":["ctrl+b","j"],"mode":"resh","action":"resh_next"}],
@@ -322,6 +323,9 @@ extension PickerTests {
         let origin = controller.panel.frame.origin
         let responder = controller.panel.firstResponder
         let selected = controller.model.selected?.id
+        if resolveClient {
+            controller.prepare(service: service, snapshot: RexSnapshot(client: "client:test", rexAppPID: 42, sessions: sessions))
+        }
         frames.ready.signal()
         await controller.positioningTask?.value
         #expect(controller.panel.isVisible && controller.panel.isKeyWindow)
