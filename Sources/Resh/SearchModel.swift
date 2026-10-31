@@ -58,6 +58,7 @@ final class SearchModel: ObservableObject {
     private var isBackgroundActive = false
     private var subscriptions = Set<AnyCancellable>()
     private let snapshotProvider: any RexSnapshotProviding
+    private let sourceRunner: any CommandRunning
     private let readPreferences: @Sendable () -> [String: Any]
     private let readFocusedSession: @MainActor (Int32?) -> String?
     private let readKeyboardLayouts: @MainActor () -> KeyboardLayouts
@@ -78,6 +79,7 @@ final class SearchModel: ObservableObject {
 
     init(service: ReshService, tools: Tools, sessions: [RexSession] = [], recentSessionIDs: [String] = [], configurationURL: URL? = nil,
          snapshotProvider: (any RexSnapshotProviding)? = nil,
+         sourceRunner: any CommandRunning = SystemCommandRunner(),
          readTheme: @escaping @Sendable (String, Bool) throws -> RexTheme = { try RexTheme.read(rexApp: $0, systemIsDark: $1) },
          readPreferences: @escaping @Sendable () -> [String: Any] = { RexTheme.preferences(keys: ["Workspace.programActivitySeen"]) },
          readFocusedSession: (@MainActor (Int32?) -> String?)? = nil,
@@ -93,6 +95,7 @@ final class SearchModel: ObservableObject {
             self.configurationError = error.localizedDescription + "\nFix the configuration and run resh service restart."
         }
         self.snapshotProvider = snapshotProvider ?? RexDataConnection(tools: tools)
+        self.sourceRunner = sourceRunner
         self.readPreferences = readPreferences
         let tracker = readFocusedSession == nil ? RexFocusTracker() : nil
         self.focusTracker = tracker
@@ -334,11 +337,12 @@ final class SearchModel: ObservableObject {
         selection = results.firstIndex { $0.id == selected.id } ?? 0
     }
 
-    func openResult(_ number: Int) {
+    @discardableResult
+    func openResult(_ number: Int) -> Task<Void, Never>? {
         let rows = numberedRows, index = number - 1
-        guard isConfigurationReady, !isOpening, !isConnecting, rows.indices.contains(index) else { return }
+        guard isConfigurationReady, !isOpening, !isConnecting, rows.indices.contains(index) else { return nil }
         selection = rows[index]
-        openSelection()
+        return openSelection()
     }
 
     private func showAvailableEntries() {
@@ -637,7 +641,7 @@ final class SearchModel: ObservableObject {
                     }
                     showAvailableEntries()
                 }
-                let loader = SourceLoader(tools: tools), sessions = sessionSnapshot, agents = agentSnapshot
+                let loader = SourceLoader(tools: tools, runner: sourceRunner), sessions = sessionSnapshot, agents = agentSnapshot
                 let source = scope, configuration = configuration
                 let worker = Task.detached {
                     let result = try loader.load(source, configuration: configuration, sessions: sessions, agents: agents)
@@ -760,12 +764,13 @@ final class SearchModel: ObservableObject {
         }
     }
 
-    func deleteSelection() {
+    @discardableResult
+    func deleteSelection() -> Task<Void, Never>? {
         guard isConfigurationReady, !isOpening, !isConnecting, let selected, selected.kind == .session,
-              let sessionID = selected.sessionID else { return }
+              let sessionID = selected.sessionID else { return nil }
         isConnecting = true
         let request = generation, service = service
-        Task {
+        return Task {
             do {
                 try await service.delete(sessionID: sessionID, host: selected.host)
                 guard generation == request else { return }

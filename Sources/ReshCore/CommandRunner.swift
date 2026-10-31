@@ -32,7 +32,10 @@ public extension CommandRunning {
 }
 
 public struct SystemCommandRunner: CommandRunning {
-    public init() {}
+    private let now: @Sendable () -> TimeInterval
+
+    public init() { self.init(now: { ProcessInfo.processInfo.systemUptime }) }
+    init(now: @escaping @Sendable () -> TimeInterval) { self.now = now }
 
     public func run(_ executable: String, _ arguments: [String], timeout: TimeInterval, directory: String?) throws -> CommandResult {
         let process = Process()
@@ -77,15 +80,15 @@ public struct SystemCommandRunner: CommandRunning {
         }
         var data = [Data(), Data()]
         var descriptors = handles.map { pollfd(fd: $0.fileDescriptor, events: Int16(POLLIN), revents: 0) }
-        let deadline = ProcessInfo.processInfo.systemUptime + timeout
+        let deadline = now() + timeout
         var buffer = [UInt8](repeating: 0, count: 16_384)
         while true {
             try Task.checkCancellation()
-            if ProcessInfo.processInfo.systemUptime >= deadline {
+            if now() >= deadline {
                 return CommandResult(status: 124, stdout: data[0],
                     stderr: Data("Command timed out after \(timeout) seconds: \(executable)".utf8))
             }
-            let remaining = deadline - ProcessInfo.processInfo.systemUptime
+            let remaining = deadline - now()
             let wait = max(0.001, min(0.05, remaining))
             if descriptors.allSatisfy({ $0.fd < 0 }) {
                 if exited.wait(timeout: .now() + wait) == .success { break }

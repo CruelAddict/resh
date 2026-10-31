@@ -156,18 +156,16 @@ extension PickerTests {
         name = "Slow"
         type = "command"
         cwd = "."
-        command = ["/bin/sh", "-c", "touch started; sleep 10"]
-        timeout = 20
+        command = ["/usr/bin/true"]
         """.write(to: url, atomically: true, encoding: .utf8)
         let tools = Tools(rex: "/not/rex", zoxide: nil, fd: nil, rexApp: "/not/Rex.app")
+        let runner = SourceCommandStub()
         let model = SearchModel(service: ReshService(client: RexClient(tools: tools, target: RexTarget()), stateURL: nil), tools: tools,
-            sessions: [RexSession(sessionID: "s", label: "Live")], configurationURL: url, readTheme: { _, _ in .fixture })
+            sessions: [RexSession(sessionID: "s", label: "Live")], configurationURL: url, sourceRunner: runner,
+            readTheme: { _, _ in .fixture })
+        defer { runner.release(); model.clear() }
         model.loadInitial()
-        for _ in 0..<200 {
-            if FileManager.default.fileExists(atPath: root.appendingPathComponent("started").path) { break }
-            try await Task.sleep(for: .milliseconds(10))
-        }
-        #expect(FileManager.default.fileExists(atPath: root.appendingPathComponent("started").path))
+        try await runner.waitUntilStarted()
         #expect(model.scope == .all && model.isLoading)
         #expect(model.results.map(\.title) == ["Live", "Project"])
         model.receive(.success(.sessions([RexSession(sessionID: "new", label: "Fresh")])))
@@ -178,6 +176,7 @@ extension PickerTests {
         let oldTask = model.loadingTask
         model.changeScope(.sessions)
         #expect(!model.isLoading && model.results.map(\.title) == ["Fresh"])
+        runner.release()
         await oldTask?.value
         #expect(model.scope == .sessions)
         model.clear()
@@ -207,20 +206,18 @@ extension PickerTests {
         name = "Folders"
         type = "command"
         cwd = "."
-        command = ["/bin/sh", "-c", "touch started; while [ ! -f ready ]; do sleep 0.01; done; cat folders.txt"]
+        command = ["/bin/cat", "folders.txt"]
         """.write(to: url, atomically: true, encoding: .utf8)
         let tools = Tools(rex: "/not/rex", zoxide: nil, fd: nil, rexApp: "/not/Rex.app")
+        let runner = SourceCommandStub { CommandResult(stdout: try Data(contentsOf: paths)) }
         let model = SearchModel(service: ReshService(client: RexClient(tools: tools, target: RexTarget()), stateURL: nil), tools: tools,
-            sessions: [RexSession(sessionID: "s", label: "Test session")], configurationURL: url, readTheme: { _, _ in .fixture })
-        defer { model.clear() }
+            sessions: [RexSession(sessionID: "s", label: "Test session")], configurationURL: url, sourceRunner: runner,
+            readTheme: { _, _ in .fixture })
+        defer { runner.release(); model.clear() }
         model.loadInitial()
-        for _ in 0..<200 {
-            if FileManager.default.fileExists(atPath: root.appendingPathComponent("started").path) { break }
-            try await Task.sleep(for: .milliseconds(10))
-        }
-        #expect(FileManager.default.fileExists(atPath: root.appendingPathComponent("started").path))
+        try await runner.waitUntilStarted()
         model.receive(.success(.sessions([RexSession(sessionID: "s", label: "Test changed")])))
-        try "".write(to: root.appendingPathComponent("ready"), atomically: true, encoding: .utf8)
+        runner.release()
         await model.loadingTask?.value
         #expect(model.results.map(\.title) == ["Test project", "test-folder-one", "Test changed"])
         model.query = "test"
@@ -249,7 +246,7 @@ extension PickerTests {
         let model = SearchModel(service: service, tools: tools,
             sessions: [RexSession(sessionID: "a", label: "Session"), RexSession(sessionID: "b", label: "Session"),
                        RexSession(sessionID: "c", label: "Other"), RexSession(sessionID: "d", label: "Session")],
-            recentSessionIDs: ["b", "a"], readTheme: { _, _ in .fixture })
+            recentSessionIDs: ["b", "a"], configurationURL: ConfigurationFile.emptyFixture, readTheme: { _, _ in .fixture })
         defer { model.clear() }
         #expect(model.results.map(\.id) == ["b", "a", "c", "d"])
         model.query = "session"
@@ -279,7 +276,8 @@ extension PickerTests {
         let stateURL = root.appendingPathComponent("state.json")
         var service = ReshService(client: client, stateURL: stateURL)
         let sessions = ["a", "b", "c", "d"].map { RexSession(sessionID: $0, label: $0) }
-        var model = SearchModel(service: service, tools: tools, readTheme: { _, _ in .fixture }, readFocusedSession: { _ in nil })
+        var model = SearchModel(service: service, tools: tools, configurationURL: ConfigurationFile.emptyFixture,
+            readTheme: { _, _ in .fixture }, readFocusedSession: { _ in nil })
         defer { model.clear() }
         model.prepare(service: service, sessions: sessions, recentSessionIDs: ["b", "a"], currentSessionID: "b")
         model.selection = try #require(model.results.firstIndex { $0.id == "c" })
@@ -290,7 +288,8 @@ extension PickerTests {
         #expect(model.selected?.id == "a")
         model.clear()
         service = ReshService(client: client, stateURL: stateURL)
-        model = SearchModel(service: service, tools: tools, readTheme: { _, _ in .fixture }, readFocusedSession: { _ in nil })
+        model = SearchModel(service: service, tools: tools, configurationURL: ConfigurationFile.emptyFixture,
+            readTheme: { _, _ in .fixture }, readFocusedSession: { _ in nil })
         #expect(model.pinnedSessionIDs == ["c", "a"])
         model.prepare(service: service, sessions: sessions, recentSessionIDs: ["d", "a", "c"], currentSessionID: "a")
         #expect(model.results.map(\.id) == ["c", "a", "d", "b"])
