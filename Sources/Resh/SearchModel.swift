@@ -330,7 +330,7 @@ final class SearchModel: ObservableObject {
         let working = Set(agents.filter(\.isWorking).map(\.candidate.id))
         if workingAgentIDs != working { workingAgentIDs = working }
         var visible = configuration.visibleSources.filter {
-            sourceIsAvailable($0.id, includeSessions: $0.id != .all || $0.kind != .union)
+            $0.id == configuration.initialSource || sourceIsAvailable($0.id, includeSessions: $0.id != .all || $0.kind != .union)
         }
         let needsFallback = !visible.contains { $0.id == scope }
         if needsFallback, !visible.contains(where: { $0.id == .sessions }), let sessions = configuration.source(.sessions) {

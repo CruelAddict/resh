@@ -98,7 +98,8 @@ public struct ReshConfiguration: Equatable, Sendable {
         for source in sources { try validate(source.id, ancestors: []) }
         let visibleIDs = raw.source_order?.map { SearchScope(rawValue: $0) }
             ?? sources.filter {
-                if $0.id == .all { return declared.contains(.all) || raw.initial_source == $0.name }
+                if raw.initial_source == $0.name { return true }
+                if $0.id == .all { return declared.contains(.all) }
                 return $0.id != .configs || !projects.isEmpty || declared.contains(.configs)
             }.map(\.id)
         guard !visibleIDs.isEmpty, Set(visibleIDs).count == visibleIDs.count, Set(visibleIDs).isSubset(of: ids) else {

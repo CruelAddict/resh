@@ -623,6 +623,7 @@ extension PickerTests {
         case "remote": expected = [.sessions, .directories]
         case "projects": expected = [.sessions, .configs]
         case "agents", "remote agents": expected = [.sessions, .agents]
+        case "custom": expected = [.find]
         default: expected = [.sessions]
         }
         func waitForSources(_ sources: [SearchScope]) async throws {
@@ -647,12 +648,12 @@ extension PickerTests {
         if scenario != "remote agents" {
             for host in model.hosts { model.receive(.success(.sessions([])), host: host) }
         }
-        for source in Array(expected.dropFirst()) + [.sessions] {
+        for source in Array(expected.dropFirst()) + [expected[0]] {
             model.cycleSource(1)
             #expect(model.scope == source)
             await model.loadingTask?.value
         }
-        for source in Array(expected.dropFirst().reversed()) + [.sessions] {
+        for source in Array(expected.dropFirst().reversed()) + [expected[0]] {
             model.cycleSource(-1)
             #expect(model.scope == source)
             await model.loadingTask?.value
@@ -680,6 +681,61 @@ extension PickerTests {
             model.receive(.success(.records([])), host: host)
             #expect(model.scope == .sessions && !model.visibleSources.contains { $0.id == .agents })
         }
+    }
+
+    @Test(arguments: ["Agents", "Recent", "Find", "Projects", "Folders", "All"])
+    @MainActor func initialSourcesStayVisible(_ name: String) async throws {
+        let stub = try CommandStub { arguments in
+            if arguments.contains("hosts") { return ["hosts": []] }
+            return [:]
+        }
+        let config = stub.directory.appendingPathComponent("config.toml")
+        try """
+        initial_source = "\(name)"
+        [[sources]]
+        name = "Folders"
+        type = "paths"
+        [[sources]]
+        name = "All"
+        type = "union"
+        sources = ["Folders"]
+        """.write(to: config, atomically: true, encoding: .utf8)
+        let service = ReshService(client: RexClient(tools: stub.tools, target: RexTarget(), runner: stub))
+        let model = SearchModel(service: service, tools: stub.tools, configurationURL: config,
+            readTheme: { _, _ in .fixture })
+        defer { model.clear() }
+        let initial = SearchScope(rawValue: name)
+        let sources: [SearchScope] = [.sessions, initial]
+        try #require(model.isConfigurationReady)
+        #expect(model.scope == initial)
+        #expect(model.visibleSources.contains { $0.id == initial })
+        model.startBackground()
+        await model.loadingTask?.value
+        await model.hostsTask?.value
+        let sessions = [RexSession(sessionID: "work", label: "Work")]
+        model.prepare(service: service, sessions: sessions)
+        await model.loadingTask?.value
+        #expect(model.scope == initial && model.results.isEmpty)
+        #expect(model.visibleSources.map(\.id) == sources)
+        model.changeScope(.sessions)
+        #expect(model.results.map(\.title) == ["Work"])
+        model.changeScope(initial)
+        await model.loadingTask?.value
+        #expect(model.scope == initial && model.results.isEmpty)
+        if name == "Agents" {
+            model.receive(.success(.records([])))
+            #expect(model.scope == initial && model.emptyMessage == "No agents")
+            model.receive(.success(.records([RexAttentionRecord(sessionID: "work", blockID: "pane", state: "working",
+                updatedAt: "2026-10-31T12:00:00Z", app: "opencode", title: "Task")])))
+            #expect(model.scope == initial && model.results.map(\.blockID) == ["pane"])
+            model.receive(.success(.records([])))
+            #expect(model.scope == initial && model.results.isEmpty && model.emptyMessage == "No agents")
+            #expect(model.visibleSources.map(\.id) == sources)
+        }
+        model.endPresentation()
+        model.prepare(service: service, sessions: sessions)
+        await model.loadingTask?.value
+        #expect(model.scope == initial && model.visibleSources.map(\.id) == sources)
     }
 
     @Test @MainActor func agentsFollowSessionHistoryAndPaneOrder() async throws {

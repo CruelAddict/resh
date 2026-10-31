@@ -4,6 +4,7 @@
 # Omit to keep the default views and append custom sources automatically.
 source_order = ["Sessions", "Agents", "All", "Projects", "Work", "Repositories", "Recent", "Find"]
 # Must be one of the names in source_order; defaults to "Sessions".
+# The initial view stays visible even when empty or its provider is unavailable.
 initial_source = "All"
 
 [[sources]]
@@ -40,7 +41,7 @@ sources = ["Sessions", "Projects", "Work", "Repositories", "Recent"]
 
 # Other source types reuse built-in providers:
 #   sessions — open Rex sessions
-#   agents   — panes reporting program statuses; hidden when there are none
+#   agents   — panes reporting program statuses; hidden when empty unless initial
 #   projects — [[session]] entries
 #   zoxide   — directories in zoxide's order
 #   find     — fd search under ~, two levels deep, including hidden folders except .Trash
