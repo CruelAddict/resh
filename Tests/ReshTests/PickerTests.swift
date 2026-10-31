@@ -170,12 +170,13 @@ extension PickerTests {
     }
 
     @Test func sessionCreationFollowsHostChanges() async throws {
-        let stub = try RexBridgeStub(), connection = RexDataConnection(tools: stub.tools)
+        let stub = try RexBridgeStub()
+        let connection = RexDataConnection(tools: stub.tools, openTransport: { stub.openTransport(server: $0) })
         defer { connection.stop(); connection.waitUntilStopped() }
         let service = ReshService(client: RexClient(tools: stub.tools,
             target: RexTarget(clientID: "client:test", server: "home"), runner: stub, apiCaller: connection), stateURL: nil)
         for endpoint in ["https://first.example", "https://second.example"] {
-            try stub.saveHosts([RexHost(id: "host:build", label: "build", endpoints: [endpoint])])
+            stub.setHosts([RexHost(id: "host:build", label: "build", endpoints: [endpoint])])
             let host = try #require(service.hosts().hosts.first)
             #expect(try await service.createSession(name: "Scratch", host: host) == endpoint + "/Scratch")
         }
@@ -478,7 +479,8 @@ extension PickerTests {
     }
 
     @Test @MainActor func agentSelectionDismissesPicker() async throws {
-        let stub = try RexBridgeStub(), connection = RexDataConnection(tools: stub.tools)
+        let stub = try RexBridgeStub()
+        let connection = RexDataConnection(tools: stub.tools, openTransport: { stub.openTransport(server: $0) })
         defer { connection.stop(); connection.waitUntilStopped() }
         let config = stub.directory.appendingPathComponent("config.toml")
         try "".write(to: config, atomically: true, encoding: .utf8)
@@ -492,10 +494,7 @@ extension PickerTests {
         model.changeScope(.agents)
         var dismissalRequested = false
         model.onDismiss = { _ in dismissalRequested = true }
-        model.openSelection()
-        for _ in 0..<200 where !dismissalRequested && model.isConnecting {
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        await model.openSelection()?.value
         #expect(dismissalRequested)
     }
 

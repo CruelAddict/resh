@@ -30,16 +30,25 @@ struct NamingTests {
         #expect(SessionNamer.name(path: "/work/backend-other", gitRoot: "/work/backend") == "backend-other")
         #expect(SessionNamer.name(path: "/work/repo/main/src", gitRoot: "/work/repo") == "repo/main/src")
     }
-    @Test func realGitAndSymlink() throws {
+    @Test func repositorySymlink() throws {
+        struct GitStub: CommandRunning {
+            let root: String
+            func run(_ executable: String, _ arguments: [String], timeout: TimeInterval, directory: String?) throws -> CommandResult {
+                switch arguments.last {
+                case "--git-common-dir": return CommandResult(stdout: Data((root + "/.git\n").utf8))
+                case "--show-toplevel": return CommandResult(stdout: Data((root + "\n").utf8))
+                default: throw ReshError("Unexpected Git command: \(arguments)")
+                }
+            }
+        }
         let temp = try TemporaryDirectory()
         let repo = try temp.folder("repo.one")
         let nested = try temp.folder("repo.one/src/api")
-        let runner = SystemCommandRunner()
-        #expect(try runner.run("/usr/bin/git", ["init", "--quiet", repo], timeout: 5).status == 0)
+        let namer = SessionNamer(runner: GitStub(root: repo))
         let link = temp.url.appendingPathComponent("alias").path
         try FileManager.default.createSymbolicLink(atPath: link, withDestinationPath: nested)
-        #expect(SessionNamer().name(for: nested) == "repo_one/src/api")
-        #expect(SessionNamer().name(for: link) == "repo_one/src/api")
+        #expect(namer.name(for: nested) == "repo_one/src/api")
+        #expect(namer.name(for: link) == "repo_one/src/api")
     }
     @Test func labelLimit() {
         #expect(SessionNamer.name(path: "/" + String(repeating: "a", count: 200), gitRoot: nil).count == 128)

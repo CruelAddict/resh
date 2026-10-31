@@ -671,13 +671,14 @@ final class SearchModel: ObservableObject {
         guard count > 0 else { return }
         selection = (selection + delta + count) % count
     }
-    func openSelection() {
-        if offersNewSession { createSession(); return }
-        guard isConfigurationReady, !isOpening, !isConnecting, let candidate = selected else { return }
+    @discardableResult
+    func openSelection() -> Task<Void, Never>? {
+        if offersNewSession { return createSession() }
+        guard isConfigurationReady, !isOpening, !isConnecting, let candidate = selected else { return nil }
         isConnecting = true; error = nil
         let request = generation, service = service, current = currentSession
         let currentID = currentSessionID, candidates = sessionCandidates
-        Task {
+        return Task {
             do {
                 var source = current
                 if source == nil, let currentID {
@@ -706,13 +707,14 @@ final class SearchModel: ObservableObject {
             }
         }
     }
-    func createSession() {
-        guard canCreateSession else { return }
+    @discardableResult
+    func createSession() -> Task<Void, Never>? {
+        guard canCreateSession else { return nil }
         isConnecting = true; error = nil
         let name = query.trimmingCharacters(in: .whitespacesAndNewlines)
         let host = newSessionHost
         let request = generation, service = service, current = currentSession
-        Task {
+        return Task {
             do {
                 let sessionID: String
                 if let pendingCreation, pendingCreation.name == name, pendingCreation.host?.id == host?.id {

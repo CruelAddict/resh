@@ -31,26 +31,74 @@ func isRexTransportFailure(_ message: String) -> Bool {
         || message == "EOF" || message == "unexpected EOF"
 }
 
+protocol RexDataTransport: Sendable {
+    var isRunning: Bool { get }
+    func write(_ data: Data) throws -> Int
+    /// nil means no data is ready; an empty chunk means EOF.
+    func read(timeout: TimeInterval) throws -> Data?
+    func stop()
+}
+
+private final class RexDataProcess: RexDataTransport, @unchecked Sendable {
+    private let process: RexProcess
+    var isRunning: Bool { process.isRunning }
+
+    init(tools: Tools, server: String) throws {
+        guard let script = Bundle.module.url(forResource: "resh-data", withExtension: "lua") else {
+            throw ReshError("Missing bundled resource: resh-data.lua. Reinstall resh.")
+        }
+        process = try RexProcess(executable: tools.rex,
+            arguments: ["--autostart=false", "--server", server, "do", script.path], pipeInput: true)
+    }
+
+    func write(_ data: Data) throws -> Int {
+        guard let input = process.input else { return 0 }
+        return data.withUnsafeBytes { Darwin.write(input.fileDescriptor, $0.baseAddress, $0.count) }
+    }
+
+    func read(timeout: TimeInterval) throws -> Data? {
+        let output = process.output
+        var descriptor = pollfd(fd: output.fileDescriptor, events: Int16(POLLIN), revents: 0)
+        let ready = Darwin.poll(&descriptor, 1, Int32(timeout * 1000))
+        if ready < 0, errno == EINTR { return nil }
+        if ready == 0 { return nil }
+        guard ready > 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+        // FileHandle.read(upToCount:) tries to fill the requested length on a pipe.
+        // A POSIX read returns available bytes immediately, without waiting for EOF.
+        var chunk = [UInt8](repeating: 0, count: 65536)
+        let count = chunk.withUnsafeMutableBytes { Darwin.read(output.fileDescriptor, $0.baseAddress, $0.count) }
+        if count < 0, errno == EINTR { return nil }
+        guard count >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+        return Data(chunk.prefix(count))
+    }
+
+    func stop() { process.stop() }
+}
+
 /// One supported CLI request/reply connection per server, shared by snapshots
 /// and session operations. Only reads may be retried after a lost reply.
 final class RexDataConnection: RexSnapshotProviding, RexAPICalling, @unchecked Sendable {
     private final class Connection {
-        let process: RexProcess
+        let transport: any RexDataTransport
         let server: String
         var buffer = Data() // Only the request lock may access the buffer.
-        init(process: RexProcess, server: String) { self.process = process; self.server = server }
+        init(transport: any RexDataTransport, server: String) { self.transport = transport; self.server = server }
     }
     private struct ClosedConnection: Error {}
     private struct ConnectionTimeout: Error {}
     private struct RequestFailure: Error { let message: String }
-    private let tools: Tools
+    private let openTransport: @Sendable (String) throws -> any RexDataTransport
     private let timeout: TimeInterval
     private let requests = NSLock()
     private let state = NSLock()
     private var connections: [String: Connection] = [:]
     private var hosts: [String: RexHost] = [:]
     private var generation = 0
-    init(tools: Tools, timeout: TimeInterval = 5) { self.tools = tools; self.timeout = timeout }
+    init(tools: Tools, timeout: TimeInterval = 5,
+         openTransport: (@Sendable (String) throws -> any RexDataTransport)? = nil) {
+        self.openTransport = openTransport ?? { try RexDataProcess(tools: tools, server: $0) }
+        self.timeout = timeout
+    }
     deinit { stop() }
 
     func updateHosts(_ hosts: [RexHost]) {
@@ -63,7 +111,7 @@ final class RexDataConnection: RexSnapshotProviding, RexAPICalling, @unchecked S
             .compactMap { connections.removeValue(forKey: $0) }
         self.hosts = updated
         state.unlock()
-        for connection in old { connection.process.stop() }
+        for connection in old { connection.transport.stop() }
     }
 
     func snapshot(target: RexTarget, rexAppPID: Int32? = nil) throws -> RexSnapshot {
@@ -117,8 +165,7 @@ final class RexDataConnection: RexSnapshotProviding, RexAPICalling, @unchecked S
                 var data = try JSONSerialization.data(withJSONObject: arguments)
                 data.append(10)
                 try check(request)
-                guard let input = connection.process.input else { throw ClosedConnection() }
-                let written = data.withUnsafeBytes { Darwin.write(input.fileDescriptor, $0.baseAddress, $0.count) }
+                let written = try connection.transport.write(data)
                 sent = written > 0
                 guard written == data.count else { throw ClosedConnection() }
                 let response = try readLine(connection, request: request, deadline: deadline)
@@ -166,19 +213,15 @@ final class RexDataConnection: RexSnapshotProviding, RexAPICalling, @unchecked S
         try check(request)
         guard ProcessInfo.processInfo.systemUptime < deadline else { throw ConnectionTimeout() }
         state.lock(); let existing = connections[server]; state.unlock()
-        if let existing, existing.process.isRunning { return existing }
+        if let existing, existing.transport.isRunning { return existing }
         discard(server: server, request: request)
-        guard let script = Bundle.module.url(forResource: "resh-data", withExtension: "lua") else {
-            throw ReshError("Missing bundled resource: resh-data.lua. Reinstall resh.")
-        }
-        let child = try RexProcess(executable: tools.rex,
-            arguments: ["--autostart=false", "--server", server, "do", script.path], pipeInput: true)
-        let created = Connection(process: child, server: server)
+        let transport = try openTransport(server)
+        let created = Connection(transport: transport, server: server)
         state.lock()
         let cancelled = generation != request
         if !cancelled { connections[server] = created }
         state.unlock()
-        if cancelled { child.stop(); throw CancellationError() }
+        if cancelled { transport.stop(); throw CancellationError() }
         do {
             let hello = try JSONSerialization.jsonObject(with: readLine(created, request: request, deadline: deadline)) as? [String: Any]
             guard hello?["ready"] as? Bool == true else { throw ReshError("Invalid Rex data connection handshake.") }
@@ -188,8 +231,7 @@ final class RexDataConnection: RexSnapshotProviding, RexAPICalling, @unchecked S
             let bootstrap: [String: Any] = ["method": "session.attach_all", "args": ["event_scope": "session"]]
             var data = try JSONSerialization.data(withJSONObject: bootstrap)
             data.append(10)
-            guard let input = child.input else { throw ClosedConnection() }
-            let written = data.withUnsafeBytes { Darwin.write(input.fileDescriptor, $0.baseAddress, $0.count) }
+            let written = try transport.write(data)
             guard written == data.count else { throw ClosedConnection() }
             let response = try JSONSerialization.jsonObject(with: readLine(created, request: request, deadline: deadline)) as? [String: Any]
             if let error = response?["error"] as? String {
@@ -212,20 +254,9 @@ final class RexDataConnection: RexSnapshotProviding, RexAPICalling, @unchecked S
             }
             let remaining = deadline - ProcessInfo.processInfo.systemUptime
             guard remaining > 0 else { throw ConnectionTimeout() }
-            let output = connection.process.output
-            var descriptor = pollfd(fd: output.fileDescriptor, events: Int16(POLLIN), revents: 0)
-            let ready = Darwin.poll(&descriptor, 1, Int32(min(remaining, 0.1) * 1000))
-            if ready < 0, errno == EINTR { continue }
-            if ready == 0 { continue }
-            guard ready > 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
-            // FileHandle.read(upToCount:) tries to fill the requested length on a pipe.
-            // A POSIX read returns the available response immediately, without waiting for EOF.
-            var chunk = [UInt8](repeating: 0, count: 65536)
-            let count = chunk.withUnsafeMutableBytes { Darwin.read(output.fileDescriptor, $0.baseAddress, $0.count) }
-            if count < 0, errno == EINTR { continue }
-            if count < 0 { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
-            if count == 0 { throw ClosedConnection() }
-            connection.buffer.append(contentsOf: chunk.prefix(count))
+            guard let chunk = try connection.transport.read(timeout: min(remaining, 0.1)) else { continue }
+            if chunk.isEmpty { throw ClosedConnection() }
+            connection.buffer.append(chunk)
             guard connection.buffer.count <= 8 * 1024 * 1024 else { throw ReshError("The Rex snapshot is too large.") }
         }
     }
@@ -238,14 +269,14 @@ final class RexDataConnection: RexSnapshotProviding, RexAPICalling, @unchecked S
         state.lock()
         let old = generation == request ? connections.removeValue(forKey: server) : nil
         state.unlock()
-        old?.process.stop()
+        old?.transport.stop()
     }
     func stop() {
         state.lock()
         generation += 1
         let old = Array(connections.values); connections = [:]
         state.unlock()
-        for connection in old { connection.process.stop() }
+        for connection in old { connection.transport.stop() }
     }
 
     /// Shutdown barrier, only used off the UI thread after stop().

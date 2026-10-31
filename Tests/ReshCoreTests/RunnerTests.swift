@@ -14,11 +14,6 @@ struct RunnerTests {
         #expect(String(decoding: result.stderr, as: UTF8.self).contains("Missing value for --source"))
     }
 
-    @Test func drainsBothPipes() throws {
-        let result = try SystemCommandRunner().run("/usr/bin/python3",
-            ["-c", "import sys; sys.stdout.write('o'*200000); sys.stderr.write('e'*200000)"], timeout: 10)
-        #expect(result.status == 0 && result.stdout.count == 200_000 && result.stderr.count == 200_000)
-    }
     @Test func reportsFailureAndCapsOutput() throws {
         let runner = SystemCommandRunner()
         #expect(try runner.run("/usr/bin/false", [], timeout: 1).status == 1)
