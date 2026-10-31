@@ -896,5 +896,10 @@ final class SearchModel: ObservableObject {
 }
 
 extension RGBA {
-    var nsColor: NSColor { NSColor(srgbRed: red, green: green, blue: blue, alpha: alpha) }
+    var nsColor: NSColor {
+        switch colorSpace {
+        case .sRGB: NSColor(srgbRed: red, green: green, blue: blue, alpha: alpha)
+        case .displayP3: NSColor(displayP3Red: red, green: green, blue: blue, alpha: alpha)
+        }
+    }
 }

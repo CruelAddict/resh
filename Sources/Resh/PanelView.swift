@@ -7,7 +7,8 @@ private final class SelectionRow: NSTableRowView {
     var color = NSColor.selectedContentBackgroundColor
     override func drawSelection(in dirtyRect: NSRect) {
         color.setFill()
-        NSBezierPath(roundedRect: bounds, xRadius: 8, yRadius: 8).fill()
+        let radius = PanelLayout.controlCornerRadius
+        NSBezierPath(roundedRect: bounds, xRadius: radius, yRadius: radius).fill()
     }
 }
 
@@ -316,7 +317,7 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
         autoresizingMask = [.width, .height]
 
         searchBackground.wantsLayer = true
-        searchBackground.layer?.cornerRadius = 16
+        searchBackground.layer?.cornerRadius = PanelLayout.controlCornerRadius
         searchBackground.layer?.borderWidth = 1
         addSubview(searchBackground)
         searchField.isBordered = false
@@ -416,7 +417,8 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
                 let button = NSButton(title: "", target: self, action: #selector(self.sourceClicked(_:)))
                 button.tag = index; button.isBordered = false; button.focusRingType = .none
                 button.isEnabled = self.model.isConfigurationReady
-                button.wantsLayer = true; button.layer?.cornerRadius = 5
+                button.wantsLayer = true
+                button.layer?.cornerRadius = min(PanelLayout.controlCornerRadius, PanelLayout.sourcesHeight / 2)
                 button.setAccessibilityIdentifier("resh.scope.\(source.id.rawValue)")
                 self.sourceContainer.addSubview(button)
                 return button
