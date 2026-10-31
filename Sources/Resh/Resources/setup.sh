@@ -112,10 +112,9 @@ find_source() {
         fi
         bundle=$source_dir
         [[ -x $bundle/resh && -r $bundle/resh.lua && -d $bundle/resh_Resh.bundle ]] || die 'Missing prebuilt picker. Run bash scripts/build.sh or use a macOS release.'
-        local name
-        for name in LICENSE resh_Resh.bundle/Contents/Resources/ThirdPartyNotices.txt; do
-            [[ -r $bundle/$name ]] || die "Missing $name in the distribution."
-        done
+        if [[ $linked == false ]]; then
+            [[ -r $bundle/LICENSE ]] || die 'Missing LICENSE in the distribution.'
+        fi
         module="$destination/resh.lua"
         module_source="$bundle/resh.lua"
     fi
@@ -226,15 +225,13 @@ atomic_copy() {
 install_native() {
     "$bundle/resh" service stop >/dev/null
     if [[ $bundle -ef $destination ]]; then return 0; fi
-    local name
-    for name in resh LICENSE; do
-        if [[ $linked == true ]]; then
-            ln -s "$bundle/$name" "$work/$name.link"
-            atomic_copy "$work/$name.link" "$destination/$name"
-        else
-            atomic_copy "$bundle/$name" "$destination/$name"
-        fi
-    done
+    if [[ $linked == true ]]; then
+        ln -s "$bundle/resh" "$work/resh.link"
+        atomic_copy "$work/resh.link" "$destination/resh"
+    else
+        atomic_copy "$bundle/resh" "$destination/resh"
+        atomic_copy "$bundle/LICENSE" "$destination/LICENSE"
+    fi
     # Replace only our resources; retain personal configuration and history.
     rm -rf -- "$destination/resh_Resh.bundle"
     if [[ $linked == true ]]; then

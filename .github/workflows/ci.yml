@@ -49,6 +49,13 @@ jobs:
           codesign --verify --strict dist/resh/resh
       - name: Package
         run: bash scripts/package.sh
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        if: github.event_name == 'pull_request'
+        with:
+          name: macos-${{ matrix.arch }}
+          path: dist/releases/resh-macos-${{ matrix.arch }}.tar.gz
+          if-no-files-found: error
+          retention-days: 7
 
   scripts:
     name: Scripts
