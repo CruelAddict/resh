@@ -1,5 +1,6 @@
 import AppKit
 import ReshCore
+import RexFocusTracking
 import Combine
 
 @MainActor
@@ -39,6 +40,8 @@ final class SearchModel: ObservableObject {
     private var hostSources: [String: [SearchScope: [Candidate]]] = [:]
     private var hostFunctions: [String: Set<String>] = [:]
     private var hasHostCatalog = false
+    private var hasAuthoritativeHostCatalog = false
+    private var verifiedSessionHosts = Set<String>()
     private var pendingHosts = Set<String>()
     private var remoteTasks: [String: Task<Void, Never>] = [:]
     private(set) var hostsTask: Task<Void, Never>?
@@ -47,8 +50,9 @@ final class SearchModel: ObservableObject {
     private var rexAppPID: Int32?
     let catalog: SessionStore
     private(set) var keymapError: String?
-    private var focusTimer: Timer?
-    private var observedFocus: [String: String] = [:]
+    private let focusTracker: RexFocusTracker?
+    private var observedFocus: String?
+    private var historyReconciliationTask: Task<Void, Never>?
     private var pendingCreation: (name: String, sessionID: String, host: RexHost?)?
     private var isBackgroundActive = false
     private var subscriptions = Set<AnyCancellable>()
@@ -74,7 +78,7 @@ final class SearchModel: ObservableObject {
          snapshotProvider: (any RexSnapshotProviding)? = nil,
          readTheme: @escaping @Sendable (String, Bool) throws -> RexTheme = { try RexTheme.read(rexApp: $0, systemIsDark: $1) },
          readPreferences: @escaping @Sendable () -> [String: Any] = { RexTheme.preferences(keys: ["Workspace.programActivitySeen"]) },
-         readFocusedSession: @escaping @MainActor (Int32?) -> String? = { RexAppMonitor.focusedSessionID(rexAppPID: $0) }) {
+         readFocusedSession: (@MainActor (Int32?) -> String?)? = nil) {
         self.service = service; self.tools = tools
         self.catalog = SessionStore(tools: tools, service: service)
         self.configurationURL = (configurationURL ?? ConfigurationFile.url()).standardizedFileURL
@@ -87,7 +91,9 @@ final class SearchModel: ObservableObject {
         }
         self.snapshotProvider = snapshotProvider ?? RexDataConnection(tools: tools)
         self.readPreferences = readPreferences
-        self.readFocusedSession = readFocusedSession
+        let tracker = readFocusedSession == nil ? RexFocusTracker() : nil
+        self.focusTracker = tracker
+        self.readFocusedSession = readFocusedSession ?? { tracker?.selectedSession(in: $0) }
         self.readTheme = readTheme
         do { self.theme = try readTheme(tools.rexApp, Self.systemIsDark) }
         catch {
@@ -104,13 +110,13 @@ final class SearchModel: ObservableObject {
             self?.receive(result, host: host)
         }.store(in: &subscriptions)
         catalog.$recentSessionIDs.dropFirst().sink { [weak self] history in
-            guard let self, let client = self.service.target.clientID else { return }
-            updateRecentSessions(history[client] ?? [])
+            self?.updateRecentSessions(history)
         }.store(in: &subscriptions)
-        NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.didActivateApplicationNotification).sink { [weak self] _ in
-            guard let self, isBackgroundActive else { return }
-            watchFocus()
+        catalog.$historyError.sink { [weak self] message in
+            self?.reportDiagnostic(message.map { ReshError($0) }, source: "history")
         }.store(in: &subscriptions)
+        tracker?.onChange = { [weak self] in self?.refreshFocus() }
+        tracker?.onDiagnostic = { [weak self] in self?.reportDiagnostic($0, source: "focus") }
     }
     static var systemIsDark: Bool { UserDefaults.standard.string(forKey: "AppleInterfaceStyle") == "Dark" }
     var selected: Candidate? { results.indices.contains(selection) ? results[selection] : nil }
@@ -118,7 +124,8 @@ final class SearchModel: ObservableObject {
     var sessionCandidates: [Candidate] { sessionSnapshot + hosts.flatMap { hostSessions[$0.id] ?? [] } }
     private var allSessions: [Candidate] {
         sessionCandidates.enumerated().sorted {
-            let left = sessionRanks[$0.element.id] ?? Int.max, right = sessionRanks[$1.element.id] ?? Int.max
+            let left = sessionRanks[$0.element.sessionID ?? $0.element.id] ?? Int.max
+            let right = sessionRanks[$1.element.sessionID ?? $1.element.id] ?? Int.max
             return left == right ? $0.offset < $1.offset : left < right
         }.map(\.element)
     }
@@ -167,7 +174,8 @@ final class SearchModel: ObservableObject {
     @discardableResult
     func stopBackground() -> [RexEventConnection] {
         isBackgroundActive = false
-        focusTimer?.invalidate(); focusTimer = nil
+        focusTracker?.stop()
+        historyReconciliationTask?.cancel(); historyReconciliationTask = nil
         generation += 1
         hostGeneration += 1
         hostsTask?.cancel(); hostsTask = nil
@@ -210,6 +218,7 @@ final class SearchModel: ObservableObject {
         self.rexAppPID = rexAppPID
         self.currentSessionID = currentSessionID
         sessionSnapshot = ReshService.candidates(from: sessions)
+        verifiedSessionHosts.insert(service.target.server)
         sessionRanks = Dictionary(recentSessionIDs.enumerated().map { ($0.element, $0.offset) }, uniquingKeysWith: min)
         scope = configuration.initialSource
         showAvailableEntries()
@@ -240,14 +249,14 @@ final class SearchModel: ObservableObject {
     func clear() {
         stopBackground()
         hosts = []; hostSessions = [:]; hostSources = [:]; hostFunctions = [:]
-        hasHostCatalog = false
+        hasHostCatalog = false; hasAuthoritativeHostCatalog = false; verifiedSessionHosts = []
         visibleSources = configuration.visibleSources
         pendingHosts = []
         hostAttentionRecords = [:]; isRemoteLoading = false
         attentionRecords = []; attentionSessionIDs = []; attentionAgentIDs = []; workingAgentIDs = []; agentSnapshot = []
         sessionSnapshot = []; sessionRanks = [:]; search = FuzzyMatcher([])
         pinnedSessionIDs = []; currentSessionID = nil; currentCandidateID = nil
-        observedFocus = [:]; pendingCreation = nil
+        observedFocus = nil; pendingCreation = nil
         sourceSnapshots = [:]
         rexAppPID = nil
         diagnostics = [:]
@@ -379,6 +388,7 @@ final class SearchModel: ObservableObject {
     }
 
     private func updateSessions(_ sessions: [RexSession], host: RexHost? = nil) {
+        verifiedSessionHosts.insert(host?.id ?? service.target.server)
         let updated = ReshService.candidates(from: sessions, host: host)
         let previous = host.map { hostSessions[$0.id] ?? [] } ?? sessionSnapshot
         let removed = Set(previous.map(\.id)).subtracting(updated.map(\.id))
@@ -386,30 +396,23 @@ final class SearchModel: ObservableObject {
             if let id = candidate.sessionID { removeSession(id, host: host) }
         }
         if let host {
-            guard updated != hostSessions[host.id] else { return }
+            guard updated != hostSessions[host.id] else { reconcileHistory(); return }
             hostSessions[host.id] = updated
         } else {
-            guard updated != sessionSnapshot else { return }
+            guard updated != sessionSnapshot else { reconcileHistory(); return }
             sessionSnapshot = updated
         }
         if isConfigurationReady { refreshEntries() }
         refreshFocus()
+        reconcileHistory()
     }
 
     private func watchFocus(updateCurrent: Bool = true) {
-        focusTimer?.invalidate(); focusTimer = nil
+        focusTracker?.start()
         refreshFocus(updateCurrent: updateCurrent)
-        guard isBackgroundActive, let pid = NSWorkspace.shared.frontmostApplication?.processIdentifier,
-              catalog.clients.contains(where: { $0.rexAppPID == pid }) || rexAppPID == pid else { return }
-        // The plist batches writes, and dotted preference keys cannot use KVO.
-        // Read the preferences service only while Rex is active, never its API.
-        let timer = Timer(timeInterval: 0.1, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.refreshFocus() }
-        }
-        timer.tolerance = 0.02
-        RunLoop.main.add(timer, forMode: .common)
-        focusTimer = timer
     }
+
+    func focusedSessionID(rexAppPID: Int32?) -> String? { readFocusedSession(rexAppPID) }
 
     func refreshFocus(updateCurrent: Bool = true) {
         // Only actual focus changes are visits. Catalog updates and background
@@ -426,16 +429,29 @@ final class SearchModel: ObservableObject {
             }
             let matches = sessionCandidates.filter { $0.sessionID == sessionID }
             guard matches.count == 1, let candidate = matches.first else { continue }
-            let previous = observedFocus.updateValue(candidate.id, forKey: client.client)
+            let previous = observedFocus
             guard previous != candidate.id else { continue }
+            observedFocus = candidate.id
             DebugLog.shared.record("\(client.client): \(candidate.id)", source: "focus")
             let service = service, observedAt = ContinuousClock.now
             Task {
-                await service.recordVisit(sessionID: sessionID, host: candidate.host, clientID: client.client,
-                    observedAt: observedAt, initial: previous == nil)
+                await service.recordVisit(sessionID: sessionID, observedAt: observedAt, initial: previous == nil)
                 guard self.service.target.server == service.target.server else { return }
                 await catalog.refreshHistory().value
             }
+        }
+    }
+
+    private func reconcileHistory() {
+        guard hasAuthoritativeHostCatalog, verifiedSessionHosts.contains(service.target.server),
+              hosts.allSatisfy({ verifiedSessionHosts.contains($0.id) }) else { return }
+        let service = service, ids = Set(sessionCandidates.compactMap(\.sessionID))
+        historyReconciliationTask?.cancel()
+        historyReconciliationTask = Task {
+            guard !Task.isCancelled else { return }
+            await service.reconcileHistory(sessionIDs: ids)
+            guard !Task.isCancelled else { return }
+            await catalog.refreshHistory().value
         }
     }
 
@@ -451,7 +467,7 @@ final class SearchModel: ObservableObject {
         refreshFocus()
         let service = service, request = generation
         Task {
-            await service.forgetSession(sessionID: sessionID, host: host)
+            await service.forgetSession(sessionID: sessionID)
             guard generation == request else { return }
             await catalog.refreshHistory().value
         }
@@ -466,6 +482,7 @@ final class SearchModel: ObservableObject {
         remoteTasks = [:]
         hostFunctions = [:]
         hasHostCatalog = false
+        hasAuthoritativeHostCatalog = false
         refreshEntries()
         hostsTask = Task {
             let worker = Task.detached { try service.hosts() }
@@ -486,15 +503,18 @@ final class SearchModel: ObservableObject {
                 hostAttentionRecords = hostAttentionRecords.filter { ids.contains($0.key) }
                 pendingHosts.formIntersection(ids)
                 for host in updated where previousHosts[host.id] != host {
+                    verifiedSessionHosts.remove(host.id)
                     hostSessions[host.id] = nil; hostSources[host.id] = nil; hostAttentionRecords[host.id] = nil
                     pendingHosts.insert(host.id)
                 }
                 hosts = updated
                 self.catalog.updateHosts(updated)
                 hasHostCatalog = true
+                hasAuthoritativeHostCatalog = catalog.warnings.isEmpty
                 reportDiagnostic(catalog.warnings.isEmpty ? nil : ReshError(catalog.warnings.joined(separator: "\n")), source: "hosts")
                 refreshEntries()
                 loadRemoteSources()
+                reconcileHistory()
             } catch {
                 guard !Task.isCancelled, hostGeneration == request else { return }
                 reportDiagnostic(error, source: "hosts")
@@ -587,9 +607,9 @@ final class SearchModel: ObservableObject {
                         let snapshot = try await Task.detached { try provider.snapshot(target: target, rexAppPID: rexAppPID) }.value
                         guard generation == request else { return }
                         service = service.at(RexTarget(clientID: snapshot.client, server: target.server))
-                        let recent = try await service.recentSessionIDs()
+                        await catalog.refreshHistory().value
                         guard generation == request else { return }
-                        sessionRanks = Dictionary(recent.enumerated().map { ($0.element, $0.offset) }, uniquingKeysWith: min)
+                        sessionRanks = Dictionary(catalog.recentSessionIDs.enumerated().map { ($0.element, $0.offset) }, uniquingKeysWith: min)
                         sessionSnapshot = ReshService.candidates(from: snapshot.sessions)
                         reportDiagnostic(nil, source: "connection")
                     } catch {
@@ -800,6 +820,7 @@ final class SearchModel: ObservableObject {
         case let .success(.destroyed(sessionID)):
             removeSession(sessionID, host: host)
         case .success(.reconnecting):
+            verifiedSessionHosts.remove(host?.id ?? service.target.server)
             if let host { pendingHosts.insert(host.id); updateRemoteLoading() }
         case .success(.hostsChanged):
             if host == nil { discoverHosts() }
@@ -816,6 +837,7 @@ final class SearchModel: ObservableObject {
             updateSessions(sessions, host: host)
             if let host, hostFunctions[host.id] == nil, remoteTasks[host.id] == nil { loadRemoteSources() }
         case let .failure(error):
+            verifiedSessionHosts.remove(host?.id ?? service.target.server)
             if let host { pendingHosts.remove(host.id); updateRemoteLoading() }
             reportDiagnostic(error, source: key)
         }

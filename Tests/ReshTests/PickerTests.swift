@@ -39,7 +39,7 @@ extension PickerTests {
             throw ReshError("Unexpected command: \(arguments)")
         }
         let service = ReshService(client: RexClient(tools: stub.tools, target: RexTarget(clientID: "client:test"), runner: stub),
-            registry: SessionRegistry(directory: stub.directory))
+            historyURL: stub.directory.appendingPathComponent("history.json"))
         let model = SearchModel(service: service, tools: stub.tools, readTheme: { _, _ in .fixture })
         defer { model.clear() }
         let sessions = ["a", "b", "c"].map { RexSession(sessionID: $0, label: $0) }
@@ -62,7 +62,7 @@ extension PickerTests {
         model.openResult(2)
         for _ in 0..<300 where !connected { try await Task.sleep(for: .milliseconds(10)) }
         #expect(connected)
-        #expect(model.catalog.recentSessionIDs["client:test"] == ["a", "b"])
+        #expect(model.catalog.recentSessionIDs == ["a", "b"])
         #expect(selected == "a")
     }
 
@@ -115,7 +115,7 @@ extension PickerTests {
         let config = stub.directory.appendingPathComponent("config.toml")
         try "".write(to: config, atomically: true, encoding: .utf8)
         let service = ReshService(client: RexClient(tools: stub.tools, target: RexTarget(clientID: "client:test", server: "home"), runner: stub),
-            registry: SessionRegistry(directory: stub.directory))
+            historyURL: stub.directory.appendingPathComponent("history.json"))
         let sessions = [RexSession(sessionID: "local", label: "Work")]
         var focus: String?
         let model = SearchModel(service: service, tools: stub.tools, sessions: sessions, configurationURL: config,
@@ -144,9 +144,8 @@ extension PickerTests {
             for _ in 0..<300 where !connected { try await Task.sleep(for: .milliseconds(10)) }
         }
         #expect(connected)
-        let expectedHistory = [Candidate.identity("new", host: expectedHost)]
-            + (activeHost == "none" ? [] : [Candidate.identity(activeHost, host: expectedHost)])
-        #expect(model.catalog.recentSessionIDs["client:test"] == expectedHistory)
+        let expectedHistory = ["new"] + (activeHost == "none" ? [] : [activeHost])
+        #expect(model.catalog.recentSessionIDs == expectedHistory)
         #expect(selected == "new")
         #expect(creations == 1)
         if activeHost != "none" {
@@ -157,7 +156,7 @@ extension PickerTests {
             let previous = expectedHost == nil ? sessions : [RexSession(sessionID: "remote", label: "Build")]
             model.receive(.success(.sessions(previous + [RexSession(sessionID: "new", label: "Scratch")])), host: expectedHost)
             await model.catalog.refreshHistory().value
-            #expect(try await service.recentSessionIDs() == Array(expectedHistory.reversed()))
+            #expect(service.recentSessionIDs() == Array(expectedHistory.reversed()))
         }
     }
 
@@ -165,7 +164,7 @@ extension PickerTests {
         let stub = try RexBridgeStub(), connection = RexDataConnection(tools: stub.tools)
         defer { connection.stop(); connection.waitUntilStopped() }
         let service = ReshService(client: RexClient(tools: stub.tools,
-            target: RexTarget(clientID: "client:test", server: "home"), apiCaller: connection))
+            target: RexTarget(clientID: "client:test", server: "home"), apiCaller: connection), historyURL: nil)
         for endpoint in ["https://first.example", "https://second.example"] {
             try stub.saveHosts([RexHost(id: "host:build", label: "build", endpoints: [endpoint])])
             let host = try #require(service.hosts().hosts.first)
@@ -183,7 +182,7 @@ extension PickerTests {
         }
         let config = stub.directory.appendingPathComponent("config.toml")
         try "".write(to: config, atomically: true, encoding: .utf8)
-        let service = ReshService(client: RexClient(tools: stub.tools, target: RexTarget(clientID: "client:test"), runner: stub))
+        let service = ReshService(client: RexClient(tools: stub.tools, target: RexTarget(clientID: "client:test"), runner: stub), historyURL: nil)
         var focus = "local"
         let model = SearchModel(service: service, tools: stub.tools, configurationURL: config,
             readTheme: { _, _ in .fixture }, readFocusedSession: { _ in focus })
@@ -213,7 +212,7 @@ extension PickerTests {
     @MainActor func launcherTogglesPanel(_ state: String) async throws {
         _ = NSApplication.shared
         let tools = Tools(rex: "/not/rex", zoxide: nil, fd: nil, rexApp: "/not/Rex.app")
-        let service = ReshService(client: RexClient(tools: tools, target: RexTarget(clientID: "client:test")))
+        let service = ReshService(client: RexClient(tools: tools, target: RexTarget(clientID: "client:test")), historyURL: nil)
         let controller = PanelController(service: service, tools: tools,
             readWindowFrame: { _ in CGRect(x: 0, y: 0, width: 800, height: 600) }, readTheme: { _, _ in .fixture })
         defer { controller.dismiss(focusRex: false); controller.model.clear() }
@@ -243,7 +242,7 @@ extension PickerTests {
     @Test @MainActor func pickerKeymapUpdatesKeepSearchAndSelection() throws {
         _ = NSApplication.shared
         let tools = Tools(rex: "/not/rex", zoxide: nil, fd: nil, rexApp: "/not/Rex.app")
-        let service = ReshService(client: RexClient(tools: tools, target: RexTarget(clientID: "client:test")))
+        let service = ReshService(client: RexClient(tools: tools, target: RexTarget(clientID: "client:test")), historyURL: nil)
         let controller = PanelController(service: service, tools: tools, readTheme: { _, _ in .fixture })
         defer { controller.model.clear() }
         controller.prepare(service: service, snapshot: RexSnapshot(client: "client:test", rexAppPID: 1,
@@ -312,7 +311,7 @@ extension PickerTests {
             if refused { throw ReshError("Action refused") }
             return [:]
         }
-        let service = ReshService(client: RexClient(tools: stub.tools, target: RexTarget(clientID: "client:test", server: "home"), runner: stub))
+        let service = ReshService(client: RexClient(tools: stub.tools, target: RexTarget(clientID: "client:test", server: "home"), runner: stub), historyURL: nil)
         let controller = PanelController(service: service, tools: stub.tools, readTheme: { _, _ in .fixture })
         defer { controller.model.clear() }
         controller.prepare(service: service, snapshot: RexSnapshot(client: "client:test", rexAppPID: 1,
@@ -368,7 +367,7 @@ extension PickerTests {
         startup_command = "true"
         """.write(to: config, atomically: true, encoding: .utf8)
         let service = ReshService(client: RexClient(tools: stub.tools, target: RexTarget(clientID: "client:test"), runner: stub),
-            registry: SessionRegistry(directory: stub.directory))
+            historyURL: stub.directory.appendingPathComponent("history.json"))
         let commands = LauncherCommands(service: service, configuration: try ConfigurationFile.load(config),
             sessions: cached ? ReshService.candidates(from: [RexSession(sessionID: "a", label: "First")]) : [])
         try "".write(to: config, atomically: true, encoding: .utf8)
@@ -378,22 +377,22 @@ extension PickerTests {
         #expect(connected["session_id"] as? String == "b")
         #expect(connected["path"] as? String == folder.resolvingSymlinksInPath().path)
         #expect(createdPath == folder.resolvingSymlinksInPath().path)
-        #expect(try await service.recentSessionIDs() == ["b", "a"])
+        #expect(service.recentSessionIDs() == ["b", "a"])
         last.currentSessionID = "b"
         #expect(try await commands.run(last)["session_id"] as? String == "a")
-        #expect(try await service.recentSessionIDs() == ["a", "b"])
+        #expect(service.recentSessionIDs() == ["a", "b"])
         last.currentSessionID = "a"
         #expect(try await commands.run(last)["session_id"] as? String == "b")
-        #expect(try await service.recentSessionIDs() == ["b", "a"])
+        #expect(service.recentSessionIDs() == ["b", "a"])
         await #expect(throws: ReshError.self) {
             try await commands.run(LauncherRequest(operation: "connect", client: "client:test", path: "missing", cwd: folder.path))
         }
-        #expect(try await service.recentSessionIDs() == ["b", "a"])
+        #expect(service.recentSessionIDs() == ["b", "a"])
     }
 
     @Test @MainActor func liveUpdatesPreserveSearchAndSelection() async {
         let tools = Tools(rex: "/not/rex", zoxide: nil, fd: nil, rexApp: "/not/Rex.app")
-        let service = ReshService(client: RexClient(tools: tools, target: RexTarget()))
+        let service = ReshService(client: RexClient(tools: tools, target: RexTarget()), historyURL: nil)
         let sessions = [RexSession(sessionID: "first", label: "Session one"), RexSession(sessionID: "second", label: "Session two")]
         let model = SearchModel(service: service, tools: tools, sessions: sessions,
             readTheme: { _, _ in .fixture }, readPreferences: { ["Workspace.programActivitySeen": [:]] })
@@ -428,7 +427,7 @@ extension PickerTests {
         let config = stub.directory.appendingPathComponent("config.toml")
         try "".write(to: config, atomically: true, encoding: .utf8)
         let service = ReshService(client: RexClient(tools: stub.tools,
-            target: RexTarget(clientID: "client:test", server: "home"), apiCaller: connection))
+            target: RexTarget(clientID: "client:test", server: "home"), apiCaller: connection), historyURL: nil)
         let model = SearchModel(service: service, tools: stub.tools, sessions: [RexSession(sessionID: "b", label: "Beta")],
             configurationURL: config, readTheme: { _, _ in .fixture })
         defer { model.clear() }
@@ -454,7 +453,7 @@ extension PickerTests {
         let config = stub.directory.appendingPathComponent("config.toml")
         try "".write(to: config, atomically: true, encoding: .utf8)
         let service = ReshService(client: RexClient(tools: stub.tools, target: RexTarget(clientID: "client:test"), runner: stub),
-            registry: SessionRegistry(directory: stub.directory))
+            historyURL: stub.directory.appendingPathComponent("history.json"))
         let selectedService = service.at(RexTarget(clientID: "client:test"))
         var focus = "s"
         let model = SearchModel(service: service, tools: stub.tools, configurationURL: config,
@@ -466,7 +465,7 @@ extension PickerTests {
         model.prepare(service: selectedService, sessions: [RexSession(sessionID: "s", label: "First")],
             rexAppPID: 42, currentSessionID: focus)
         for _ in 0..<300 {
-            if model.results.first?.title == "First", model.catalog.recentSessionIDs["client:test"] == ["s"] { break }
+            if model.results.first?.title == "First", model.catalog.recentSessionIDs == ["s"] { break }
             try await Task.sleep(for: .milliseconds(10))
         }
         #expect(model.results.map(\.title) == ["First"])
@@ -476,14 +475,14 @@ extension PickerTests {
         let sessions = [RexSession(sessionID: "s", label: "Renamed"), RexSession(sessionID: "new", label: "New")]
         model.receive(.success(.sessions(sessions)))
         #expect(model.results.map(\.title) == ["Renamed", "New"])
-        #expect(try await selectedService.recentSessionIDs() == ["s"])
+        #expect(selectedService.recentSessionIDs() == ["s"])
         focus = "new"
         if presented { model.prepare(service: selectedService, sessions: sessions, rexAppPID: 42, currentSessionID: focus) }
         else { model.refreshFocus() }
-        for _ in 0..<300 where model.catalog.recentSessionIDs["client:test"] != ["new", "s"] {
+        for _ in 0..<300 where model.catalog.recentSessionIDs != ["new", "s"] {
             try await Task.sleep(for: .milliseconds(10))
         }
-        #expect(model.catalog.recentSessionIDs["client:test"] == ["new", "s"])
+        #expect(model.catalog.recentSessionIDs == ["new", "s"])
         if presented {
             #expect(model.results.map(\.title) == ["New", "Renamed"])
             #expect(model.numberedRows.map { model.results[$0].id } == ["s"])
@@ -492,10 +491,10 @@ extension PickerTests {
             focus = sessionID
             model.refreshFocus()
             let recent = sessionID == "s" ? ["s", "new"] : ["new", "s"]
-            for _ in 0..<300 where model.catalog.recentSessionIDs["client:test"] != recent {
+            for _ in 0..<300 where model.catalog.recentSessionIDs != recent {
                 try await Task.sleep(for: .milliseconds(10))
             }
-            #expect(model.catalog.recentSessionIDs["client:test"] == recent)
+            #expect(model.catalog.recentSessionIDs == recent)
         }
         #expect(!model.isLoading)
         if presented { model.selection = 0; model.deleteSelection() }
@@ -507,12 +506,12 @@ extension PickerTests {
         focus = "s"
         model.refreshFocus()
         for _ in 0..<300 {
-            if !model.isConnecting, model.catalog.recentSessionIDs["client:test"] == ["s"] { break }
+            if !model.isConnecting, model.catalog.recentSessionIDs == ["s"] { break }
             try await Task.sleep(for: .milliseconds(10))
         }
         #expect(model.results.map(\.id) == ["s"] && !model.isConnecting)
         if presented { #expect(model.currentCandidateID == "s" && model.numberedRows.isEmpty) }
-        #expect(try await selectedService.recentSessionIDs() == ["s"])
+        #expect(selectedService.recentSessionIDs() == ["s"])
     }
 
     @Test(arguments: [false, true])
@@ -532,7 +531,7 @@ extension PickerTests {
             .success(RexSnapshot(client: "client:test", rexAppPID: 1, sessions: [RexSession(sessionID: "new", label: "Fresh session")])),
         ])
         let service = ReshService(client: RexClient(tools: stub.tools, target: RexTarget(clientID: "client:test"), runner: stub),
-            registry: SessionRegistry(directory: stub.directory))
+            historyURL: stub.directory.appendingPathComponent("history.json"))
         let config = stub.directory.appendingPathComponent("config.toml")
         try "".write(to: config, atomically: true, encoding: .utf8)
         let model = SearchModel(service: service, tools: stub.tools,
@@ -554,6 +553,39 @@ extension PickerTests {
         #expect(model.results.map(\.title) == ["Fresh session"])
     }
 
+    @Test @MainActor func restoredHistoryWaitsForTheCompleteCatalog() async throws {
+        let stub = try CommandStub { arguments in
+            if arguments.contains("hosts") {
+                return ["hosts": [["host": ["id": "build", "label": "build", "endpoints": ["https://build.example"]]]]]
+            }
+            return [:]
+        }
+        let config = stub.directory.appendingPathComponent("config.toml")
+        try "".write(to: config, atomically: true, encoding: .utf8)
+        let historyURL = stub.directory.appendingPathComponent("history.json")
+        try Data(#"{"version":1,"sessions":["closed","remote","local"]}"#.utf8).write(to: historyURL)
+        let service = ReshService(client: RexClient(tools: stub.tools, target: RexTarget(clientID: "client:test"), runner: stub),
+            historyURL: historyURL)
+        let model = SearchModel(service: service, tools: stub.tools, configurationURL: config,
+            readTheme: { _, _ in .fixture }, readFocusedSession: { _ in nil })
+        defer { model.clear() }
+        model.loadInitial()
+        await model.loadingTask?.value
+        await model.hostsTask?.value
+        let host = try #require(model.hosts.first)
+        model.receive(.success(.sessions([RexSession(sessionID: "local", label: "Local")])))
+        model.receive(.failure(ReshError("Connection timed out")), host: host)
+        await model.catalog.refreshHistory().value
+        #expect(model.catalog.recentSessionIDs == ["closed", "remote", "local"])
+        model.receive(.success(.sessions([RexSession(sessionID: "remote", label: "Remote")])), host: host)
+        for _ in 0..<300 where model.catalog.recentSessionIDs != ["remote", "local"] {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(model.catalog.recentSessionIDs == ["remote", "local"])
+        let restarted = ReshService(client: RexClient(tools: stub.tools, target: RexTarget()), historyURL: historyURL)
+        #expect(restarted.recentSessionIDs() == ["remote", "local"])
+    }
+
     @Test @MainActor func hostUpdatesPreserveSelection() async throws {
         let stub = try CommandStub { arguments in
             if arguments.contains("hosts") {
@@ -562,12 +594,12 @@ extension PickerTests {
             if arguments.contains("actions") { return ["actions": []] }
             throw ReshError("Unexpected command: \(arguments)")
         }
-        let service = ReshService(client: RexClient(tools: stub.tools, target: RexTarget(), runner: stub))
+        let service = ReshService(client: RexClient(tools: stub.tools, target: RexTarget(), runner: stub), historyURL: nil)
         let local = RexSession(sessionID: "local", label: "api")
         let config = stub.directory.appendingPathComponent("config.toml")
         try "".write(to: config, atomically: true, encoding: .utf8)
         let model = SearchModel(service: service, tools: stub.tools, sessions: [local],
-            recentSessionIDs: ["host:build/remote", "local"], configurationURL: config,
+            recentSessionIDs: ["remote", "local"], configurationURL: config,
             readTheme: { _, _ in .fixture }, readPreferences: { ["Workspace.programActivitySeen": [:]] })
         defer { model.clear() }
         model.loadInitial()
@@ -614,7 +646,7 @@ extension PickerTests {
             : scenario == "custom" ? "source_order = ['Find']\ninitial_source = 'Find'\n" : ""
         try text.write(to: config, atomically: true, encoding: .utf8)
         let tools = Tools(rex: stub.tools.rex, zoxide: nil, fd: scenario == "local" ? "/usr/bin/true" : nil, rexApp: stub.tools.rexApp)
-        let model = SearchModel(service: ReshService(client: RexClient(tools: tools, target: RexTarget(), runner: stub)),
+        let model = SearchModel(service: ReshService(client: RexClient(tools: tools, target: RexTarget(), runner: stub), historyURL: nil),
             tools: tools, configurationURL: config, readTheme: { _, _ in .fixture })
         defer { model.clear() }
         let expected: [SearchScope]
@@ -686,7 +718,7 @@ extension PickerTests {
         let stub = try CommandStub { _ in [:] }
         let config = stub.directory.appendingPathComponent("config.toml")
         try "".write(to: config, atomically: true, encoding: .utf8)
-        let service = ReshService(client: RexClient(tools: stub.tools, target: RexTarget(clientID: "client:test"), runner: stub))
+        let service = ReshService(client: RexClient(tools: stub.tools, target: RexTarget(clientID: "client:test"), runner: stub), historyURL: nil)
         let sessions = [RexSession(sessionID: "a", label: "Alpha"), RexSession(sessionID: "b", label: "Beta")]
         let model = SearchModel(service: service, tools: stub.tools, configurationURL: config,
             readTheme: { _, _ in .fixture })
@@ -725,7 +757,7 @@ extension PickerTests {
         let stub = try CommandStub { _ in [:] }
         let config = stub.directory.appendingPathComponent("config.toml")
         try "".write(to: config, atomically: true, encoding: .utf8)
-        let service = ReshService(client: RexClient(tools: stub.tools, target: RexTarget(), runner: stub))
+        let service = ReshService(client: RexClient(tools: stub.tools, target: RexTarget(), runner: stub), historyURL: nil)
         let time = "2026-10-31T12:00:00Z"
         let date = try Date.ISO8601FormatStyle().parse(time)
         let model = SearchModel(service: service, tools: stub.tools,

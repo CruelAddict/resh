@@ -248,7 +248,7 @@ install_native() {
     for name in resh LICENSE THIRD_PARTY_NOTICES.md; do
         atomic_copy "$bundle/$name" "$destination/$name"
     done
-    # Replace only our resources, never sessions.json or personal configuration.
+    # Replace only bundled resources, preserving persistent state and personal configuration.
     rm -rf -- "$destination/resh_Resh.bundle"
     cp -R "$bundle/resh_Resh.bundle" "$destination/resh_Resh.bundle"
 }

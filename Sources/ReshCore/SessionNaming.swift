@@ -1,4 +1,3 @@
-import CryptoKit
 import Foundation
 
 public struct SessionNamer: Sendable {
@@ -35,16 +34,4 @@ public struct SessionNamer: Sendable {
         return String(name.prefix(128))
     }
 
-    public static func availableName(base: String, path: String, occupied: Set<String>) -> String {
-        if !occupied.contains(base) { return base }
-        let parent = URL(fileURLWithPath: path).deletingLastPathComponent().lastPathComponent
-        let qualified = String((parent + "/" + base).prefix(128))
-        if !occupied.contains(qualified) { return qualified }
-        let digest = SHA256.hash(data: Data(path.utf8)).prefix(4).map { String(format: "%02x", $0) }.joined()
-        let stem = String(base.prefix(108)) + "-" + digest
-        if !occupied.contains(stem) { return stem }
-        var index = 2
-        while occupied.contains(stem + "-\(index)") { index += 1 }
-        return stem + "-\(index)"
-    }
 }

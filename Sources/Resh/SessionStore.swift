@@ -6,7 +6,8 @@ import ReshCore
 @MainActor
 final class SessionStore {
     let updates = PassthroughSubject<(Result<RexEventUpdate, Error>, RexHost?), Never>()
-    @Published private(set) var recentSessionIDs: [String: [String]] = [:]
+    @Published private(set) var recentSessionIDs: [String] = []
+    @Published private(set) var historyError: String?
     private(set) var sessions: [RexSession]?
     private(set) var clients: [RexAppClient] = []
     private(set) var isConnected = false
@@ -60,7 +61,7 @@ final class SessionStore {
         stop()
         self.target = RexTarget(server: target.server)
         service = service.at(self.target)
-        sessions = nil; clients = []; hosts = []; recentSessionIDs = [:]
+        sessions = nil; clients = []; hosts = []; recentSessionIDs = []
         start()
     }
 
@@ -102,10 +103,11 @@ final class SessionStore {
         let service = service, request = generation
         let task = Task {
             let updated = await Task.detached {
-                service.recentSessionIDsByClient()
+                (service.recentSessionIDs(), service.historyError)
             }.value
             guard !Task.isCancelled, generation == request else { return }
-            if updated != recentSessionIDs { recentSessionIDs = updated }
+            if updated.0 != recentSessionIDs { recentSessionIDs = updated.0 }
+            if updated.1 != historyError { historyError = updated.1 }
         }
         historyTask = task
         return task

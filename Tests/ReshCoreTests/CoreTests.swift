@@ -30,13 +30,6 @@ struct NamingTests {
         #expect(SessionNamer.name(path: "/work/backend-other", gitRoot: "/work/backend") == "backend-other")
         #expect(SessionNamer.name(path: "/work/repo/main/src", gitRoot: "/work/repo") == "repo/main/src")
     }
-    @Test func collisionsDoNotMergeProjects() {
-        #expect(SessionNamer.availableName(base: "api", path: "/work/api", occupied: ["api"]) == "work/api")
-        let name = SessionNamer.availableName(base: "api", path: "/work/api", occupied: ["api", "work/api"])
-        #expect(name.hasPrefix("api-"))
-        #expect(name == SessionNamer.availableName(base: "api", path: "/work/api", occupied: ["api", "work/api"]))
-        #expect(SessionNamer.availableName(base: "api", path: "/work/api", occupied: ["api", "work/api", name]) == name + "-2")
-    }
     @Test func realGitAndSymlink() throws {
         let temp = try TemporaryDirectory()
         let repo = try temp.folder("repo.one")
@@ -227,7 +220,7 @@ struct ServiceTests {
     private func service(_ runner: FakeRunner, _ temporary: TemporaryDirectory, clientID: String = "client:test") -> ReshService {
         let tools = Tools(rex: "/fake/rex", zoxide: nil, fd: nil, rexApp: "/fake/Rex.app")
         return ReshService(client: RexClient(tools: tools, target: RexTarget(clientID: clientID, server: "test"), runner: runner),
-                           registry: SessionRegistry(directory: temporary.url.appendingPathComponent("registry")))
+                           historyURL: temporary.url.appendingPathComponent("history.json"))
     }
     @Test func repeatSelectionReusesSessionEvenAfterCd() async throws {
         let temporary = try TemporaryDirectory(), runner = FakeRunner()
@@ -249,18 +242,18 @@ struct ServiceTests {
         _ = try await service.connect(directory(folder))
         #expect(runner.creations == 1)
     }
-    @Test func nameCollisionDoesNotSelectWrongDirectory() async throws {
+    @Test func directoriesReuseSessionNames() async throws {
         let temporary = try TemporaryDirectory(), runner = FakeRunner()
         let folder = try temporary.folder("work/api")
         runner.sessions = [("session:other", "api", "/another/api")]
         let id = try await service(runner, temporary).connect(directory(folder))
-        #expect(id != "session:other")
-        #expect(runner.sessions.last?.label == "work/api")
+        #expect(id == "session:other")
+        #expect(runner.creations == 0)
     }
-    @Test func unregisteredSessionsRemainIndependent() async throws {
+    @Test func renamedSessionsLeaveTheirOldNameAvailable() async throws {
         let temporary = try TemporaryDirectory(), runner = FakeRunner()
         let folder = try temporary.folder("project")
-        runner.sessions = [("session:existing", "project", folder)]
+        runner.sessions = [("session:existing", "Renamed", folder)]
         #expect(try await service(runner, temporary).connect(directory(folder)) != "session:existing")
         #expect(runner.creations == 1)
     }
@@ -278,11 +271,20 @@ struct ServiceTests {
         }
         #expect(runner.creations == 0)
     }
-    @Test func corruptRegistryDoesNotLoseIdentity() throws {
+    @Test func damagedHistoryIsPreservedBeforeRecordingNewVisits() async throws {
         let temporary = try TemporaryDirectory()
-        let registry = SessionRegistry(directory: temporary.url)
-        try Data("not json".utf8).write(to: registry.url)
-        #expect(throws: ReshError.self) { try registry.load() }
+        let url = temporary.url.appendingPathComponent("history.json")
+        try Data("not json".utf8).write(to: url)
+        let runner = FakeRunner()
+        let service = service(runner, temporary)
+        #expect(service.recentSessionIDs().isEmpty)
+        #expect(service.historyError != nil)
+        let backup = try #require(FileManager.default.contentsOfDirectory(at: temporary.url,
+            includingPropertiesForKeys: nil).first { $0.lastPathComponent.hasPrefix("history.corrupt-") })
+        #expect(try String(contentsOf: backup, encoding: .utf8) == "not json")
+        try await service.connect(session("a"))
+        #expect(self.service(runner, temporary).recentSessionIDs() == ["a"])
+        #expect(service.historyError == nil)
     }
     @Test func projectStartupIsOnlyPartOfNewSessionCreation() async throws {
         let temporary = try TemporaryDirectory(), runner = FakeRunner()
@@ -338,7 +340,7 @@ struct ServiceTests {
         #expect(focus[serverIndex + 1] == (host?.server ?? "test"))
         #expect(try JSONDecoder().decode([String: String].self, from: Data(focus.last!.utf8))
             == ["session_id": "work", "block_id": "pane"])
-        #expect(try await service.recentSessionIDs() == [Candidate.identity("work", host: host), "previous"])
+        #expect(service.recentSessionIDs() == ["work", "previous"])
     }
 
     private func directory(_ path: String) -> Candidate {
@@ -349,20 +351,25 @@ struct ServiceTests {
         Candidate(id: Candidate.identity(id, host: host), kind: .session, title: "Session", sessionID: id, host: host)
     }
 
-    @Test func recentSelectionsAndPreviousSessionShareResidentHistory() async throws {
+    @Test func recentSelectionsAndPreviousSessionSurviveRestart() async throws {
         let temporary = try TemporaryDirectory(), runner = FakeRunner()
         runner.sessions = [("a", "A", "/a"), ("b", "B", "/b")]
         let first = service(runner, temporary)
         try await first.connect(session("b"), from: session("a"))
         try await first.connect(session("b"), from: session("b"))
         let reopened = first.at(first.target)
-        #expect(try await reopened.recentSessionIDs() == ["b", "a"])
+        #expect(reopened.recentSessionIDs() == ["b", "a"])
         #expect(try await reopened.connectLast() == "a")
-        #expect(try await reopened.recentSessionIDs() == ["a", "b"])
+        #expect(reopened.recentSessionIDs() == ["a", "b"])
         #expect(try await reopened.connectLast() == "b")
         let restarted = service(runner, temporary)
-        #expect(try await restarted.recentSessionIDs().isEmpty)
-        #expect(try await restarted.connectLast() == nil)
+        #expect(restarted.recentSessionIDs() == ["b", "a"])
+        await restarted.recordVisit(sessionID: "a", observedAt: .now, initial: true)
+        #expect(restarted.recentSessionIDs() == ["a", "b"])
+        #expect(try await restarted.connectLast(from: session("a")) == "b")
+        let document = try JSONSerialization.jsonObject(with: Data(contentsOf: try #require(restarted.historyURL))) as? [String: Any]
+        #expect(document?["version"] as? Int == 1)
+        #expect(document?["sessions"] as? [String] == ["b", "a"])
         #expect(runner.creations == 0)
     }
 
@@ -375,9 +382,37 @@ struct ServiceTests {
         runner.rejectSelection = true
         await #expect(throws: ReshError.self) { try await service.connect(session("c"), from: session("a")) }
         await #expect(throws: ReshError.self) { try await service.connectLast(from: session("c")) }
-        #expect(try await service.recentSessionIDs() == ["b", "a"])
+        #expect(service.recentSessionIDs() == ["b", "a"])
+        #expect(self.service(runner, temporary).recentSessionIDs() == ["b", "a"])
         runner.rejectSelection = false
         #expect(try await service.connectLast() == "a")
+    }
+
+    @Test(arguments: [false, true])
+    func delayedFocusObservationsKeepTheConfirmedSelection(_ initial: Bool) async throws {
+        let temporary = try TemporaryDirectory(), runner = FakeRunner()
+        let service = service(runner, temporary)
+        let observedAt = ContinuousClock.now
+        try await service.connect(session("b"), from: session("a"))
+        await service.recordVisit(sessionID: "a", observedAt: observedAt, initial: initial)
+        #expect(service.recentSessionIDs() == ["b", "a"])
+    }
+
+    @Test func unavailableHistoryStorageKeepsSelectionsUsable() async throws {
+        let temporary = try TemporaryDirectory(), runner = FakeRunner()
+        let directory = temporary.url.appendingPathComponent("state")
+        try Data().write(to: directory)
+        let service = ReshService(client: RexClient(tools: Tools(rex: "/fake/rex", zoxide: nil, fd: nil, rexApp: "/fake/Rex.app"),
+            target: RexTarget(clientID: "client:test", server: "test"), runner: runner),
+            historyURL: directory.appendingPathComponent("history.json"))
+        try await service.connect(session("a"))
+        #expect(service.recentSessionIDs() == ["a"])
+        #expect(service.historyError != nil)
+        try FileManager.default.removeItem(at: directory)
+        try await service.connect(session("b"))
+        #expect(service.historyError == nil)
+        let saved = try JSONSerialization.jsonObject(with: Data(contentsOf: try #require(service.historyURL))) as? [String: Any]
+        #expect(saved?["sessions"] as? [String] == ["b", "a"])
     }
 
     @Test(arguments: ["a", "b", "c"])
@@ -399,45 +434,45 @@ struct ServiceTests {
         for id in ["a", "b", "c"] { try await service.connect(session(id)) }
         runner.sessions.removeAll { $0.id == "b" }
         #expect(try await service.connectLast() == "a")
-        #expect(try await service.recentSessionIDs() == ["a", "c"])
+        #expect(service.recentSessionIDs() == ["a", "c"])
         #expect(try await service.connectLast() == "c")
         try await service.delete(sessionID: "c")
-        #expect(try await service.recentSessionIDs() == ["a"])
+        #expect(service.recentSessionIDs() == ["a"])
         #expect(try await service.connectLast(from: session("d")) == "a")
         #expect(try await service.connectLast(from: session("a")) == "d")
     }
 
-    @Test func sessionHistoryBelongsToTheCallingClientAndServer() async throws {
+    @Test func clientsShareHistoryAndSwitchIndependently() async throws {
         let temporary = try TemporaryDirectory(), runner = FakeRunner()
         runner.clientIDs = ["client:test", "client:other"]
         runner.sessions = [("a", "A", "/a"), ("b", "B", "/b"), ("c", "C", "/c")]
         let first = service(runner, temporary)
         let other = first.at(RexTarget(clientID: "client:other", server: "test"))
-        let remote = first.at(RexTarget(clientID: "client:test", server: "other"))
         try await first.connect(session("a"))
         try await other.connect(session("b"))
         try await first.connect(session("c"))
-        try await remote.connect(session("b"))
-        #expect(try await first.recentSessionIDs() == ["c", "a"])
-        #expect(try await other.recentSessionIDs() == ["b"])
-        #expect(try await remote.recentSessionIDs() == ["b"])
-        #expect(first.recentSessionIDsByClient() == ["client:test": ["c", "a"], "client:other": ["b"]])
+        #expect(first.recentSessionIDs() == ["c", "b", "a"])
+        #expect(other.recentSessionIDs() == first.recentSessionIDs())
+        #expect(try await other.connectLast(from: session("b")) == "c")
+        let selection = try #require(runner.calls.last { $0.1.contains("session.select") }?.1)
+        #expect(selection[selection.firstIndex(of: "-C")! + 1] == "client:other")
+        #expect(try await first.connectLast(from: session("a")) == "c")
     }
 
-    @Test func previousSessionKeepsLocalAndRemoteIdentitiesSeparate() async throws {
+    @Test func previousSessionResolvesLocalAndRemoteSessions() async throws {
         let temporary = try TemporaryDirectory(), runner = FakeRunner()
         let host = RexHost(id: "host:build", label: "build", endpoints: ["https://build.example"])
         runner.catalogHosts = [host]
-        runner.sessions = [("same", "Session", "/local")]
-        runner.serverSessions[host.server] = [("same", "Session", "/remote")]
+        runner.sessions = [("local", "Session", "/local")]
+        runner.serverSessions[host.server] = [("remote", "Session", "/remote")]
         let service = service(runner, temporary)
-        try await service.connect(session("same"))
-        try await service.connect(session("same", host: host))
-        #expect(try await service.recentSessionIDs() == ["host:build/same", "same"])
+        try await service.connect(session("local"))
+        try await service.connect(session("remote", host: host))
+        #expect(service.recentSessionIDs() == ["remote", "local"])
         try await service.connectLast()
-        #expect(try await service.recentSessionIDs() == ["same", "host:build/same"])
+        #expect(service.recentSessionIDs() == ["local", "remote"])
         try await service.connectLast()
-        #expect(try await service.recentSessionIDs() == ["host:build/same", "same"])
+        #expect(service.recentSessionIDs() == ["remote", "local"])
         #expect(runner.selectionServers == ["test", "test", "test", "test"])
     }
 
@@ -454,7 +489,7 @@ struct ServiceTests {
         if failure == "sessions" { runner.unavailableServers.insert(host.server) }
         else { runner.catalogHosts = []; runner.catalogWarnings = ["Home is unavailable"] }
         await #expect(throws: ReshError.self) { try await service.connectLast(from: session("local")) }
-        #expect(try await service.recentSessionIDs() == ["local", "host:build/remote"])
+        #expect(service.recentSessionIDs() == ["local", "remote"])
         #expect(runner.selections == ["local"])
         runner.unavailableServers = []; runner.catalogHosts = [host]; runner.catalogWarnings = []
         #expect(try await service.connectLast(from: session("local")) == "remote")
@@ -463,7 +498,7 @@ struct ServiceTests {
         runner.serverSessions[alias.server] = runner.serverSessions[host.server]
         #expect(try await service.connectLast(from: session("remote", host: alias)) == "local")
         #expect(try await service.connectLast(from: session("local")) == "remote")
-        #expect(try await service.recentSessionIDs() == ["host:alias/remote", "local"])
+        #expect(service.recentSessionIDs() == ["remote", "local"])
     }
 }
 
