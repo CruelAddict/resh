@@ -7,7 +7,7 @@ between sessions and agents across multiple hosts.
 <p align="center">
   <sub>Session picker</sub><br>
   <img src="docs/showcase.png" alt="resh session picker"><br>
-  <sub>Agents dahsboard</sub><br>
+  <sub>Agents dashboard</sub><br>
   <img src="docs/agents-view.png" alt="resh agents view">
 </p>
 
