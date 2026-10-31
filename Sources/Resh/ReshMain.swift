@@ -174,7 +174,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         let frontmost = NSWorkspace.shared.frontmostApplication
         let rexAppPID = target.clientID == nil && frontmost?.bundleIdentifier == RexAppMonitor.bundleIdentifier
             ? frontmost?.processIdentifier : nil
-        let currentSessionID = request.currentSessionID ?? RexAppMonitor.focusedSessionID(rexAppPID: rexAppPID)
+        let currentSessionID = request.currentSessionID ?? controller.model.focusedSessionID(rexAppPID: rexAppPID)
         controller.model.configure(target: target)
         controller.model.startBackground()
         dataConnection.prepare(server: target.server)
@@ -182,7 +182,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
             let selected = RexTarget(clientID: snapshot.client, server: target.server)
             let service = service.at(selected)
             controller.prepare(service: service, snapshot: snapshot,
-                recentSessionIDs: controller.model.catalog.recentSessionIDs[snapshot.client] ?? [], currentSessionID: currentSessionID)
+                recentSessionIDs: controller.model.catalog.recentSessionIDs, currentSessionID: currentSessionID)
             controller.show()
             DebugLog.shared.record("Catalog ready; panel displayed in \((ProcessInfo.processInfo.systemUptime - started) * 1000) ms", source: "panel")
             return true
@@ -202,7 +202,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
                 let selected = RexTarget(clientID: snapshot.client, server: target.server)
                 let service = service.at(selected)
                 controller.prepare(service: service, snapshot: snapshot,
-                    recentSessionIDs: controller.model.catalog.recentSessionIDs[snapshot.client] ?? [], currentSessionID: currentSessionID)
+                    recentSessionIDs: controller.model.catalog.recentSessionIDs, currentSessionID: currentSessionID)
                 controller.model.reportDiagnostic(nil, source: "connection")
                 controller.show()
             } catch {
@@ -251,7 +251,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
                 let sameServer = controller.model.service.target.server == (request.server ?? service.target.server)
                 if command.currentSessionID == nil, sameServer {
                     let clients = controller.model.catalog.clients.filter { request.client == nil || $0.client == request.client }
-                    if clients.count == 1 { command.currentSessionID = RexAppMonitor.focusedSessionID(rexAppPID: clients[0].rexAppPID) }
+                    if clients.count == 1 { command.currentSessionID = controller.model.focusedSessionID(rexAppPID: clients[0].rexAppPID) }
                 }
                 let commands = LauncherCommands(service: service, configuration: controller.model.configuration,
                     sessions: sameServer ? controller.model.sessionCandidates : [])
@@ -281,6 +281,8 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
                  "keymapReady": controller.model.isKeymapReady,
                  "keymapError": controller.model.keymapError as Any? ?? NSNull(),
                  "configPath": controller.model.configurationURL.path,
+                 "historyPath": service.historyURL?.path as Any? ?? NSNull(),
+                  "historyError": controller.model.catalog.historyError as Any? ?? NSNull(),
                  "panelError": controller.model.error as Any? ?? NSNull()]
     }
     private func fail(_ error: Error) {

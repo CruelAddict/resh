@@ -2,19 +2,19 @@ import Foundation
 
 public actor ReshService {
     private let client: RexClient
-    private let registry: SessionRegistry
     private let history: SessionHistory
-    public init(client: RexClient, registry: SessionRegistry = SessionRegistry()) {
-        self.client = client; self.registry = registry
-        self.history = SessionHistory()
+    public init(client: RexClient, historyURL: URL? = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent("Library/Application Support/resh/history.json")) {
+        self.client = client
+        self.history = SessionHistory(url: historyURL)
     }
 
-    private init(client: RexClient, registry: SessionRegistry, history: SessionHistory) {
-        self.client = client; self.registry = registry; self.history = history
+    private init(client: RexClient, history: SessionHistory) {
+        self.client = client; self.history = history
     }
 
     public nonisolated func at(_ target: RexTarget) -> ReshService {
-        ReshService(client: client.at(target), registry: registry, history: history)
+        ReshService(client: client.at(target), history: history)
     }
 
     public nonisolated var target: RexTarget { client.target }
@@ -42,31 +42,26 @@ public actor ReshService {
         _ = try client.command(arguments + ["--", invocation.action], timeout: 30)
     }
 
-    public func recentSessionIDs() throws -> [String] {
-        let clientID = try client.target.clientID ?? client.resolveClient().id
-        return history.withVisits { visits in
-            visits.filter { $0.belongs(to: clientID, server: client.target.server) }.map(\.candidateID)
+    public nonisolated var historyURL: URL? { history.url }
+    public nonisolated var historyError: String? { history.error }
+
+    public nonisolated func recentSessionIDs() -> [String] {
+        history.withVisits { $0.map(\.sessionID) }
+    }
+
+    /// A complete catalog can prune restored records before their first visit in this process.
+    public func reconcileHistory(sessionIDs: Set<String>) {
+        history.withVisits { visits in
+            visits.removeAll { $0.selectedAt == nil && !sessionIDs.contains($0.sessionID) }
         }
     }
 
-    public nonisolated func recentSessionIDsByClient() -> [String: [String]] {
+    public func recordVisit(sessionID: String, observedAt: ContinuousClock.Instant, initial: Bool) {
         history.withVisits { visits in
-            var result: [String: [String]] = [:]
-            for visit in visits where visit.server == client.target.server {
-                result[visit.clientID, default: []].append(visit.candidateID)
-            }
-            return result
-        }
-    }
-
-    public func recordVisit(sessionID: String, host: RexHost? = nil, clientID: String,
-                            observedAt: ContinuousClock.Instant, initial: Bool) {
-        history.withVisits { visits in
-            // The first preference read seeds an empty history, but must not
-            // replace a selection already confirmed by a command.
-            if initial, visits.contains(where: { $0.belongs(to: clientID, server: client.target.server) }) { return }
-            SessionHistory.record(sessionID, host: host, clientID: clientID, server: client.target.server,
-                at: observedAt, visits: &visits)
+            // Restored order can be reconciled with initial focus; commands confirmed
+            // during this launch take precedence over a delayed initial read.
+            if initial, visits.first?.selectedAt != nil { return }
+            SessionHistory.record(sessionID, at: observedAt, visits: &visits)
         }
     }
 
@@ -85,9 +80,9 @@ public actor ReshService {
         throw ReshError("Cannot identify the current Rex session's host.")
     }
 
-    public func forgetSession(sessionID: String, host: RexHost? = nil) {
+    public func forgetSession(sessionID: String) {
         history.withVisits { visits in
-            visits.removeAll { $0.server == client.target.server && $0.matches(sessionID, host: host) }
+            visits.removeAll { $0.sessionID == sessionID }
         }
     }
 
@@ -110,7 +105,7 @@ public actor ReshService {
             if candidate.sessionID != nil, let knownClient = client.target.clientID { targetClient = knownClient }
             else { targetClient = try client.resolveClient().id }
             let sessionID = try open(candidate, clientID: targetClient)
-            SessionHistory.record(sessionID, host: candidate.host, clientID: targetClient, server: client.target.server, from: current, visits: &visits)
+            SessionHistory.record(sessionID, from: current?.sessionID, visits: &visits)
             return sessionID
         }
     }
@@ -140,7 +135,7 @@ public actor ReshService {
             let remote = client.at(host)
             let directory = try RexRemote(client: remote).directory(rawPath)
             return try create(path: directory.path, clientID: targetClient, name: directory.name,
-                              startupCommand: nil, dataClient: remote, registryKey: host.id)
+                              startupCommand: nil, dataClient: remote)
         }
         let path = PathIdentity.canonical(rawPath)
         var isDirectory: ObjCBool = false
@@ -149,7 +144,7 @@ public actor ReshService {
         }
         let id = try create(path: path, clientID: targetClient,
             name: candidate.kind == .project ? candidate.title : SessionNamer(runner: client.runner, git: client.tools.git).name(for: path),
-            startupCommand: candidate.startupCommand, dataClient: client, registryKey: client.target.server)
+            startupCommand: candidate.startupCommand, dataClient: client)
         if let zoxide = client.tools.zoxide { _ = try? client.runner.run(zoxide, ["add", path], timeout: 3) }
         return id
     }
@@ -159,82 +154,74 @@ public actor ReshService {
     public func connectLast(from current: Candidate? = nil) throws -> String? {
         try history.withVisits { visits in
             let clientID = try client.target.clientID ?? client.resolveClient().id
-            let recent = visits.filter { $0.belongs(to: clientID, server: client.target.server) }
-            let previous = recent.filter { visit in
-                if let current, let id = current.sessionID { return !visit.matches(id, host: current.host) }
-                return visit.candidateID != recent.first?.candidateID
-            }
+            let currentID = current?.sessionID ?? visits.first?.sessionID
+            let previous = visits.filter { $0.sessionID != currentID }
             var catalog: (hosts: [RexHost], warnings: [String])?, snapshots: [String: [RexSession]] = [:]
             for visit in previous {
-                var host: RexHost?
-                if let saved = visit.host {
-                    if catalog == nil { catalog = try hosts() }
-                    host = catalog?.hosts.first { $0.id == saved.id }
-                    if host == nil, let alias = catalog?.hosts.first(where: { !Set(saved.endpoints).isDisjoint(with: $0.endpoints) }) {
-                        host = RexHost(id: saved.id, label: alias.label, endpoints: alias.endpoints)
-                    }
-                    if host == nil {
-                        guard catalog?.warnings.isEmpty == true else { throw ReshError("Cannot confirm whether the previous session's host was removed.") }
-                        visits.removeAll { $0.belongs(to: clientID, server: client.target.server) && $0.candidateID == visit.candidateID }
-                        continue
-                    }
-                } else { host = nil }
-                let key = host?.id ?? client.target.server
-                if snapshots[key] == nil { snapshots[key] = try sessions(host: host, timeout: host == nil ? 5 : 2) }
-                guard let session = snapshots[key]?.first(where: { $0.sessionID == visit.sessionID }) else {
-                    visits.removeAll { $0.belongs(to: clientID, server: client.target.server) && $0.candidateID == visit.candidateID }
+                guard let candidate = try previousSession(visit.sessionID, catalog: &catalog, snapshots: &snapshots) else {
+                    visits.removeAll { $0.sessionID == visit.sessionID }
                     continue
                 }
-                let candidate = Candidate(id: visit.candidateID, kind: .session, title: session.label,
-                    sessionID: session.sessionID, host: host)
                 let id = try open(candidate, clientID: clientID)
-                SessionHistory.record(id, host: host, clientID: clientID, server: client.target.server, from: current, visits: &visits)
+                SessionHistory.record(id, from: current?.sessionID, visits: &visits)
                 return id
             }
             return nil
         }
     }
 
-    private func create(path: String, clientID: String, name: String, startupCommand: String?,
-                        dataClient: RexClient, registryKey: String) throws -> String {
-        let lock = try FileLock(url: registry.directory.appendingPathComponent("create.lock"))
-        defer { withExtendedLifetime(lock) {} }
-        let sessions = try dataClient.sessions()
-        let liveIDs = Set(sessions.map(\.sessionID))
-        var records = try registry.load().filter { $0.server != registryKey || liveIDs.contains($0.sessionID) }
-        if let record = records.first(where: { $0.server == registryKey && $0.path == path }) {
-            try client.select(record.sessionID, clientID: clientID)
-            return record.sessionID
+    private func previousSession(_ id: String, catalog: inout (hosts: [RexHost], warnings: [String])?,
+                                 snapshots: inout [String: [RexSession]]) throws -> Candidate? {
+        if snapshots[client.target.server] == nil { snapshots[client.target.server] = try sessions() }
+        if let session = snapshots[client.target.server]?.first(where: { $0.sessionID == id }) {
+            return Self.candidates(from: [session])[0]
         }
-        // An unregistered session's current tab directory is not its identity.
-        // Only resh's explicit creation records can associate a folder with a session.
-        let label = SessionNamer.availableName(base: name, path: path, occupied: Set(sessions.map(\.label)))
+        if catalog == nil { catalog = try hosts() }
+        var unavailable: Error?
+        for host in catalog?.hosts ?? [] {
+            do {
+                if snapshots[host.id] == nil { snapshots[host.id] = try sessions(host: host, timeout: 2) }
+                if let session = snapshots[host.id]?.first(where: { $0.sessionID == id }) {
+                    return Self.candidates(from: [session], host: host)[0]
+                }
+            } catch { unavailable = error }
+        }
+        if let unavailable { throw unavailable }
+        if catalog?.warnings.isEmpty == false {
+            throw ReshError("Cannot confirm whether the previous session still exists.\n" + (catalog?.warnings.joined(separator: "\n") ?? ""))
+        }
+        return nil
+    }
+
+    private func create(path: String, clientID: String, name: String, startupCommand: String?,
+                        dataClient: RexClient) throws -> String {
+        let sessions = try dataClient.sessions()
+        if let existing = sessions.first(where: { $0.label == name }) {
+            try client.select(existing.sessionID, clientID: clientID)
+            return existing.sessionID
+        }
         var options: [String: Any] = ["cwd": path]
         if let startupCommand, !startupCommand.isEmpty {
             let quotedPath = "'" + path.replacingOccurrences(of: "'", with: "'\\''") + "'"
             options["initial_input"] = startupCommand.replacingOccurrences(of: "{}", with: quotedPath) + "\n"
         }
-        let reply = try dataClient.api("session.create", ["label": label, "initial_windows": [[
+        let reply = try dataClient.api("session.create", ["label": name, "initial_windows": [[
             "window_label": "Terminal",
             "layout": ["block": ["flavor": "com.superlogical.terminal.shell", "options": options]],
         ]]])
         struct Created: Decodable { let session_id: String }
         let sessionID = try JSONDecoder().decode(Created.self, from: reply).session_id
-        // Save before selecting: if Remote Control is disabled, retrying must not duplicate a session.
-        records.append(SessionRecord(server: registryKey, path: path, sessionID: sessionID))
-        try registry.save(records)
         do { try client.select(sessionID, clientID: clientID) }
         catch {
-            throw ReshError("Created ‘\(label)’, but could not switch Rex to it. Retrying will reuse it.\n\(error.localizedDescription)",
+            throw ReshError("Created ‘\(name)’, but could not switch Rex to it. Retrying will reuse it.\n\(error.localizedDescription)",
                 userMessage: (error as? ReshError)?.userMessage)
         }
         return sessionID
     }
 
-    /// A successful return confirms absence. Registry cleanup is optional.
+    /// A successful return confirms absence.
     public func delete(sessionID: String, host: RexHost? = nil) throws {
         let dataClient = host.map(client.at) ?? client
-        let registryKey = host?.id ?? client.target.server
         do {
             _ = try dataClient.command(["kill", sessionID])
         } catch {
@@ -246,14 +233,6 @@ public actor ReshService {
             }
             if sessions.contains(where: { $0.sessionID == sessionID }) { throw deletionError }
         }
-        forgetSession(sessionID: sessionID, host: host)
-        do {
-            let lock = try FileLock(url: registry.directory.appendingPathComponent("create.lock"), wait: false)
-            defer { withExtendedLifetime(lock) {} }
-            let records = try registry.load()
-            try registry.save(records.filter { $0.server != registryKey || $0.sessionID != sessionID })
-        } catch {
-            DebugLog.shared.record(error, source: "registry:cleanup")
-        }
+        forgetSession(sessionID: sessionID)
     }
 }

@@ -5,20 +5,10 @@ import AppKit
 @MainActor
 final class RexAppMonitor {
     static let bundleIdentifier = "com.superlogical.rex"
-    private static let preferences = UserDefaults(suiteName: "com.superlogical.rex")
     private var observers: [NSObjectProtocol] = []
     private var sleeping = false
     private(set) var isAvailable = false
     var onChange: ((Bool) -> Void)?
-
-    /// Rex exposes no selected-session API. Its read-only focus preference is
-    /// meaningful only for the frontmost app, never for an arbitrary --client.
-    static func focusedSessionID(rexAppPID: Int32?) -> String? {
-        guard let rexAppPID, NSWorkspace.shared.frontmostApplication?.processIdentifier == rexAppPID,
-              let data = preferences?.data(forKey: "Workspace.lastFocusedSession") else { return nil }
-        struct Focus: Decodable { let sessionID: String }
-        return try? JSONDecoder().decode(Focus.self, from: data).sessionID
-    }
 
     init() {
         let center = NSWorkspace.shared.notificationCenter
