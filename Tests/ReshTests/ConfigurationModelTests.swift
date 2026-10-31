@@ -10,7 +10,7 @@ extension PickerTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let url = root.appendingPathComponent("config.toml")
         let tools = Tools(rex: "/not/rex", zoxide: nil, fd: nil, rexApp: "/not/Rex.app")
-        let service = ReshService(client: RexClient(tools: tools, target: RexTarget()), historyURL: nil)
+        let service = ReshService(client: RexClient(tools: tools, target: RexTarget()), stateURL: nil)
         let sessions = [RexSession(sessionID: "s", label: "Live session")]
         try """
         source_order = ["Sessions", "Work projects"]
@@ -70,7 +70,7 @@ extension PickerTests {
         let url = root.appendingPathComponent("config.toml")
         if scenario == "invalid" { try "source_order = []".write(to: url, atomically: true, encoding: .utf8) }
         let tools = Tools(rex: "/not/rex", zoxide: nil, fd: nil, rexApp: "/not/Rex.app")
-        let service = ReshService(client: RexClient(tools: tools, target: RexTarget()), historyURL: nil)
+        let service = ReshService(client: RexClient(tools: tools, target: RexTarget()), stateURL: nil)
         let model = SearchModel(service: service, tools: tools, configurationURL: url, readTheme: { _, _ in .fixture })
         defer { model.clear() }
         model.startBackground()
@@ -113,7 +113,7 @@ extension PickerTests {
         timeout = 20
         """.write(to: url, atomically: true, encoding: .utf8)
         let tools = Tools(rex: "/not/rex", zoxide: nil, fd: nil, rexApp: "/not/Rex.app")
-        let model = SearchModel(service: ReshService(client: RexClient(tools: tools, target: RexTarget()), historyURL: nil), tools: tools,
+        let model = SearchModel(service: ReshService(client: RexClient(tools: tools, target: RexTarget()), stateURL: nil), tools: tools,
             sessions: [RexSession(sessionID: "s", label: "Live")], configurationURL: url, readTheme: { _, _ in .fixture })
         model.loadInitial()
         for _ in 0..<200 {
@@ -163,7 +163,7 @@ extension PickerTests {
         command = ["/bin/sh", "-c", "touch started; while [ ! -f ready ]; do sleep 0.01; done; cat folders.txt"]
         """.write(to: url, atomically: true, encoding: .utf8)
         let tools = Tools(rex: "/not/rex", zoxide: nil, fd: nil, rexApp: "/not/Rex.app")
-        let model = SearchModel(service: ReshService(client: RexClient(tools: tools, target: RexTarget()), historyURL: nil), tools: tools,
+        let model = SearchModel(service: ReshService(client: RexClient(tools: tools, target: RexTarget()), stateURL: nil), tools: tools,
             sessions: [RexSession(sessionID: "s", label: "Test session")], configurationURL: url, readTheme: { _, _ in .fixture })
         defer { model.clear() }
         model.loadInitial()
@@ -198,7 +198,7 @@ extension PickerTests {
 
     @Test @MainActor func recentSessionsKeepSearchRankingAndSelection() {
         let tools = Tools(rex: "/not/rex", zoxide: nil, fd: nil, rexApp: "/not/Rex.app")
-        let service = ReshService(client: RexClient(tools: tools, target: RexTarget()), historyURL: nil)
+        let service = ReshService(client: RexClient(tools: tools, target: RexTarget()), stateURL: nil)
         let model = SearchModel(service: service, tools: tools,
             sessions: [RexSession(sessionID: "a", label: "Session"), RexSession(sessionID: "b", label: "Session"),
                        RexSession(sessionID: "c", label: "Other"), RexSession(sessionID: "d", label: "Session")],
@@ -224,11 +224,15 @@ extension PickerTests {
         #expect(model.results.map(\.id) == ["a", "b"])
     }
 
-    @Test @MainActor func pinningKeepsSessionOrder() throws {
+    @Test @MainActor func pinnedSessionOrderSurvivesRestart() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("resh-state-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
         let tools = Tools(rex: "/not/rex", zoxide: nil, fd: nil, rexApp: "/not/Rex.app")
-        let service = ReshService(client: RexClient(tools: tools, target: RexTarget()), historyURL: nil)
+        let client = RexClient(tools: tools, target: RexTarget())
+        let stateURL = root.appendingPathComponent("state.json")
+        var service = ReshService(client: client, stateURL: stateURL)
         let sessions = ["a", "b", "c", "d"].map { RexSession(sessionID: $0, label: $0) }
-        let model = SearchModel(service: service, tools: tools, readTheme: { _, _ in .fixture })
+        var model = SearchModel(service: service, tools: tools, readTheme: { _, _ in .fixture }, readFocusedSession: { _ in nil })
         defer { model.clear() }
         model.prepare(service: service, sessions: sessions, recentSessionIDs: ["b", "a"], currentSessionID: "b")
         model.selection = try #require(model.results.firstIndex { $0.id == "c" })
@@ -237,7 +241,10 @@ extension PickerTests {
         model.togglePin()
         #expect(model.results.map(\.id) == ["c", "a", "b", "d"])
         #expect(model.selected?.id == "a")
-        model.endPresentation()
+        model.clear()
+        service = ReshService(client: client, stateURL: stateURL)
+        model = SearchModel(service: service, tools: tools, readTheme: { _, _ in .fixture }, readFocusedSession: { _ in nil })
+        #expect(model.pinnedSessionIDs == ["c", "a"])
         model.prepare(service: service, sessions: sessions, recentSessionIDs: ["d", "a", "c"], currentSessionID: "a")
         #expect(model.results.map(\.id) == ["c", "a", "d", "b"])
         #expect(!model.offersNewSession)
@@ -255,5 +262,6 @@ extension PickerTests {
         model.selection = 0
         model.togglePin()
         #expect(model.results.map(\.id) == ["a", "d", "c", "b"])
+        #expect(ReshService(client: client, stateURL: stateURL).pinnedSessionIDs().isEmpty)
     }
 }

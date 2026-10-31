@@ -1,20 +1,26 @@
 import Foundation
 
-/// Shared MRU order. Runtime timestamps protect confirmed selections from queued observations.
-final class SessionHistory: @unchecked Sendable {
+/// Shared picker state. Runtime timestamps protect confirmed selections from queued observations.
+final class SessionState: @unchecked Sendable {
     struct Visit: Sendable {
         let sessionID: String
         let selectedAt: ContinuousClock.Instant?
     }
 
+    struct Content {
+        var visits: [Visit] = []
+        var pins: [String] = []
+    }
+
     private struct Document: Codable {
         var version = 1
-        let sessions: [String]
+        let recentSessions: [String]
+        let pinnedSessions: [String]
     }
 
     private let lock = NSLock()
     let url: URL?
-    private var visits: [Visit] = []
+    private var content = Content()
     private var loaded = false
     private var dirty = false
     private var writable = true
@@ -28,16 +34,16 @@ final class SessionHistory: @unchecked Sendable {
         return persistenceError
     }
 
-    /// Keep a switch and its history update ordered across client handles.
-    func withVisits<T>(_ operation: (inout [Visit]) throws -> T) rethrows -> T {
+    /// Serialize history and pin changes across client handles, saving the whole state together.
+    func withState<T>(_ operation: (inout Content) throws -> T) rethrows -> T {
         lock.lock(); defer { lock.unlock() }
         load()
-        let previous = visits.map(\.sessionID)
+        let previousVisits = content.visits.map(\.sessionID), previousPins = content.pins
         defer {
-            if visits.map(\.sessionID) != previous { dirty = true }
+            if content.visits.map(\.sessionID) != previousVisits || content.pins != previousPins { dirty = true }
             if dirty { save() }
         }
-        return try operation(&visits)
+        return try operation(&content)
     }
 
     static func record(_ sessionID: String, from current: String? = nil,
@@ -59,19 +65,21 @@ final class SessionHistory: @unchecked Sendable {
             let document = try JSONDecoder().decode(Document.self, from: Data(contentsOf: url))
             guard document.version == 1 else {
                 writable = false
-                throw ReshError("Unsupported resh history version: \(document.version).")
+                throw ReshError("Unsupported resh state version: \(document.version).")
             }
             var seen = Set<String>()
-            visits = document.sessions.filter { !$0.isEmpty && seen.insert($0).inserted }
+            content.visits = document.recentSessions.filter { !$0.isEmpty && seen.insert($0).inserted }
                 .map { Visit(sessionID: $0, selectedAt: nil) }
+            var seenPins = Set<String>()
+            content.pins = document.pinnedSessions.filter { !$0.isEmpty && seenPins.insert($0).inserted }
         } catch {
-            let message = "Cannot read resh history at \(url.path): \(error.localizedDescription)"
+            let message = "Cannot read resh state at \(url.path): \(error.localizedDescription)"
             persistenceError = message
-            DebugLog.shared.record(message, source: "history")
+            DebugLog.shared.record(message, source: "state")
             guard writable else { return }
-            // Preserve damaged input before accepting new visits.
+            // Preserve damaged input before accepting new state.
             do {
-                let backup = url.deletingLastPathComponent().appendingPathComponent("history.corrupt-\(UUID().uuidString).json")
+                let backup = url.deletingLastPathComponent().appendingPathComponent("state.corrupt-\(UUID().uuidString).json")
                 try FileManager.default.moveItem(at: url, to: backup)
             } catch { writable = false }
         }
@@ -84,13 +92,14 @@ final class SessionHistory: @unchecked Sendable {
                 attributes: [.posixPermissions: 0o700])
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-            try encoder.encode(Document(sessions: visits.map(\.sessionID))).write(to: url, options: .atomic)
+            try encoder.encode(Document(recentSessions: content.visits.map(\.sessionID), pinnedSessions: content.pins))
+                .write(to: url, options: .atomic)
             try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
             dirty = false
             persistenceError = nil
         } catch {
-            let message = "Cannot save resh history at \(url.path): \(error.localizedDescription)"
-            if message != persistenceError { DebugLog.shared.record(message, source: "history") }
+            let message = "Cannot save resh state at \(url.path): \(error.localizedDescription)"
+            if message != persistenceError { DebugLog.shared.record(message, source: "state") }
             persistenceError = message
         }
     }

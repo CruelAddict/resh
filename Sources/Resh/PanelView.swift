@@ -710,19 +710,20 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
     private func configure(_ cell: SessionCellView, row: Int) {
         let entry = rows[row]
         let selected = table.selectedRow == row
+        let pinned = entry.sessionID.map { pinnedSessionIDs.contains($0) } ?? false
         let numbered = rows.indices.filter { rows[$0].id != currentCandidateID }.prefix(9)
         let number = numbered.firstIndex(of: row).map { numbered.distance(from: numbered.startIndex, to: $0) + 1 }
         var pinHint = "", closeHint = ""
         if shortcutsVisible, selected, showsActions, entry.kind == .session {
             let pinKey = keymap.label(for: .pin, modifiers: modifiers, modes: keyModes)
             let closeKey = keymap.label(for: .delete, modifiers: modifiers, modes: keyModes)
-            if !pinKey.isEmpty { pinHint = pinKey + (pinnedSessionIDs.contains(entry.id) ? "  Unpin" : "  Pin") }
+            if !pinKey.isEmpty { pinHint = pinKey + (pinned ? "  Unpin" : "  Pin") }
             if !closeKey.isEmpty { closeHint = closeKey + "  Close" }
         }
         cell.configure(entry, needsAttention: (entry.kind == .agent ? attentionAgentIDs : attentionSessionIDs).contains(entry.id),
             color: theme.attentionColor.nsColor, textColor: selected ? .white : theme.foreground.nsColor,
             showHost: selected && (showsHosts || entry.kind == .agent), hostWidth: hostColumnWidth,
-            isPinned: pinnedSessionIDs.contains(entry.id),
+            isPinned: pinned,
             isCurrent: entry.id == currentCandidateID,
             shortcut: number.map { resultShortcut(for: $0) } ?? "", shortcutWidth: shortcutColumnWidth,
             pinHint: pinHint, closeHint: closeHint, isWorking: workingAgentIDs.contains(entry.id),

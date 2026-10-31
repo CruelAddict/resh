@@ -220,7 +220,7 @@ struct ServiceTests {
     private func service(_ runner: FakeRunner, _ temporary: TemporaryDirectory, clientID: String = "client:test") -> ReshService {
         let tools = Tools(rex: "/fake/rex", zoxide: nil, fd: nil, rexApp: "/fake/Rex.app")
         return ReshService(client: RexClient(tools: tools, target: RexTarget(clientID: clientID, server: "test"), runner: runner),
-                           historyURL: temporary.url.appendingPathComponent("history.json"))
+                           stateURL: temporary.url.appendingPathComponent("state.json"))
     }
     @Test func repeatSelectionReusesSessionEvenAfterCd() async throws {
         let temporary = try TemporaryDirectory(), runner = FakeRunner()
@@ -271,20 +271,20 @@ struct ServiceTests {
         }
         #expect(runner.creations == 0)
     }
-    @Test func damagedHistoryIsPreservedBeforeRecordingNewVisits() async throws {
+    @Test func damagedStateIsPreservedBeforeRecordingNewVisits() async throws {
         let temporary = try TemporaryDirectory()
-        let url = temporary.url.appendingPathComponent("history.json")
+        let url = temporary.url.appendingPathComponent("state.json")
         try Data("not json".utf8).write(to: url)
         let runner = FakeRunner()
         let service = service(runner, temporary)
         #expect(service.recentSessionIDs().isEmpty)
-        #expect(service.historyError != nil)
+        #expect(service.stateError != nil)
         let backup = try #require(FileManager.default.contentsOfDirectory(at: temporary.url,
-            includingPropertiesForKeys: nil).first { $0.lastPathComponent.hasPrefix("history.corrupt-") })
+            includingPropertiesForKeys: nil).first { $0.lastPathComponent.hasPrefix("state.corrupt-") })
         #expect(try String(contentsOf: backup, encoding: .utf8) == "not json")
         try await service.connect(session("a"))
         #expect(self.service(runner, temporary).recentSessionIDs() == ["a"])
-        #expect(service.historyError == nil)
+        #expect(service.stateError == nil)
     }
     @Test func projectStartupIsOnlyPartOfNewSessionCreation() async throws {
         let temporary = try TemporaryDirectory(), runner = FakeRunner()
@@ -351,25 +351,31 @@ struct ServiceTests {
         Candidate(id: Candidate.identity(id, host: host), kind: .session, title: "Session", sessionID: id, host: host)
     }
 
-    @Test func recentSelectionsAndPreviousSessionSurviveRestart() async throws {
+    @Test func sessionStateSurvivesRestart() async throws {
         let temporary = try TemporaryDirectory(), runner = FakeRunner()
         runner.sessions = [("a", "A", "/a"), ("b", "B", "/b")]
         let first = service(runner, temporary)
+        first.togglePin(sessionID: "a")
+        first.togglePin(sessionID: "b")
         try await first.connect(session("b"), from: session("a"))
         try await first.connect(session("b"), from: session("b"))
         let reopened = first.at(first.target)
         #expect(reopened.recentSessionIDs() == ["b", "a"])
+        #expect(reopened.pinnedSessionIDs() == ["a", "b"])
+        reopened.togglePin(sessionID: "a")
         #expect(try await reopened.connectLast() == "a")
         #expect(reopened.recentSessionIDs() == ["a", "b"])
         #expect(try await reopened.connectLast() == "b")
         let restarted = service(runner, temporary)
         #expect(restarted.recentSessionIDs() == ["b", "a"])
+        #expect(restarted.pinnedSessionIDs() == ["b"])
+        restarted.togglePin(sessionID: "a")
         await restarted.recordVisit(sessionID: "a", observedAt: .now, initial: true)
         #expect(restarted.recentSessionIDs() == ["a", "b"])
         #expect(try await restarted.connectLast(from: session("a")) == "b")
-        let document = try JSONSerialization.jsonObject(with: Data(contentsOf: try #require(restarted.historyURL))) as? [String: Any]
-        #expect(document?["version"] as? Int == 1)
-        #expect(document?["sessions"] as? [String] == ["b", "a"])
+        let saved = service(runner, temporary)
+        #expect(saved.recentSessionIDs() == ["b", "a"])
+        #expect(saved.pinnedSessionIDs() == ["b", "a"])
         #expect(runner.creations == 0)
     }
 
@@ -398,21 +404,24 @@ struct ServiceTests {
         #expect(service.recentSessionIDs() == ["b", "a"])
     }
 
-    @Test func unavailableHistoryStorageKeepsSelectionsUsable() async throws {
+    @Test func unavailableStateStorageKeepsSessionChangesUsable() async throws {
         let temporary = try TemporaryDirectory(), runner = FakeRunner()
         let directory = temporary.url.appendingPathComponent("state")
         try Data().write(to: directory)
         let service = ReshService(client: RexClient(tools: Tools(rex: "/fake/rex", zoxide: nil, fd: nil, rexApp: "/fake/Rex.app"),
             target: RexTarget(clientID: "client:test", server: "test"), runner: runner),
-            historyURL: directory.appendingPathComponent("history.json"))
+            stateURL: directory.appendingPathComponent("state.json"))
+        service.togglePin(sessionID: "a")
         try await service.connect(session("a"))
         #expect(service.recentSessionIDs() == ["a"])
-        #expect(service.historyError != nil)
+        #expect(service.pinnedSessionIDs() == ["a"])
+        #expect(service.stateError != nil)
         try FileManager.default.removeItem(at: directory)
         try await service.connect(session("b"))
-        #expect(service.historyError == nil)
-        let saved = try JSONSerialization.jsonObject(with: Data(contentsOf: try #require(service.historyURL))) as? [String: Any]
-        #expect(saved?["sessions"] as? [String] == ["b", "a"])
+        #expect(service.stateError == nil)
+        let saved = try JSONSerialization.jsonObject(with: Data(contentsOf: try #require(service.stateURL))) as? [String: Any]
+        #expect(saved?["recentSessions"] as? [String] == ["b", "a"])
+        #expect(saved?["pinnedSessions"] as? [String] == ["a"])
     }
 
     @Test(arguments: ["a", "b", "c"])

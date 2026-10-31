@@ -256,7 +256,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
                 let commands = LauncherCommands(service: service, configuration: controller.model.configuration,
                     sessions: sameServer ? controller.model.sessionCandidates : [])
                 let result = try await commands.run(command)
-                controller.model.catalog.refreshHistory()
+                controller.model.catalog.refreshState()
                 if result["session_id"] != nil, controller.panel.isVisible { controller.dismiss(focusRex: false) }
                 return result
             } catch {
@@ -281,8 +281,8 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
                  "keymapReady": controller.model.isKeymapReady,
                  "keymapError": controller.model.keymapError as Any? ?? NSNull(),
                  "configPath": controller.model.configurationURL.path,
-                 "historyPath": service.historyURL?.path as Any? ?? NSNull(),
-                  "historyError": controller.model.catalog.historyError as Any? ?? NSNull(),
+                 "statePath": service.stateURL?.path as Any? ?? NSNull(),
+                 "stateError": controller.model.catalog.stateError as Any? ?? NSNull(),
                  "panelError": controller.model.error as Any? ?? NSNull()]
     }
     private func fail(_ error: Error) {

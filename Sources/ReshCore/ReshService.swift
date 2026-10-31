@@ -2,19 +2,19 @@ import Foundation
 
 public actor ReshService {
     private let client: RexClient
-    private let history: SessionHistory
-    public init(client: RexClient, historyURL: URL? = FileManager.default.homeDirectoryForCurrentUser
-        .appendingPathComponent("Library/Application Support/resh/history.json")) {
+    private let state: SessionState
+    public init(client: RexClient, stateURL: URL? = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent("Library/Application Support/resh/state.json")) {
         self.client = client
-        self.history = SessionHistory(url: historyURL)
+        self.state = SessionState(url: stateURL)
     }
 
-    private init(client: RexClient, history: SessionHistory) {
-        self.client = client; self.history = history
+    private init(client: RexClient, state: SessionState) {
+        self.client = client; self.state = state
     }
 
     public nonisolated func at(_ target: RexTarget) -> ReshService {
-        ReshService(client: client.at(target), history: history)
+        ReshService(client: client.at(target), state: state)
     }
 
     public nonisolated var target: RexTarget { client.target }
@@ -42,26 +42,41 @@ public actor ReshService {
         _ = try client.command(arguments + ["--", invocation.action], timeout: 30)
     }
 
-    public nonisolated var historyURL: URL? { history.url }
-    public nonisolated var historyError: String? { history.error }
+    public nonisolated var stateURL: URL? { state.url }
+    public nonisolated var stateError: String? { state.error }
 
     public nonisolated func recentSessionIDs() -> [String] {
-        history.withVisits { $0.map(\.sessionID) }
+        state.withState { $0.visits.map(\.sessionID) }
     }
 
-    /// A complete catalog can prune restored records before their first visit in this process.
-    public func reconcileHistory(sessionIDs: Set<String>) {
-        history.withVisits { visits in
-            visits.removeAll { $0.selectedAt == nil && !sessionIDs.contains($0.sessionID) }
+    public nonisolated func pinnedSessionIDs() -> [String] {
+        state.withState { $0.pins }
+    }
+
+    @discardableResult
+    public nonisolated func togglePin(sessionID: String) -> [String] {
+        state.withState { content in
+            if content.pins.contains(sessionID) { content.pins.removeAll { $0 == sessionID } }
+            else { content.pins.append(sessionID) }
+            return content.pins
+        }
+    }
+
+    /// A complete catalog prunes missing pins and history restored before this process's first visit.
+    public func reconcileState(sessionIDs: Set<String>) {
+        guard !Task.isCancelled else { return }
+        state.withState { content in
+            content.visits.removeAll { $0.selectedAt == nil && !sessionIDs.contains($0.sessionID) }
+            content.pins.removeAll { !sessionIDs.contains($0) }
         }
     }
 
     public func recordVisit(sessionID: String, observedAt: ContinuousClock.Instant, initial: Bool) {
-        history.withVisits { visits in
+        state.withState { content in
             // Restored order can be reconciled with initial focus; commands confirmed
             // during this launch take precedence over a delayed initial read.
-            if initial, visits.first?.selectedAt != nil { return }
-            SessionHistory.record(sessionID, at: observedAt, visits: &visits)
+            if initial, content.visits.first?.selectedAt != nil { return }
+            SessionState.record(sessionID, at: observedAt, visits: &content.visits)
         }
     }
 
@@ -80,9 +95,10 @@ public actor ReshService {
         throw ReshError("Cannot identify the current Rex session's host.")
     }
 
-    public func forgetSession(sessionID: String) {
-        history.withVisits { visits in
-            visits.removeAll { $0.sessionID == sessionID }
+    public nonisolated func forgetSession(sessionID: String) {
+        state.withState { content in
+            content.visits.removeAll { $0.sessionID == sessionID }
+            content.pins.removeAll { $0 == sessionID }
         }
     }
 
@@ -100,12 +116,12 @@ public actor ReshService {
     /// Paths are sent as JSON arguments, never interpolated into a shell command.
     @discardableResult
     public func connect(_ candidate: Candidate, from current: Candidate? = nil) throws -> String {
-        try history.withVisits { visits in
+        try state.withState { content in
             let targetClient: String
             if candidate.sessionID != nil, let knownClient = client.target.clientID { targetClient = knownClient }
             else { targetClient = try client.resolveClient().id }
             let sessionID = try open(candidate, clientID: targetClient)
-            SessionHistory.record(sessionID, from: current?.sessionID, visits: &visits)
+            SessionState.record(sessionID, from: current?.sessionID, visits: &content.visits)
             return sessionID
         }
     }
@@ -152,18 +168,18 @@ public actor ReshService {
     /// An explicit calling session takes precedence over the last recorded selection.
     @discardableResult
     public func connectLast(from current: Candidate? = nil) throws -> String? {
-        try history.withVisits { visits in
+        try state.withState { content in
             let clientID = try client.target.clientID ?? client.resolveClient().id
-            let currentID = current?.sessionID ?? visits.first?.sessionID
-            let previous = visits.filter { $0.sessionID != currentID }
+            let currentID = current?.sessionID ?? content.visits.first?.sessionID
+            let previous = content.visits.filter { $0.sessionID != currentID }
             var catalog: (hosts: [RexHost], warnings: [String])?, snapshots: [String: [RexSession]] = [:]
             for visit in previous {
                 guard let candidate = try previousSession(visit.sessionID, catalog: &catalog, snapshots: &snapshots) else {
-                    visits.removeAll { $0.sessionID == visit.sessionID }
+                    content.visits.removeAll { $0.sessionID == visit.sessionID }
                     continue
                 }
                 let id = try open(candidate, clientID: clientID)
-                SessionHistory.record(id, from: current?.sessionID, visits: &visits)
+                SessionState.record(id, from: current?.sessionID, visits: &content.visits)
                 return id
             }
             return nil

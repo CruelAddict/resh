@@ -7,7 +7,7 @@ import ReshCore
 final class SessionStore {
     let updates = PassthroughSubject<(Result<RexEventUpdate, Error>, RexHost?), Never>()
     @Published private(set) var recentSessionIDs: [String] = []
-    @Published private(set) var historyError: String?
+    @Published private(set) var stateError: String?
     private(set) var sessions: [RexSession]?
     private(set) var clients: [RexAppClient] = []
     private(set) var isConnected = false
@@ -19,7 +19,7 @@ final class SessionStore {
     private var target: RexTarget
     private var running = false
     private var generation = 0
-    private var historyTask: Task<Void, Never>?
+    private var stateTask: Task<Void, Never>?
 
     var processID: pid_t? { connection.processID }
 
@@ -36,7 +36,7 @@ final class SessionStore {
         running = true
         generation += 1
         let request = generation
-        refreshHistory()
+        refreshState()
         connection.start(target: target) { [weak self] result in
             Task { @MainActor [weak self] in
                 guard let self, generation == request, running else { return }
@@ -98,18 +98,18 @@ final class SessionStore {
     }
 
     @discardableResult
-    func refreshHistory() -> Task<Void, Never> {
-        historyTask?.cancel()
+    func refreshState() -> Task<Void, Never> {
+        stateTask?.cancel()
         let service = service, request = generation
         let task = Task {
             let updated = await Task.detached {
-                (service.recentSessionIDs(), service.historyError)
+                (service.recentSessionIDs(), service.stateError)
             }.value
             guard !Task.isCancelled, generation == request else { return }
             if updated.0 != recentSessionIDs { recentSessionIDs = updated.0 }
-            if updated.1 != historyError { historyError = updated.1 }
+            if updated.1 != stateError { stateError = updated.1 }
         }
-        historyTask = task
+        stateTask = task
         return task
     }
 
@@ -117,7 +117,7 @@ final class SessionStore {
     func stop() -> [RexEventConnection] {
         generation += 1
         running = false; isConnected = false
-        historyTask?.cancel(); historyTask = nil
+        stateTask?.cancel(); stateTask = nil
         let connections = [connection] + remoteConnections.values.map { $0.1 }
         remoteConnections = [:]
         for connection in connections { connection.stop() }
