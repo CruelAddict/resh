@@ -24,6 +24,15 @@ private final class CommandStub: CommandRunning, @unchecked Sendable {
 }
 
 extension PickerTests {
+    @Test(arguments: [
+        ("сщву", "code"), ("GHBDTN", "ПРИВЕТ"), ("йц", "qw"),
+        ("цщкл.фзш", "work/api"), ("zoga", "yoga"), ("m[nchen", "münchen"), ("сщву 🚀", "code 🚀"),
+    ])
+    func keyboardLayoutQueries(_ query: String, _ alternative: String) {
+        #expect(KeyboardLayouts.fixture.alternatives(for: query).contains(alternative))
+        #expect(KeyboardLayouts([]).alternatives(for: query).isEmpty)
+    }
+
     @Test @MainActor func numberedShortcutsSkipTheCurrentSession() async throws {
         var selected: String?
         let stub = try CommandStub { arguments in

@@ -4,6 +4,53 @@ import Testing
 @testable import Resh
 
 extension PickerTests {
+    @Test(arguments: ["", "keyboard_layout_search = false", "keyboard_layout_search = true"], [false, true])
+    @MainActor func keyboardLayoutSearchConfiguration(_ config: String, _ hasCurrentSession: Bool) throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("resh-layouts-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = root.appendingPathComponent("config.toml")
+        try config.write(to: url, atomically: true, encoding: .utf8)
+        let tools = Tools(rex: "/not/rex", zoxide: nil, fd: nil, rexApp: "/not/Rex.app")
+        let service = ReshService(client: RexClient(tools: tools, target: RexTarget()), stateURL: nil)
+        let sessions = [RexSession(sessionID: "code", label: "code"), RexSession(sessionID: "native", label: "сщву")]
+        let model = SearchModel(service: service, tools: tools, sessions: sessions, configurationURL: url,
+            readTheme: { _, _ in .fixture }, readFocusedSession: { _ in nil }, readKeyboardLayouts: { .fixture })
+        defer { model.clear() }
+        model.prepare(service: service, sessions: sessions, currentSessionID: hasCurrentSession ? "native" : nil)
+        let enabled = config != "keyboard_layout_search = false"
+        #expect(model.configuration.keyboardLayoutSearch == enabled)
+        model.query = "сщву"
+        #expect(Set(model.results.map(\.id)) == (enabled ? ["code", "native"] : ["native"]))
+        #expect(model.query == "сщву")
+        model.query = "СЩВ"
+        #expect(Set(model.results.map(\.id)) == (enabled ? ["code", "native"] : ["native"]))
+    }
+
+    @Test @MainActor func keyboardLayoutsRefreshBetweenPresentations() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("resh-layouts-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = root.appendingPathComponent("config.toml")
+        try "keyboard_layout_search = true".write(to: url, atomically: true, encoding: .utf8)
+        let tools = Tools(rex: "/not/rex", zoxide: nil, fd: nil, rexApp: "/not/Rex.app")
+        let service = ReshService(client: RexClient(tools: tools, target: RexTarget()), stateURL: nil)
+        let sessions = [RexSession(sessionID: "code", label: "code")]
+        var layouts = KeyboardLayouts.fixture
+        let model = SearchModel(service: service, tools: tools, sessions: sessions, configurationURL: url,
+            readTheme: { _, _ in .fixture }, readFocusedSession: { _ in nil }, readKeyboardLayouts: { layouts })
+        defer { model.clear() }
+        model.query = "сщву"
+        #expect(model.results.map(\.id) == ["code"] && !model.offersNewSession)
+        model.endPresentation()
+        layouts = KeyboardLayouts([])
+        model.prepare(service: service, sessions: sessions)
+        model.query = "сщву"
+        #expect(model.results.isEmpty && model.offersNewSession)
+        model.query = "code"
+        #expect(model.results.map(\.id) == ["code"])
+    }
+
     @Test @MainActor func configurationStaysFixedUntilRestart() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("resh-model-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: root.appendingPathComponent("project"), withIntermediateDirectories: true)

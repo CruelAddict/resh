@@ -32,6 +32,7 @@ final class SearchModel: ObservableObject {
     let configurationError: String?
     var isConfigurationReady: Bool { configurationError == nil }
     private var search = FuzzyMatcher([])
+    private var keyboardLayouts = KeyboardLayouts([])
     private var sessionSnapshot: [Candidate] = []
     private var agentSnapshot: [Candidate] = []
     private var sessionRanks: [String: Int] = [:]
@@ -59,6 +60,7 @@ final class SearchModel: ObservableObject {
     private let snapshotProvider: any RexSnapshotProviding
     private let readPreferences: @Sendable () -> [String: Any]
     private let readFocusedSession: @MainActor (Int32?) -> String?
+    private let readKeyboardLayouts: @MainActor () -> KeyboardLayouts
     private let readTheme: @Sendable (String, Bool) throws -> RexTheme
     private var diagnostics: [String: String] = [:]
     private(set) var service: ReshService
@@ -78,7 +80,8 @@ final class SearchModel: ObservableObject {
          snapshotProvider: (any RexSnapshotProviding)? = nil,
          readTheme: @escaping @Sendable (String, Bool) throws -> RexTheme = { try RexTheme.read(rexApp: $0, systemIsDark: $1) },
          readPreferences: @escaping @Sendable () -> [String: Any] = { RexTheme.preferences(keys: ["Workspace.programActivitySeen"]) },
-         readFocusedSession: (@MainActor (Int32?) -> String?)? = nil) {
+         readFocusedSession: (@MainActor (Int32?) -> String?)? = nil,
+         readKeyboardLayouts: @escaping @MainActor () -> KeyboardLayouts = { .enabled() }) {
         self.service = service; self.tools = tools
         self.catalog = SessionStore(tools: tools, service: service)
         self.configurationURL = (configurationURL ?? ConfigurationFile.url()).standardizedFileURL
@@ -95,6 +98,8 @@ final class SearchModel: ObservableObject {
         self.focusTracker = tracker
         self.readFocusedSession = readFocusedSession ?? { tracker?.selectedSession(in: $0) }
         self.readTheme = readTheme
+        self.readKeyboardLayouts = readKeyboardLayouts
+        if configuration.keyboardLayoutSearch { keyboardLayouts = readKeyboardLayouts() }
         do { self.theme = try readTheme(tools.rexApp, Self.systemIsDark) }
         catch {
             self.theme = .fallback(systemIsDark: Self.systemIsDark)
@@ -214,6 +219,7 @@ final class SearchModel: ObservableObject {
 
     func prepare(service: ReshService, sessions: [RexSession], recentSessionIDs: [String] = [], rexAppPID: Int32? = nil,
                  currentSessionID: String? = nil) {
+        if configuration.keyboardLayoutSearch { keyboardLayouts = readKeyboardLayouts() }
         if !isOpening { query = ""; selection = 0 }
         self.service = service
         self.rexAppPID = rexAppPID
@@ -286,16 +292,17 @@ final class SearchModel: ObservableObject {
         if currentCandidateID != currentID { currentCandidateID = currentID }
         let floatingIDs = (configuration.floatUnreadSessions ? attentionSessionIDs : [])
             .union(configuration.floatUnreadAgents ? attentionAgentIDs : [])
+        let alternatives = keyboardLayouts.alternatives(for: query)
         let updated: [Candidate]
         if configuration.source(scope)?.kind == .agents {
-            let matching = Set(search.filter(query: query, limit: search.entries.count).map(\.id))
+            let matching = Set(search.filter(query: query, alternatives: alternatives, limit: search.entries.count).map(\.id))
             let entries = search.entries.filter { matching.contains($0.id) }
             updated = Array((entries.filter { floatingIDs.contains($0.id) }
                 + entries.filter { !floatingIDs.contains($0.id) }).prefix(100))
         } else if pinnedSessionIDs.isEmpty, currentID == nil, floatingIDs.isEmpty {
-            updated = search.filter(query: query)
+            updated = search.filter(query: query, alternatives: alternatives)
         } else {
-            let matching = search.filter(query: query, limit: search.entries.count)
+            let matching = search.filter(query: query, alternatives: alternatives, limit: search.entries.count)
             var byID = Dictionary(matching.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
             var ordered = pinnedSessionIDs.compactMap { sessionID -> Candidate? in
                 guard let entry = matching.first(where: { $0.kind == .session && $0.sessionID == sessionID }) else { return nil }

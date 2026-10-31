@@ -63,6 +63,16 @@ struct FuzzyTests {
         #expect(search.filter(query: "xyz").isEmpty)
         #expect(search.filter(query: "", limit: 1).count == 1)
     }
+    @Test func alternativeQueriesShareRankingAndLimit() {
+        let search = FuzzyMatcher([
+            Candidate(id: "both", kind: .session, title: "сщву code"),
+            Candidate(id: "original", kind: .session, title: "code"),
+            Candidate(id: "translated", kind: .session, title: "сщву"),
+        ])
+        #expect(search.filter(query: "code", alternatives: ["сщву"]).map(\.id) == ["both", "original", "translated"])
+        #expect(search.filter(query: "code", alternatives: ["сщву"], limit: 2).map(\.id) == ["both", "original"])
+        #expect(search.filter(query: " ", alternatives: ["сщву"]).map(\.id) == ["both", "original", "translated"])
+    }
     @Test func foldersUseHomeRelativePaths() {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         let entry = Candidate(id: "one", kind: .directory, title: "api", path: home + "/work/api")

@@ -70,6 +70,7 @@ struct ConfigurationTests {
         "source_order = []", "initial_source = 'missing'", "source_order = ['Sessions', 'Sessions']",
         "source_order = ['sessions']",
         "typo = true", "[keymap]\n'ctrl+n' = 'next'",
+        "keyboard_layout_search = 'true'",
         "[[sources]]\nname = 'a'\ntype = 'union'\nsources = ['a']",
         "[[sources]]\nname = 'a'\ntype = 'union'\nsources = ['b']\n[[sources]]\nname = 'b'\ntype = 'union'\nsources = ['a']",
         "[[sources]]\nname = 'a'\ntype = 'union'\nsources = ['missing']",

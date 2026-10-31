@@ -31,6 +31,7 @@ public struct ReshConfiguration: Equatable, Sendable {
     public let shortenHomePath: Bool
     public let floatUnreadSessions: Bool
     public let floatUnreadAgents: Bool
+    public let keyboardLayoutSearch: Bool
 
     public static let defaults: Self = try! parse("")
 
@@ -113,7 +114,8 @@ public struct ReshConfiguration: Equatable, Sendable {
         return Self(sources: sources, visibleSources: visibleIDs.compactMap { id in sources.first { $0.id == id } },
                     initialSource: initial, projects: projects,
                     defaultStartupCommand: raw.default_session?.startup_command, shortenHomePath: raw.shorten_home_path ?? false,
-                    floatUnreadSessions: raw.float_unread_sessions ?? true, floatUnreadAgents: raw.float_unread_agents ?? true)
+                    floatUnreadSessions: raw.float_unread_sessions ?? true, floatUnreadAgents: raw.float_unread_agents ?? true,
+                    keyboardLayoutSearch: raw.keyboard_layout_search ?? true)
     }
 }
 
@@ -160,8 +162,10 @@ private struct Document: Decodable {
     let shorten_home_path: Bool?
     let float_unread_sessions: Bool?
     let float_unread_agents: Bool?
+    let keyboard_layout_search: Bool?
     enum CodingKeys: String, CodingKey, CaseIterable {
-        case sources, session, source_order, initial_source, default_session, shorten_home_path, float_unread_sessions, float_unread_agents
+        case sources, session, source_order, initial_source, default_session, shorten_home_path
+        case float_unread_sessions, float_unread_agents, keyboard_layout_search
     }
     init(from decoder: Decoder) throws {
         if try decoder.container(keyedBy: AnyKey.self).allKeys.contains(where: { $0.stringValue == "keymap" }) {
@@ -177,6 +181,7 @@ private struct Document: Decodable {
         shorten_home_path = try c.decodeIfPresent(Bool.self, forKey: .shorten_home_path)
         float_unread_sessions = try c.decodeIfPresent(Bool.self, forKey: .float_unread_sessions)
         float_unread_agents = try c.decodeIfPresent(Bool.self, forKey: .float_unread_agents)
+        keyboard_layout_search = try c.decodeIfPresent(Bool.self, forKey: .keyboard_layout_search)
     }
 }
 private struct RawSource: Decodable {

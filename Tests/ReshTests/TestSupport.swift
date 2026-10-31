@@ -12,6 +12,14 @@ extension RexTheme {
     }
 }
 
+extension KeyboardLayouts {
+    static let fixture = KeyboardLayouts([
+        "qwertyuiop[]asdfghjkl;'zxcvbnm,./`",
+        "йцукенгшщзхъфывапролджэячсмитьбю.ё",
+        "qwertzuiopü+asdfghjklöäyxcvbnm,.-^",
+    ].map { ($0 + $0.uppercased()).map(String.init) })
+}
+
 final class SnapshotStub: RexSnapshotProviding, @unchecked Sendable {
     private let lock = NSLock()
     private var responses: [Result<RexSnapshot, Error>]

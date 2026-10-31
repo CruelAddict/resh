@@ -8,6 +8,10 @@ shorten_home_path = false
 float_unread_sessions = true
 float_unread_agents = true
 
+# Search using all enabled macOS keyboard layouts; defaults to true.
+# For example, typing куыр on a Russian layout also finds resh.
+keyboard_layout_search = true
+
 # Controls both view order and visibility: unlisted sources are hidden.
 # Omit to keep the default views and append custom sources automatically.
 source_order = ["Sessions", "Agents", "All", "Projects", "Work", "Repositories", "Recent", "Find"]
