@@ -1,0 +1,208 @@
+name: Release
+
+on:
+  push:
+    tags: ["v[0-9]*.[0-9]*.[0-9]*"]
+  pull_request:
+    paths:
+      - .github/workflows/release.yml
+      - scripts/build.sh
+      - scripts/package.sh
+      - install.sh
+      - Packaging/**
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Validate release tag
+        id: version
+        shell: bash
+        run: |
+          if [[ $GITHUB_EVENT_NAME == pull_request ]]; then
+            echo 'version=0.0.0' >> "$GITHUB_OUTPUT"
+            echo 'prerelease=true' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          [[ $GITHUB_REF_NAME =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$ ]] || {
+            echo 'Expected vMAJOR.MINOR.PATCH, optionally followed by a prerelease suffix.' >&2
+            exit 1
+          }
+          git merge-base --is-ancestor HEAD origin/main || {
+            echo 'Releases must be tagged from a commit already merged into main.' >&2
+            exit 1
+          }
+          echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          if [[ $GITHUB_REF_NAME == *-* ]]; then
+            echo 'prerelease=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'prerelease=false' >> "$GITHUB_OUTPUT"
+          fi
+
+  macos:
+    needs: prepare
+    name: Package macOS (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x86_64
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+      RESH_VERSION: ${{ needs.prepare.outputs.version }}
+      RESH_BUILD_NUMBER: ${{ github.run_number }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Test and build
+        run: |
+          swift test
+          bash scripts/build.sh
+          dist/resh/resh --help
+          test "$(dist/resh/resh --name /tmp/resh-release-check)" = resh-release-check
+          codesign --verify --strict dist/resh/resh
+      - name: Package
+        run: bash scripts/package.sh
+      - name: Attest archive built by this job
+        if: startsWith(github.ref, 'refs/tags/')
+        id: attest
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
+        with:
+          subject-path: dist/releases/resh-macos-${{ matrix.arch }}.tar.gz
+      - name: Keep downloadable signature bundle
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          BUNDLE: ${{ steps.attest.outputs.bundle-path }}
+          ARCH: ${{ matrix.arch }}
+        run: cp "$BUNDLE" "dist/releases/resh-macos-$ARCH.tar.gz.sigstore.json"
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: macos-${{ matrix.arch }}
+          path: dist/releases/resh-macos-*
+          if-no-files-found: error
+          retention-days: 7
+
+  portable:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Check scripts and package remote adapter
+        run: |
+          shellcheck install.sh scripts/build.sh scripts/package.sh
+          bash scripts/package.sh
+          cp install.sh dist/releases/install.sh
+      - name: Attest installer and remote adapter
+        if: startsWith(github.ref, 'refs/tags/')
+        id: attest
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
+        with:
+          subject-path: |
+            dist/releases/resh-remote.tar.gz
+            dist/releases/install.sh
+      - name: Keep downloadable signature bundle
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          BUNDLE: ${{ steps.attest.outputs.bundle-path }}
+        run: cp "$BUNDLE" dist/releases/resh-portable.sigstore.json
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: portable
+          path: |
+            dist/releases/resh-remote.tar.gz
+            dist/releases/install.sh
+            dist/releases/resh-portable.sigstore.json
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [prepare, macos, portable]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RELEASE_TAG: ${{ github.ref_name }}
+      PRERELEASE: ${{ needs.prepare.outputs.prerelease }}
+    steps:
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          path: dist/releases
+          merge-multiple: true
+      - name: Verify build provenance before publication
+        working-directory: dist/releases
+        shell: bash
+        run: |
+          for file in resh-macos-arm64.tar.gz resh-macos-x86_64.tar.gz resh-remote.tar.gz install.sh; do
+            gh attestation verify "$file" --repo "$GH_REPO" \
+              --signer-workflow "$GH_REPO/.github/workflows/release.yml" \
+              --source-ref "refs/tags/$RELEASE_TAG" --source-digest "$GITHUB_SHA" \
+              --deny-self-hosted-runners
+          done
+          sha256sum resh-macos-arm64.tar.gz resh-macos-x86_64.tar.gz resh-remote.tar.gz install.sh > checksums.txt
+      - name: Attest checksum manifest
+        id: attest
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
+        with:
+          subject-path: dist/releases/checksums.txt
+      - name: Publish complete release
+        shell: bash
+        env:
+          BUNDLE: ${{ steps.attest.outputs.bundle-path }}
+        run: |
+          cp "$BUNDLE" dist/releases/checksums.txt.sigstore.json
+          if gh release view "$RELEASE_TAG" --json isDraft > release.json 2>/dev/null; then
+            jq -e '.isDraft' release.json > /dev/null || {
+              echo 'Refusing to replace a published release.' >&2
+              exit 1
+            }
+          else
+            gh release create "$RELEASE_TAG" --verify-tag --draft \
+              --title "$RELEASE_TAG" --generate-notes --prerelease="$PRERELEASE" \
+              --notes "Built on GitHub-hosted runners with signed build provenance. [Verify and install](https://github.com/$GH_REPO/blob/$RELEASE_TAG/docs/releases.md)."
+          fi
+          gh release upload "$RELEASE_TAG" dist/releases/* --clobber
+          # A resumed draft must contain exactly this run's assets.
+          find dist/releases -type f -exec basename {} \; | sort > expected-assets.txt
+          gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name' | sort > uploaded-assets.txt
+          diff -u expected-assets.txt uploaded-assets.txt
+          latest=true
+          if [[ $PRERELEASE == true ]]; then latest=false; fi
+          gh release edit "$RELEASE_TAG" --draft=false --prerelease="$PRERELEASE" --latest="$latest"

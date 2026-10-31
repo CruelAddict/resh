@@ -5,13 +5,22 @@ import Testing
 
 @Suite("Subprocess execution", .serialized)
 struct RunnerTests {
-    @Test(arguments: [[], ["--remote"]])
-    func missingInstallationOptionValue(_ options: [String]) throws {
+    @Test(arguments: ["--source", "--config", "--repository", "--version"])
+    func missingInstallationOptionValue(_ option: String) throws {
         let installer = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
             .deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("install.sh")
-        let result = try SystemCommandRunner().run("/bin/bash", [installer.path] + options + ["--source"], timeout: 2)
+        let result = try SystemCommandRunner().run("/bin/bash", [installer.path, option], timeout: 2)
         #expect(result.status != 0)
-        #expect(String(decoding: result.stderr, as: UTF8.self).contains("Missing value for --source"))
+        #expect(String(decoding: result.stderr, as: UTF8.self).contains("Missing value for \(option)"))
+    }
+
+    @Test(arguments: [["--repository", "owner/repo"], ["--verify"]])
+    func conflictingInstallationSources(_ options: [String]) throws {
+        let installer = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("install.sh")
+        let result = try SystemCommandRunner().run("/bin/bash", [installer.path, "--source", "distribution"] + options, timeout: 2)
+        #expect(result.status != 0)
+        #expect(String(decoding: result.stderr, as: UTF8.self).contains("--source cannot be combined"))
     }
 
     @Test func drainsBothPipes() throws {

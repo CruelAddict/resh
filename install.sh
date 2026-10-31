@@ -8,8 +8,9 @@ Usage: bash install.sh [options]
   --remote                 Install only the remote folder-source adapter
   --source DIRECTORY       Use a checkout or unpacked distribution
   --config FILE            Rex config file (required for a custom server config)
-  --repository OWNER/REPO  Download a checksummed GitHub release
+  --repository OWNER/REPO  Download a release (default: CruelAddict/resh)
   --version TAG            Release tag (default: latest)
+  --verify                 Download and verify build provenance with GitHub CLI
 
 Rex must already be installed and running as the installing account.
 Installing resh requires a prebuilt macOS bundle. --remote installs only Lua files.
@@ -23,12 +24,13 @@ parse_options() {
     while (( $# > 0 )); do
         case "$1" in
             --remote) remote=true; shift ;;
+            --verify) verify=true; download=true; shift ;;
             --source|--config|--repository|--version)
                 [[ $# -ge 2 && -n $2 ]] || die "Missing value for $1"
                 case "$1" in
                     --source) source_dir=$2 ;;
                     --config) config=$2; explicit_config=true ;;
-                    --repository) repository=$2 ;;
+                    --repository) repository=$2; download=true ;;
                     --version) version=$2 ;;
                 esac
                 shift 2 ;;
@@ -36,6 +38,7 @@ parse_options() {
             *) die "Unknown option: $1" ;;
         esac
     done
+    [[ -z $source_dir || $download == false ]] || die '--source cannot be combined with --repository or --verify.'
 }
 
 resolve_config_path() {
@@ -116,6 +119,16 @@ download_release() {
     [[ $repository =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || die 'Pass --repository OWNER/REPO (or RESH_REPOSITORY), or --source DIRECTORY.'
     [[ $version =~ ^[A-Za-z0-9._-]+$ ]] || die 'Invalid release tag.'
 
+    if [[ $verify == true ]]; then
+        if ! command -v gh >/dev/null 2>&1 || ! gh attestation verify --help >/dev/null 2>&1; then
+            die '--verify requires a current GitHub CLI (gh) with attestation support.'
+        fi
+        if [[ $version == latest ]]; then
+            version=$(gh release view --repo "$repository" --json tagName --jq .tagName)
+            [[ $version =~ ^[A-Za-z0-9._-]+$ ]] || die 'Invalid latest release tag.'
+        fi
+    fi
+
     if [[ $remote == true ]]; then
         artifact=resh-remote.tar.gz
     else
@@ -139,6 +152,15 @@ download_release() {
     [[ $expected =~ ^[a-fA-F0-9]{64}$ ]] || die 'Release checksum is missing or ambiguous.'
     [[ $(sha256 "$work/archive.tar.gz") == "$expected" ]] || die 'Release checksum mismatch; nothing was installed.'
 
+    if [[ $verify == true ]]; then
+        local commit
+        commit=$(gh api "repos/$repository/commits/$version" --jq .sha)
+        gh attestation verify "$work/archive.tar.gz" --repo "$repository" \
+            --signer-workflow "$repository/.github/workflows/release.yml" \
+            --source-ref "refs/tags/$version" --source-digest "$commit" \
+            --deny-self-hosted-runners || die 'Release provenance verification failed; nothing was installed.'
+    fi
+
     tar -tzf "$work/archive.tar.gz" > "$work/entries"
     awk '/^\// || /(^|\/)\.\.(\/|$)/ { bad=1 } END { exit bad }' "$work/entries" || die 'Unsafe archive paths.'
     tar -tvzf "$work/archive.tar.gz" > "$work/types"
@@ -149,8 +171,12 @@ download_release() {
 }
 
 find_source() {
-    if [[ -z $source_dir && -f ${BASH_SOURCE[0]:-} ]]; then
-        source_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+    if [[ -z $source_dir && $download == false && -f ${BASH_SOURCE[0]:-} ]]; then
+        local candidate
+        candidate=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+        if [[ -f $candidate/rex-actions.lua || -f $candidate/integration/rex-actions.lua ]]; then
+            source_dir=$candidate
+        fi
     fi
     if [[ -z $source_dir ]]; then
         download_release
@@ -282,9 +308,10 @@ cleanup() {
 }
 
 main() {
-    remote=false
+    remote=false verify=false download=false
     source_dir="" config=""
-    repository=${RESH_REPOSITORY:-}
+    repository=${RESH_REPOSITORY:-CruelAddict/resh}
+    if [[ -n ${RESH_REPOSITORY:-} ]]; then download=true; fi
     version=latest
     explicit_config=false
     work="" pending_file="" module=""
