@@ -12,7 +12,7 @@ permissions:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: true
 
 jobs:
   build-and-test:
@@ -29,6 +29,8 @@ jobs:
             arch: x86_64
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+      RESH_VERSION: 0.0.0
+      RESH_BUILD_NUMBER: ${{ github.run_number }}
     steps:
       - uses: actions/checkout@v7
       - name: Check toolchain
@@ -39,8 +41,14 @@ jobs:
         run: swift test
       - name: Build native helper
         run: bash scripts/build.sh
-      - name: Check CLI startup
-        run: dist/resh/resh --help
+      - name: Check distribution
+        run: |
+          dist/resh/resh --help
+          dist/resh/resh setup --help
+          test "$(dist/resh/resh --name /tmp/resh-release-check)" = resh-release-check
+          codesign --verify --strict dist/resh/resh
+      - name: Package
+        run: bash scripts/package.sh
 
   scripts:
     name: Scripts
@@ -61,3 +69,7 @@ jobs:
           shellcheck install.sh scripts/build.sh scripts/package.sh Sources/Resh/Resources/setup.sh
       - name: Check Lua syntax
         run: luac5.1 -p Sources/Resh/Resources/*.lua integration/*.lua examples/config/*.lua
+      - name: Package remote adapter
+        run: |
+          bash scripts/package.sh
+          cp install.sh dist/releases/install.sh
