@@ -23,16 +23,20 @@ final class PanelController: NSObject, NSWindowDelegate {
     private var picker: PanelView?
     private var rexAppPID: Int32?
     private var presentationAppPID: Int32?
+    private var positioningTask: Task<Void, Never>?
+    private let readWindowFrame: @Sendable (Int32?) -> CGRect?
     private var isDismissing = false
     private var keyRuntime = KeymapRuntime()
     private static let permissionPromptBundleID = "com.apple.UserNotificationCenter"
 
     init(service: ReshService, tools: Tools, sessions: [RexSession] = [], configurationURL: URL? = nil,
          snapshotProvider: (any RexSnapshotProviding)? = nil,
+         readWindowFrame: @escaping @Sendable (Int32?) -> CGRect? = { $0.flatMap { PanelPlacement.windowFrame(rexAppPID: $0) } },
          readTheme: @escaping @Sendable (String, Bool) throws -> RexTheme = { try RexTheme.read(rexApp: $0, systemIsDark: $1) }) {
         self.model = SearchModel(service: service, tools: tools, sessions: sessions, configurationURL: configurationURL,
             snapshotProvider: snapshotProvider, readTheme: readTheme)
         self.attentionConnection = RexEventConnection(tools: tools)
+        self.readWindowFrame = readWindowFrame
         panel = LauncherPanel(contentRect: NSRect(x: 0, y: 0, width: PanelLayout.width,
             height: PanelLayout.height(resultCount: sessions.count)),
             styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
@@ -64,7 +68,7 @@ final class PanelController: NSObject, NSWindowDelegate {
             self?.resize(resultCount: entries.count, hasError: error != nil)
         }.store(in: &subscriptions)
         NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.didActivateApplicationNotification).sink { [weak self] event in
-            guard let self, self.panel.isVisible,
+            guard let self, self.panel.isVisible || self.positioningTask != nil,
                   let application = event.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
                   application.activationPolicy == .regular,
                   !self.isPresentationApplication(application) else { return }
@@ -76,7 +80,7 @@ final class PanelController: NSObject, NSWindowDelegate {
 
     func toggle(open: () -> Bool) -> Bool {
         guard !model.isConnecting else { return false }
-        if panel.isVisible {
+        if panel.isVisible || positioningTask != nil {
             dismiss(focusRex: true)
             return true
         }
@@ -110,7 +114,6 @@ final class PanelController: NSObject, NSWindowDelegate {
     func show() {
         model.startBackground()
         display()
-        if model.isConfigurationReady { startAttention() }
         model.refreshTheme()
     }
 
@@ -147,16 +150,38 @@ final class PanelController: NSObject, NSWindowDelegate {
     }
 
     private func display() {
+        guard positioningTask == nil else { return }
         isDismissing = false
+        resize(resultCount: model.results.count, hasError: model.error != nil)
+        if panel.isVisible {
+            displayPositioned()
+            return
+        }
+        let frontmost = NSWorkspace.shared.frontmostApplication
+        presentationAppPID = frontmost?.processIdentifier
+        let pid = rexAppPID ?? (frontmost?.bundleIdentifier == RexAppMonitor.bundleIdentifier ? frontmost?.processIdentifier : nil)
+        let readWindowFrame = self.readWindowFrame
+        // Keep WindowServer queries off the AppKit thread. Show only on Rex's display.
+        positioningTask = Task { [weak self] in
+            let frame = await Task.detached { readWindowFrame(pid) }.value
+            guard !Task.isCancelled, let self else { return }
+            self.positioningTask = nil
+            if let resolvedPID = self.rexAppPID, resolvedPID != pid {
+                self.display()
+                return
+            }
+            let screens = NSScreen.screens
+            guard let frame, let index = PanelPlacement.screenIndex(windowFrame: frame, screens: screens.map(\.frame)) else { return }
+            self.position(on: screens[index])
+            self.displayPositioned()
+        }
+    }
+
+    private func displayPositioned() {
         keyRuntime.reset()
         if model.keyModes != keyRuntime.modes { model.keyModes = keyRuntime.modes }
         stopEventMonitoring()
         themeTimer?.invalidate()
-        resize(resultCount: model.results.count, hasError: model.error != nil)
-        if !panel.isVisible {
-            presentationAppPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
-            position()
-        }
         panel.makeKeyAndOrderFront(nil)
         picker?.updateModifiers(NSEvent.modifierFlags)
         if let picker { panel.makeFirstResponder(picker.searchField) }
@@ -187,6 +212,7 @@ final class PanelController: NSObject, NSWindowDelegate {
                 self?.model.refreshAttention()
             }
         }
+        if rexAppPID != nil, model.isConfigurationReady { startAttention() }
     }
 
     private func apply(theme: RexTheme) {
@@ -273,13 +299,7 @@ final class PanelController: NSObject, NSWindowDelegate {
         panel.setFrame(frame, display: panel.isVisible, animate: false)
     }
 
-    private func position() {
-        // Enumerating other apps' windows can stall WindowServer for ~500 ms.
-        // Position directly on the pointer's display instead; no geometry cache or permissions.
-        let screens = NSScreen.screens
-        guard let primary = screens.first else { return }
-        let pointer = NSEvent.mouseLocation
-        let screen = screens.first { $0.frame.contains(pointer) } ?? NSScreen.main ?? primary
+    private func position(on screen: NSScreen) {
         let visible = screen.visibleFrame
         let size = panel.frame.size
         let x = max(visible.minX + 10, min(visible.midX - size.width / 2, visible.maxX - size.width - 10))
@@ -324,7 +344,7 @@ final class PanelController: NSObject, NSWindowDelegate {
     }
 
     private func dismissForOutsideInteraction(_ reason: String) {
-        guard panel.isVisible, !isDismissing, !model.isConnecting, NSApp.modalWindow == nil else { return }
+        guard panel.isVisible || positioningTask != nil, !isDismissing, !model.isConnecting, NSApp.modalWindow == nil else { return }
         DebugLog.shared.record(reason, source: "panel")
         dismiss(focusRex: false)
     }
@@ -337,6 +357,8 @@ final class PanelController: NSObject, NSWindowDelegate {
     func dismiss(focusRex: Bool) {
         guard !isDismissing else { return }
         isDismissing = true
+        positioningTask?.cancel()
+        positioningTask = nil
         keyRuntime.reset()
         DebugLog.shared.record("Hiding panel (focusRex: \(focusRex))", source: "panel")
         onDismiss?()
@@ -358,5 +380,34 @@ final class PanelController: NSObject, NSWindowDelegate {
         remoteConnections = [:]
         for connection in connections { connection.stop() }
         return connections
+    }
+}
+
+enum PanelPlacement {
+    static func windowFrame(rexAppPID: Int32) -> CGRect? {
+        guard let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else { return nil }
+        // The list is front-to-back: use the foremost regular window of this Rex app.
+        for window in windows where window[kCGWindowOwnerPID as String] as? Int32 == rexAppPID
+            && window[kCGWindowLayer as String] as? Int == 0 {
+            guard let bounds = window[kCGWindowBounds as String] as? [String: Any],
+                  let frame = CGRect(dictionaryRepresentation: bounds as CFDictionary), !frame.isEmpty else { continue }
+            return frame
+        }
+        return nil
+    }
+
+    static func screenIndex(windowFrame: CGRect, screens: [CGRect]) -> Int? {
+        guard let primary = screens.first else { return nil }
+        // Core Graphics uses a top-left origin; AppKit uses a bottom-left origin.
+        let frame = CGRect(x: windowFrame.minX, y: primary.maxY - windowFrame.maxY,
+            width: windowFrame.width, height: windowFrame.height)
+        var selected: Int?
+        var largestArea: CGFloat = 0
+        for (index, screen) in screens.enumerated() {
+            let overlap = screen.intersection(frame)
+            let area = overlap.isNull ? 0 : overlap.width * overlap.height
+            if area > largestArea { selected = index; largestArea = area }
+        }
+        return selected
     }
 }

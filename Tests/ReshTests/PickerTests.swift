@@ -210,11 +210,12 @@ extension PickerTests {
     }
 
     @Test(arguments: ["ready", "loading", "error"])
-    @MainActor func launcherTogglesPanel(_ state: String) {
+    @MainActor func launcherTogglesPanel(_ state: String) async throws {
         _ = NSApplication.shared
         let tools = Tools(rex: "/not/rex", zoxide: nil, fd: nil, rexApp: "/not/Rex.app")
         let service = ReshService(client: RexClient(tools: tools, target: RexTarget(clientID: "client:test")))
-        let controller = PanelController(service: service, tools: tools, readTheme: { _, _ in .fixture })
+        let controller = PanelController(service: service, tools: tools,
+            readWindowFrame: { _ in CGRect(x: 0, y: 0, width: 800, height: 600) }, readTheme: { _, _ in .fixture })
         defer { controller.dismiss(focusRex: false); controller.model.clear() }
         func present() -> Bool {
             if state == "error" {
@@ -229,11 +230,13 @@ extension PickerTests {
             return true
         }
         #expect(controller.toggle(open: present))
+        for _ in 0..<300 where !controller.panel.isVisible { try await Task.sleep(for: .milliseconds(10)) }
         #expect(controller.panel.isVisible)
         controller.model.query = "session"
         #expect(controller.toggle(open: present))
         #expect(!controller.panel.isVisible && !controller.model.isOpening && controller.model.query.isEmpty)
         #expect(controller.toggle(open: present))
+        for _ in 0..<300 where !controller.panel.isVisible { try await Task.sleep(for: .milliseconds(10)) }
         #expect(controller.panel.isVisible)
     }
 
@@ -260,6 +263,35 @@ extension PickerTests {
             #expect(controller.handle(event))
             #expect(controller.model.selection == expectedSelection)
         }
+    }
+
+    @Test(arguments: ["left", "right", "above", "below"])
+    func launcherFollowsRexDisplay(_ arrangement: String) {
+        let primary = CGRect(x: 0, y: 0, width: 1440, height: 900)
+        let secondary: CGRect
+        let window: CGRect
+        switch arrangement {
+        case "left":
+            secondary = CGRect(x: -1920, y: 0, width: 1920, height: 1080)
+            window = CGRect(x: -1700, y: 0, width: 1200, height: 800)
+        case "right":
+            secondary = CGRect(x: 1440, y: 0, width: 1920, height: 1080)
+            window = CGRect(x: 1600, y: 0, width: 1200, height: 800)
+        case "above":
+            secondary = CGRect(x: 0, y: 900, width: 1920, height: 1080)
+            window = CGRect(x: 200, y: -1000, width: 1200, height: 800)
+        default:
+            secondary = CGRect(x: 0, y: -1080, width: 1920, height: 1080)
+            window = CGRect(x: 200, y: 1000, width: 1200, height: 800)
+        }
+        #expect(PanelPlacement.screenIndex(windowFrame: window, screens: [primary, secondary]) == 1)
+    }
+
+    @Test func launcherUsesLargestWindowOverlap() {
+        let screens = [CGRect(x: 0, y: 0, width: 1440, height: 900),
+            CGRect(x: 1440, y: 0, width: 1920, height: 1080)]
+        #expect(PanelPlacement.screenIndex(windowFrame: CGRect(x: 1300, y: 100, width: 600, height: 600), screens: screens) == 1)
+        #expect(PanelPlacement.screenIndex(windowFrame: CGRect(x: 1000, y: 100, width: 600, height: 600), screens: screens) == 0)
     }
 
     @Test(arguments: [false, true])
