@@ -1,9 +1,15 @@
 # resh
 
 A macOS session manager for [Rex](https://www.superlogical.com/rex), inspired by
-[sesh](https://github.com/joshmedeski/sesh). Focused on blazingly fast session
-creation and switching across multiple projects. Designed to feel native to
-Rex's stunning UI.
+[sesh](https://github.com/joshmedeski/sesh). Resh lets you instantly jump
+between sessions and agents across multiple hosts.
+
+<p align="center">
+  <sub>Session picker</sub><br>
+  <img src="docs/showcase.png" alt="resh session picker"><br>
+  <sub>Agents dahsboard</sub><br>
+  <img src="docs/agents-view.png" alt="resh agents view">
+</p>
 
 - Fuzzy-find and open frequently visited directories with `zoxide`
 - Find other directories with `fd`
@@ -29,7 +35,7 @@ To find directories with `Recent` and `Find`, install the optional dependencies
 brew install zoxide fd
 ```
 
-Set up [`zoxide` in your shell](https://github.com/ajeetdsouza/zoxide#installation) to
+Set up [`zoxide`](https://github.com/ajeetdsouza/zoxide#installation) to
 track the directories you visit.
 
 ## Using resh
@@ -137,7 +143,3 @@ bash install.sh --remote
 ```
 
 The remote machine also needs to have `zoxide` and `fd` configured.
-
-## License
-
-[MIT](LICENSE). See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for attribution.

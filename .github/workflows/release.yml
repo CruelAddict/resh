@@ -3,15 +3,6 @@ name: Release
 on:
   push:
     tags: ["v[0-9]*.[0-9]*.[0-9]*"]
-  pull_request:
-    paths:
-      - .github/workflows/release.yml
-      - scripts/build.sh
-      - scripts/package.sh
-      - install.sh
-      - Sources/Resh/Resources/setup.sh
-      - Sources/Resh/ReshMain.swift
-      - Packaging/**
 
 permissions:
   contents: read
@@ -36,11 +27,6 @@ jobs:
         id: version
         shell: bash
         run: |
-          if [[ $GITHUB_EVENT_NAME == pull_request ]]; then
-            echo 'version=0.0.0' >> "$GITHUB_OUTPUT"
-            echo 'prerelease=true' >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
           [[ $GITHUB_REF_NAME =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$ ]] || {
             echo 'Expected vMAJOR.MINOR.PATCH, optionally followed by a prerelease suffix.' >&2
             exit 1
@@ -92,13 +78,11 @@ jobs:
       - name: Package
         run: bash scripts/package.sh
       - name: Attest archive built by this job
-        if: startsWith(github.ref, 'refs/tags/')
         id: attest
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
         with:
           subject-path: dist/releases/resh-macos-${{ matrix.arch }}.tar.gz
       - name: Keep downloadable signature bundle
-        if: startsWith(github.ref, 'refs/tags/')
         env:
           BUNDLE: ${{ steps.attest.outputs.bundle-path }}
           ARCH: ${{ matrix.arch }}
@@ -128,7 +112,6 @@ jobs:
           bash scripts/package.sh
           cp install.sh dist/releases/install.sh
       - name: Attest installer and remote adapter
-        if: startsWith(github.ref, 'refs/tags/')
         id: attest
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
         with:
@@ -136,7 +119,6 @@ jobs:
             dist/releases/resh-remote.tar.gz
             dist/releases/install.sh
       - name: Keep downloadable signature bundle
-        if: startsWith(github.ref, 'refs/tags/')
         env:
           BUNDLE: ${{ steps.attest.outputs.bundle-path }}
         run: cp "$BUNDLE" dist/releases/resh-portable.sigstore.json
@@ -151,7 +133,6 @@ jobs:
           retention-days: 7
 
   publish:
-    if: startsWith(github.ref, 'refs/tags/')
     needs: [prepare, macos, portable]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
