@@ -27,7 +27,6 @@ public struct ReshConfiguration: Equatable, Sendable {
     public let visibleSources: [SourceDefinition]
     public let initialSource: SearchScope
     public let projects: [ProjectDefinition]
-    public let keymap: Keymap
     public let defaultStartupCommand: String?
 
     public static let defaults: Self = try! parse("")
@@ -105,9 +104,8 @@ public struct ReshConfiguration: Equatable, Sendable {
         }
         let initial = SearchScope(rawValue: raw.initial_source ?? "sessions")
         guard visibleIDs.contains(initial) else { throw ReshError("initial_source must appear in source_order.") }
-        let keymap = try Keymap(overrides: raw.keymap ?? [:], sources: ids)
         return Self(sources: sources, visibleSources: visibleIDs.compactMap { id in sources.first { $0.id == id } },
-                    initialSource: initial, projects: projects, keymap: keymap,
+                    initialSource: initial, projects: projects,
                     defaultStartupCommand: raw.default_session?.startup_command)
     }
 }
@@ -147,17 +145,18 @@ private func rejectUnknown(_ decoder: Decoder, _ allowed: [String]) throws {
     if !unknown.isEmpty { throw ReshError("Unknown configuration field: \(unknown.sorted().joined(separator: ", "))") }
 }
 private struct Document: Decodable {
-    let keymap: [String: String]?
     let sources: [RawSource]?
     let session: [RawProject]?
     let source_order: [String]?
     let initial_source: String?
     let default_session: Defaults?
-    enum CodingKeys: String, CodingKey, CaseIterable { case keymap, sources, session, source_order, initial_source, default_session }
+    enum CodingKeys: String, CodingKey, CaseIterable { case sources, session, source_order, initial_source, default_session }
     init(from decoder: Decoder) throws {
+        if try decoder.container(keyedBy: AnyKey.self).allKeys.contains(where: { $0.stringValue == "keymap" }) {
+            throw ReshError("Move [keymap] shortcuts to rex.bind in Rex's init.lua. See examples/config/keymap.lua, then restart resh.")
+        }
         try rejectUnknown(decoder, CodingKeys.allCases.map(\.rawValue))
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        keymap = try c.decodeIfPresent([String:String].self, forKey: .keymap)
         sources = try c.decodeIfPresent([RawSource].self, forKey: .sources)
         session = try c.decodeIfPresent([RawProject].self, forKey: .session)
         source_order = try c.decodeIfPresent([String].self, forKey: .source_order)

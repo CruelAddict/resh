@@ -19,6 +19,8 @@ private struct Options {
     var serviceOperation: ServiceOperation?
     var config: String?
     var checkConfig = false
+    var action: String?
+    var actionArguments: [String: KeyArgument] = [:]
 
     init(_ arguments: [String]) throws {
         var arguments = arguments
@@ -53,6 +55,8 @@ private struct Options {
             case "--debug": debug = true
             case "--config": config = URL(fileURLWithPath: (try value() as NSString).expandingTildeInPath).standardizedFileURL.path
             case "--check-config": checkConfig = true
+            case "--action": action = try value()
+            case "--args": actionArguments = try JSONDecoder().decode([String: KeyArgument].self, from: Data(try value().utf8))
             case "--help", "-h": help = true
             default: throw ReshError("Unknown option: \(argument)")
             }
@@ -69,7 +73,6 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
     private var controller: PanelController?
     private var lockDescriptor: Int32 = -1
     private var host: LauncherHost?
-    private var hotkey: RexHotkey?
     private var openingID: UUID?
     private let dataConnection: RexDataConnection
     private var rexMonitor: RexAppMonitor?
@@ -104,8 +107,6 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
             host?.onRequest = { [weak self] request in await self?.handle(request) ?? ["error": "Host is stopping."] }
         } catch { fail(error); return }
         installMenu()
-        hotkey = RexHotkey()
-        hotkey?.onPress = { [weak self] in _ = self?.toggle(LauncherRequest()) }
         rexMonitor = RexAppMonitor()
         rexMonitor?.onChange = { [weak self] available in
             guard let self, !self.isStopping else { return }
@@ -129,7 +130,6 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         isStopping = true
         openingID = nil
         rexMonitor?.stop()
-        hotkey?.stop()
         dataConnection.stop()
         controller?.dismiss(focusRex: false)
         let connections = (controller?.stopAttention() ?? []) + (controller?.model.stopBackground() ?? [])
@@ -154,7 +154,6 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         openingID = nil
         if lockDescriptor >= 0 { flock(lockDescriptor, LOCK_UN); close(lockDescriptor) }
         host?.stop()
-        hotkey?.stop()
         dataConnection.stop()
         controller?.stopAttention()
         controller?.model.stopBackground()
@@ -172,7 +171,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         let started = ProcessInfo.processInfo.systemUptime
         let target = RexTarget(clientID: request.client, server: request.server)
         let frontmost = NSWorkspace.shared.frontmostApplication
-        let rexAppPID = target.clientID == nil && PanelShortcut.launcherIsEnabled(frontmostBundleID: frontmost?.bundleIdentifier)
+        let rexAppPID = target.clientID == nil && frontmost?.bundleIdentifier == RexAppMonitor.bundleIdentifier
             ? frontmost?.processIdentifier : nil
         let currentSessionID = request.currentSessionID ?? RexAppMonitor.focusedSessionID(rexAppPID: rexAppPID)
         controller.model.configure(target: target)
@@ -224,6 +223,15 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         if request.operation == "connect", let error = controller.model.configurationError {
             return ["error": error]
         }
+        if let action = request.action {
+            guard !isStopping, controller.panel.isVisible else { return ["error": "Open the resh picker first."] }
+            guard request.client == nil || request.client == controller.model.service.target.clientID else {
+                return ["error": "The resh picker belongs to another Rex client."]
+            }
+            guard let shortcut = action.shortcut else { return ["error": "Unknown picker action or invalid arguments: \(action.action)"] }
+            controller.perform(shortcut)
+            return ["accepted": true]
+        }
         if request.changesSession {
             guard !isStopping, !isExecutingCommand, openingID == nil, !controller.model.isConnecting else {
                 return ["error": "A session operation is still in progress."]
@@ -268,10 +276,10 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
                  "stopping": isStopping, "connectionState": connectionState,
                  "dataProcessID": controller.model.catalog.processID as Any? ?? NSNull(),
                  "sessions": controller.model.sessionCount,
-                "configPath": controller.model.configurationURL.path,
-                "panelError": controller.model.error as Any? ?? NSNull(),
-                "nativeHotkeyRegistered": hotkey?.isRegistered ?? false,
-                "nativeHotkeyStatus": hotkey?.registrationStatus ?? 0]
+                 "keymapReady": controller.model.isKeymapReady,
+                 "keymapError": controller.model.keymapError as Any? ?? NSNull(),
+                 "configPath": controller.model.configurationURL.path,
+                 "panelError": controller.model.error as Any? ?? NSNull()]
     }
     private func fail(_ error: Error) {
         DebugLog.shared.record(error, source: "startup")
@@ -311,6 +319,7 @@ struct ReshMain {
                 resh [--client CLIENT_ID] [--current-session SESSION_ID] [--server ADDRESS] [--debug]
                 resh --connect DIRECTORY [--client CLIENT_ID] [--current-session SESSION_ID]
                 resh --last [--client CLIENT_ID] [--current-session SESSION_ID]
+                resh --action ACTION [--args JSON] [--client CLIENT_ID]
                 resh --name DIRECTORY
                 resh --diagnose
                 resh service start|stop|restart|status [--config FILE] [--debug]
@@ -318,7 +327,8 @@ struct ReshMain {
                 resh --check-config [--config FILE]
 
                 Config: ~/.config/resh/config.toml (or $RESH_CONFIG / --config FILE)
-                Restart with resh service restart to apply configuration changes.
+                Shortcuts: Rex init.lua; apply with rex config reload.
+                Apply TOML changes with resh service restart.
                 --debug: write diagnostics to ~/Library/Logs/resh/debug.log
 
                 ⌘S open/close resh in Rex · ⌘L previous session in Rex
@@ -342,6 +352,10 @@ struct ReshMain {
                 var request = LauncherRequest(client: options.client, server: options.server, config: configURL?.path,
                     debug: options.debug ? true : nil)
                 request.currentSessionID = options.currentSessionID
+                if let action = options.action {
+                    request.operation = "action"
+                    request.action = KeyInvocation(action: action, args: options.actionArguments)
+                }
                 if options.last { request.operation = "last" }
                 else if let path = options.connect {
                     request.operation = "connect"
@@ -361,6 +375,7 @@ struct ReshMain {
                     request.operation = "status"
                 }
                 var response = try LauncherIPC.send(request)
+                if request.action != nil, response == nil { throw ReshError("Open the resh picker first.") }
                 if response == nil, request.operation == "show" || request.changesSession || startsService {
                     if !startsService { try LauncherIPC.launchHost(configurationPath: configURL?.path) }
                     for _ in 0..<200 {

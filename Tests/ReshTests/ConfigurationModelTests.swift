@@ -14,8 +14,6 @@ extension PickerTests {
         let sessions = [RexSession(sessionID: "s", label: "Live session")]
         try """
         source_order = ["sessions", "configs"]
-        [keymap]
-        "ctrl+t" = "source:configs"
         [[session]]
         name = "Project one"
         path = "project"
@@ -26,7 +24,6 @@ extension PickerTests {
         model.startBackground()
         await model.loadingTask?.value
         #expect(model.configuration.visibleSources.map(\.id) == [.sessions, .configs])
-        #expect(model.configuration.keymap.action(for: try KeyChord("ctrl+t")) == .scope(.configs))
         model.changeScope(.configs)
         await model.loadingTask?.value
         #expect(model.results.map(\.title) == ["Project one"])
@@ -36,8 +33,6 @@ extension PickerTests {
         try """
         initial_source = "configs"
         source_order = ["configs"]
-        [keymap]
-        "ctrl+w" = "source:configs"
         [[session]]
         name = "Project two"
         path = "project"
@@ -51,7 +46,6 @@ extension PickerTests {
         model.retry()
         await model.loadingTask?.value
         #expect(model.configuration.visibleSources.map(\.id) == [.sessions, .configs])
-        #expect(model.configuration.keymap.action(for: try KeyChord("ctrl+t")) == .scope(.configs))
         #expect(model.results.map(\.title) == ["Project one"])
 
         let restarted = SearchModel(service: service, tools: tools, sessions: sessions, configurationURL: url,
@@ -61,8 +55,6 @@ extension PickerTests {
         await restarted.loadingTask?.value
         #expect(restarted.scope == .configs)
         #expect(restarted.configuration.visibleSources.map(\.id) == [.configs])
-        #expect(restarted.configuration.keymap.action(for: try KeyChord("ctrl+w")) == .scope(.configs))
-        #expect(restarted.configuration.keymap.action(for: try KeyChord("ctrl+t")) == nil)
         #expect(restarted.results.map(\.title) == ["Project two"])
     }
 
@@ -94,94 +86,7 @@ extension PickerTests {
         defer { restarted.clear() }
         #expect(restarted.isConfigurationReady && restarted.error == nil)
     }
-    @Test(arguments: ["atomic", "in-place", "rename", "recreate", "directory", "parent", "symlink", "unrelated"])
-    func observesConfigurationFileChanges(_ change: String) async throws {
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent("resh-watch-" + UUID().uuidString)
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: root) }
-        let parent = root.appendingPathComponent("settings/nested"), url = parent.appendingPathComponent("config.toml")
-        let target = change == "symlink" ? root.appendingPathComponent("target.toml") : url
-        if change != "parent" {
-            try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
-            try "first".write(to: target, atomically: true, encoding: .utf8)
-            if change == "symlink" {
-                try FileManager.default.createSymbolicLink(atPath: url.path, withDestinationPath: "../../target.toml")
-            }
-        }
-        let (changes, continuation) = AsyncStream<String>.makeStream()
-        let watcher = FileWatcher(url: url) {
-            continuation.yield((try? String(contentsOf: url, encoding: .utf8)) ?? "missing")
-        }
-        defer { watcher.stop(); continuation.finish() }
-        await Task.detached { watcher.waitUntilReady() }.value
-        if change == "unrelated" {
-            try "unrelated".write(to: parent.appendingPathComponent("unrelated"), atomically: true, encoding: .utf8)
-            let extra = await withTaskGroup(of: Bool.self) { tasks in
-                tasks.addTask { var iterator = changes.makeAsyncIterator(); return await iterator.next() != nil }
-                tasks.addTask { try? await Task.sleep(for: .milliseconds(50)); return false }
-                defer { tasks.cancelAll() }
-                return await tasks.next() ?? false
-            }
-            #expect(!extra)
-            return
-        }
-        func expectChange(_ value: String, performing operation: () throws -> Void) async throws {
-            try await withThrowingTaskGroup(of: Void.self) { tasks in
-                tasks.addTask {
-                    for await snapshot in changes where snapshot == value { return }
-                    throw ReshError("File observation ended before the change")
-                }
-                tasks.addTask {
-                    try await Task.sleep(for: .seconds(3))
-                    throw ReshError("Timed out waiting for a file change")
-                }
-                defer { tasks.cancelAll() }
-                try operation()
-                try await tasks.next()
-            }
-        }
-        if change == "rename" || change == "directory" {
-            try await expectChange("missing") {
-                try FileManager.default.moveItem(at: change == "directory" ? parent : url,
-                    to: root.appendingPathComponent("previous"))
-            }
-        } else if change == "recreate" {
-            try await expectChange("missing") { try FileManager.default.removeItem(at: url) }
-        }
-        try await expectChange("second") {
-            try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
-            if change == "atomic" {
-                for index in 0..<10 { try "revision \(index)".write(to: target, atomically: true, encoding: .utf8) }
-            }
-            try "second".write(to: target, atomically: change != "in-place", encoding: .utf8)
-        }
-        if change == "symlink" {
-            try await expectChange("missing") { try FileManager.default.removeItem(at: target) }
-            try await expectChange("third") { try "third".write(to: target, atomically: true, encoding: .utf8) }
-        }
-    }
-    @Test(arguments: [false, true])
-    func stopsFileObservation(_ afterReadiness: Bool) async throws {
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent("resh-watch-" + UUID().uuidString)
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: root) }
-        let url = root.appendingPathComponent("config.toml")
-        try "first".write(to: url, atomically: true, encoding: .utf8)
-        let (changes, continuation) = AsyncStream<Void>.makeStream()
-        let watcher = FileWatcher(url: url) { continuation.yield(()) }
-        defer { watcher.stop(); continuation.finish() }
-        if afterReadiness { await Task.detached { watcher.waitUntilReady() }.value }
-        watcher.stop()
-        await Task.detached { watcher.waitUntilReady() }.value
-        try "second".write(to: url, atomically: true, encoding: .utf8)
-        let changed = await withTaskGroup(of: Bool.self) { tasks in
-            tasks.addTask { var iterator = changes.makeAsyncIterator(); return await iterator.next() != nil }
-            tasks.addTask { try? await Task.sleep(for: .milliseconds(50)); return false }
-            defer { tasks.cancelAll() }
-            return await tasks.next() ?? false
-        }
-        #expect(!changed)
-    }
+
     @Test @MainActor func compositeSourcesKeepFreshSessionsAvailableWhileProvidersRun() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("resh-slow-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: root.appendingPathComponent("project"), withIntermediateDirectories: true)

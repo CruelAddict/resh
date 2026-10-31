@@ -8,7 +8,7 @@ source_order = ["sessions", "all", "configs", "work", "repositories", "directori
 initial_source = "all"
 
 [[sources]]
-# IDs are used by source_order, unions and source:ID shortcuts.
+# IDs are used by source_order, unions and the resh_source action in Rex.
 # Use lowercase letters, digits, underscores or hyphens, starting with a letter.
 id = "work"
 # Optional view label; defaults to the ID.
@@ -50,6 +50,6 @@ sources = ["sessions", "configs", "work", "repositories", "directories"]
 # command/cwd/format apply only to command; paths only to paths; sources only to union.
 # The default All includes sessions, projects and zoxide.
 
-[keymap]
-"ctrl+w" = "source:work"
-"ctrl+r" = "source:repositories"
+# Bind these sources in Rex's init.lua, after the resh integration:
+# rex.bind("resh/ctrl+[KeyW]", "resh_source", { id = "work" })
+# rex.bind("resh/ctrl+[KeyR]", "resh_source", { id = "repositories" })

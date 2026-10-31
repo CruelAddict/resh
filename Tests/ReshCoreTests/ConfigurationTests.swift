@@ -2,27 +2,14 @@ import Foundation
 import ReshCore
 import Testing
 
-@Suite("Configurable sources and keys")
+@Suite("Sources and picker shortcuts")
 struct ConfigurationTests {
     let tools = Tools(rex: "/not/rex", zoxide: nil, fd: nil, rexApp: "/not/Rex.app")
 
-    @Test func defaultSourcesAndShortcuts() throws {
+    @Test func defaultSources() throws {
         let config = ReshConfiguration.defaults
         #expect(config.visibleSources.map(\.id) == [.sessions, .all, .directories, .find])
         #expect(config.visibleSources.map(\.title) == ["Sessions", "All", "Recent", "Find"])
-        #expect(config.keymap.action(for: try KeyChord("cmd+e")) == .scope(.sessions))
-        #expect(config.keymap.action(for: try KeyChord("cmd+a")) == .scope(.all))
-        #expect(config.keymap.action(for: try KeyChord("cmd+shift+p")) == .pin)
-        #expect(config.keymap.action(for: try KeyChord("cmd+shift+n")) == .create)
-        #expect(config.keymap.action(for: try KeyChord("cmd+shift+d")) == .delete)
-        #expect(config.keymap.label(for: .create) == "⇧⌘N")
-        #expect(config.keymap.label(for: .delete) == "⇧⌘D")
-        for number in 1...9 {
-            #expect(config.keymap.action(for: try KeyChord("cmd+\(number)")) == .openResult(number))
-        }
-        #expect(config.keymap.action(for: try KeyChord("ctrl+n")) == .move(1))
-        #expect(config.keymap.action(for: try KeyChord("tab")) == .nextSource)
-        #expect(config.keymap.action(for: try KeyChord("shift+tab")) == .previousSource)
         #expect(config.projects.isEmpty)
     }
     @Test func configurationExamples() throws {
@@ -33,15 +20,12 @@ struct ConfigurationTests {
         #expect(!examples.isEmpty)
         for example in examples { _ = try ConfigurationFile.load(example) }
     }
-    @Test func namedProjectsSourcesAndOverrides() throws {
+    @Test func namedProjectsAndSources() throws {
         let fixture = try TemporaryDirectory()
         let path = try fixture.folder("api")
         let config = try ReshConfiguration.parse("""
         source_order = ["work", "configs", "sessions"]
         initial_source = "work"
-        [keymap]
-        "ctrl+w" = "source:work"
-        "cmd+1" = "none"
         [[sources]]
         id = "work"
         title = "Работа"
@@ -54,9 +38,6 @@ struct ConfigurationTests {
         """, directory: fixture.url)
         #expect(config.initialSource.rawValue == "work")
         #expect(config.visibleSources.map(\.title) == ["Работа", "Projects", "Sessions"])
-        #expect(config.keymap.action(for: try KeyChord("control+w")) == .scope(.init(rawValue: "work")))
-        #expect(config.keymap.action(for: try KeyChord("cmd+1")) == nil)
-        #expect(config.keymap.label(for: .init(rawValue: "work")) == "⌃W")
         let entries = try SourceLoader(tools: tools).load(.init(rawValue: "work"), configuration: config, sessions: []).entries
         #expect(entries.count == 1)
         #expect(entries.first?.displayTitle == "Backend")
@@ -81,10 +62,7 @@ struct ConfigurationTests {
     }
     @Test(arguments: [
         "source_order = []", "initial_source = 'missing'", "source_order = ['sessions', 'sessions']",
-        "typo = true", "[keymap]\n'ctrl+w' = 'source:missing'", "[keymap]\n'ctrl+w' = 'explode'",
-        "[keymap]\n'ctrl+r' = 'reload'",
-        "[keymap]\n'ctrl+1' = 'open:0'", "[keymap]\n'ctrl+1' = 'open:10'",
-        "[keymap]\n'ctrl+n' = 'next'\n'control+n' = 'previous'",
+        "typo = true", "[keymap]\n'ctrl+n' = 'next'",
         "[[sources]]\nid = 'a'\ntype = 'union'\nsources = ['a']",
         "[[sources]]\nid = 'a'\ntype = 'union'\nsources = ['b']\n[[sources]]\nid = 'b'\ntype = 'union'\nsources = ['a']",
         "[[sources]]\nid = 'a'\ntype = 'union'\nsources = ['missing']",
@@ -101,26 +79,80 @@ struct ConfigurationTests {
     func invalidConfigsAreRejected(_ text: String) {
         #expect(throws: (any Error).self) { try ReshConfiguration.parse(text) }
     }
-    @Test func physicalKeysAndExactModifiersKeepNativeEditing() throws {
-        let map = try Keymap(overrides: ["ctrl+t":"source:sessions", "ctrl+tab":"next_source",
-            "ctrl+1":"open:1", "ctrl+shift+p":"pin", "ctrl+shift+n":"create", "ctrl+shift+d":"delete"])
-        #expect(map.action(for: KeyChord(code: 17, control: true)) == .scope(.sessions))
-        #expect(map.action(for: KeyChord(code: 17, control: true, shift: true)) == nil)
-        #expect(map.action(for: try KeyChord("ctrl+tab")) == .nextSource)
+    @Test func defaultShortcutsKeepNativeEditing() {
+        let map = Keymap.defaults
+        var input = KeymapRuntime(keymap: map)
+        #expect(input.handle(code: 14, character: "у", modifiers: 1) == .action(.scope(.sessions)))
+        #expect(input.handle(code: 14, character: "e", modifiers: 9) == .passThrough)
+        #expect(input.handle(code: 48, character: nil, modifiers: 0) == .action(.nextSource))
+        #expect(input.handle(code: 48, character: nil, modifiers: 8) == .action(.previousSource))
+        #expect(input.handle(code: 35, character: "p", modifiers: 9) == .action(.pin))
+        #expect(input.handle(code: 35, character: "p", modifiers: 9, isRepeat: true) == .consumed)
+        #expect(input.handle(code: 8, character: "c", modifiers: 1) == .passThrough)
+        #expect(map.label(for: .create) == "⇧⌘N")
         #expect(map.label(for: .openResult(1), modifiers: 1) == "⌘1")
-        #expect(map.label(for: .openResult(1), modifiers: 2) == "⌃1")
-        #expect(map.label(for: .pin, modifiers: 2) == "⌃⇧P")
-        #expect(map.action(for: try KeyChord("ctrl+shift+n")) == .create)
-        #expect(map.label(for: .create, modifiers: 2) == "⌃⇧N")
-        #expect(map.action(for: try KeyChord("ctrl+shift+d")) == .delete)
-        #expect(map.label(for: .delete, modifiers: 2) == "⌃⇧D")
-        #expect(map.label(for: .openResult(1), modifiers: 0).isEmpty)
-        for key in ["cmd+c", "cmd+v", "cmd+x", "cmd+z", "ctrl+a", "ctrl+f", "cmd+d", "ctrl+d",
-                    "cmd+shift+backspace", "ctrl+shift+backspace"] {
-            #expect(map.action(for: try KeyChord(key)) == nil)
-        }
-        #expect(throws: ReshError.self) { try KeyChord("ctrl+ctrl+a") }
-        #expect(throws: ReshError.self) { try KeyChord("ctrl+ф") }
+    }
+    @Test func characterAndPhysicalBindings() throws {
+        let map = try keymap("""
+        {"keys":["ctrl+[KeyJ]"],"action":"resh_next","mode":"resh"},
+        {"keys":["ctrl+k"],"action":"resh_previous","mode":"resh"}
+        """)
+        var input = KeymapRuntime(keymap: map)
+        #expect(map.diagnostics.isEmpty)
+        #expect(input.handle(code: 38, character: "о", modifiers: 2) == .action(.move(1)))
+        #expect(input.handle(code: 40, character: "л", modifiers: 2) == .passThrough)
+        #expect(input.handle(code: 0, character: "k", modifiers: 2) == .action(.move(-1)))
+        #expect(map.label(for: .move(1)) == "⌃J")
+    }
+    @Test func keySequencesAndReplacement() throws {
+        let map = try keymap("""
+        {"keys":["ctrl+b","j"],"action":"resh_next","mode":"resh"},
+        {"keys":["ctrl+b","k"],"action":"resh_previous","mode":"resh"},
+        {"keys":["ctrl+b"],"action":"resh_open","mode":"resh"}
+        """)
+        var input = KeymapRuntime(keymap: map)
+        #expect(input.handle(code: 11, character: "b", modifiers: 2) == .consumed)
+        #expect(input.handle(code: 38, character: "j", modifiers: 0) == .action(.move(1)))
+        #expect(input.handle(code: 11, character: "b", modifiers: 2) == .consumed)
+        #expect(input.handle(code: 53, character: nil, modifiers: 0) == .consumed)
+        #expect(input.handle(code: 38, character: "j", modifiers: 0) == .passThrough)
+        _ = input.handle(code: 11, character: "b", modifiers: 2)
+        input.reset(keymap: try keymap("""
+        {"keys":["j"],"action":"resh_pin","mode":"resh"}
+        """))
+        #expect(input.handle(code: 38, character: "j", modifiers: 0) == .action(.pin))
+    }
+    @Test func pickerModesAndBlockedKeys() throws {
+        let map = try keymap("""
+        {"keys":["ctrl+r"],"action":"client.mode.enter","args":{"name":"choose","once":true},"mode":"resh"},
+        {"keys":["j"],"action":"resh_next","mode":"choose"},
+        {"keys":["cmd+a"],"action":"resh_open"}
+        """, modes: """
+        {"name":"resh","exclusive":false,"blocked":[["cmd+a"]]},
+        {"name":"choose","exclusive":true}
+        """)
+        var input = KeymapRuntime(keymap: map)
+        #expect(input.handle(code: 0, character: "a", modifiers: 1) == .consumed)
+        #expect(input.handle(code: 15, character: "r", modifiers: 2) == .consumed)
+        #expect(input.handle(code: 7, character: "x", modifiers: 0) == .consumed)
+        #expect(input.handle(code: 38, character: "j", modifiers: 0) == .action(.move(1)))
+        #expect(input.handle(code: 38, character: "j", modifiers: 0) == .passThrough)
+        _ = input.handle(code: 15, character: "r", modifiers: 2)
+        #expect(input.handle(code: 53, character: nil, modifiers: 0) == .consumed)
+        #expect(input.modes == ["resh"])
+    }
+    @Test func invalidActionArguments() throws {
+        let map = try keymap("""
+        {"keys":["ctrl+d"],"action":"resh_open","args":{"number":0},"mode":"resh"},
+        {"keys":["ctrl+d"],"action":"resh_delete","mode":"resh"}
+        """)
+        var input = KeymapRuntime(keymap: map)
+        #expect(!map.diagnostics.isEmpty)
+        #expect(input.handle(code: 2, character: "d", modifiers: 2) == .consumed)
+    }
+    private func keymap(_ bindings: String, modes: String = #"{"name":"resh","exclusive":false}"#) throws -> Keymap {
+        let response = try JSONDecoder().decode(RexKeymap.self, from: Data("{\"bindings\":[\(bindings)],\"modes\":[\(modes)]}".utf8))
+        return Keymap(response)
     }
     @Test func commandPathsRespectCwdPreserveOrderAndDoNotUseShell() throws {
         let fixture = try TemporaryDirectory()

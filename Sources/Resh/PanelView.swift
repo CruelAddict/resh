@@ -249,7 +249,8 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
     private let errorScroll = NSScrollView()
     private let retry = NSButton(title: "Retry", target: nil, action: nil)
     private var sources: [SourceDefinition] = []
-    private let keymap: Keymap
+    private var keymap = Keymap.defaults
+    private var keyModes = ["resh"]
     private let sourceScroll = NSScrollView()
     private let sourceContainer = NSView()
     private var sourceButtons: [NSButton] = []
@@ -273,7 +274,7 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
 
     init(model: SearchModel) {
         self.model = model; self.theme = model.theme
-        self.keymap = model.configuration.keymap
+        self.keymap = model.keymap
         super.init(frame: NSRect(x: 0, y: 0, width: PanelLayout.width, height: model.panelHeight))
         autoresizingMask = [.width, .height]
 
@@ -358,6 +359,18 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
     deinit { shortcutTask?.cancel() }
 
     private func bindModel() {
+        model.$keymap.sink { [weak self] keymap in
+            guard let self else { return }
+            self.keymap = keymap
+            updateSources()
+            refreshCells()
+        }.store(in: &subscriptions)
+        model.$keyModes.sink { [weak self] modes in
+            guard let self else { return }
+            keyModes = modes
+            updateSources()
+            refreshCells()
+        }.store(in: &subscriptions)
         model.$visibleSources.sink { [weak self] sources in
             guard let self else { return }
             self.sources = sources
@@ -463,7 +476,7 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
     }
 
     private func refreshCreateHint() {
-        let key = keymap.label(for: .create, modifiers: modifiers)
+        let key = keymap.label(for: .create, modifiers: modifiers, modes: keyModes)
         createHintLabel.stringValue = key.isEmpty ? "" : key + "  Create"
         createHintLabel.isHidden = !shortcutsVisible || !showsActions || key.isEmpty || !model.canCreateSession
         needsLayout = true
@@ -491,7 +504,7 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
                 .font: NSFont.systemFont(ofSize: 11, weight: selected ? .medium : .regular),
                 .foregroundColor: theme.foreground.nsColor.withAlphaComponent(selected ? 1 : 0.55),
             ])
-            let shortcut = keymap.label(for: source.id)
+            let shortcut = keymap.label(for: source.id, modes: keyModes)
             text.append(NSAttributedString(string: shortcut.isEmpty ? "" : "  " + shortcut, attributes: [
                 .font: NSFont.systemFont(ofSize: 10), .foregroundColor: theme.foreground.nsColor.withAlphaComponent(0.4),
             ]))
@@ -617,7 +630,7 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
 
     private func configure(_ cell: NewSessionCellView, row: Int) {
         cell.configure(textColor: table.selectedRow == row ? .white : theme.foreground.nsColor,
-            key: keymap.label(for: .create), host: model.newSessionHost?.label ?? "This Mac", hostWidth: hostColumnWidth)
+            key: keymap.label(for: .create, modes: keyModes), host: model.newSessionHost?.label ?? "This Mac", hostWidth: hostColumnWidth)
     }
 
     private func configure(_ cell: SessionCellView, row: Int) {
@@ -627,8 +640,8 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
         let number = numbered.firstIndex(of: row).map { numbered.distance(from: numbered.startIndex, to: $0) + 1 }
         var pinHint = "", closeHint = ""
         if shortcutsVisible, selected, showsActions, entry.kind == .session {
-            let pinKey = keymap.label(for: .pin, modifiers: modifiers)
-            let closeKey = keymap.label(for: .delete, modifiers: modifiers)
+            let pinKey = keymap.label(for: .pin, modifiers: modifiers, modes: keyModes)
+            let closeKey = keymap.label(for: .delete, modifiers: modifiers, modes: keyModes)
             if !pinKey.isEmpty { pinHint = pinKey + (pinnedSessionIDs.contains(entry.id) ? "  Unpin" : "  Pin") }
             if !closeKey.isEmpty { closeHint = closeKey + "  Close" }
         }
@@ -636,7 +649,7 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
             color: theme.attentionColor.nsColor, textColor: selected ? .white : theme.foreground.nsColor,
             showHost: showsHosts, hostWidth: hostColumnWidth, isPinned: pinnedSessionIDs.contains(entry.id),
             isCurrent: entry.id == currentCandidateID,
-            shortcut: number.map { keymap.label(for: .openResult($0), modifiers: modifiers & 7 == 0 ? nil : modifiers) } ?? "",
+            shortcut: number.map { keymap.label(for: .openResult($0), modifiers: modifiers & 7 == 0 ? nil : modifiers, modes: keyModes) } ?? "",
             showsShortcut: shortcutsVisible,
             pinHint: pinHint, closeHint: closeHint)
     }

@@ -12,6 +12,7 @@ struct LauncherRequest: Codable, Sendable {
     var debug: Bool?
     var path: String?
     var cwd: String?
+    var action: KeyInvocation?
 
     var changesSession: Bool { operation == "connect" || operation == "last" }
 }

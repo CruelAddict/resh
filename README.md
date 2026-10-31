@@ -54,15 +54,15 @@ a session there, or returns to the one you opened through resh before.
 | `⌘⇧N` | Create a session named after the search text |
 | `⌘⇧D` | Immediately close the selected session and its programs |
 | `↑` / `↓`, `⌃P` / `⌃N` | Move through the list |
+| `Tab` / `Shift-Tab` | Switch to the next or previous view |
 | `Enter` | Open the selection |
 | `Esc` / `⌃[` | Close the picker |
 
 ## Configuration
 
 Put settings in `~/.config/resh/config.toml` (or
-`$XDG_CONFIG_HOME/resh/config.toml`).
-
-After changing the config, apply the new version with `resh service restart`.
+`$XDG_CONFIG_HOME/resh/config.toml`). Apply changes with `resh service restart`.
+Keyboard shortcuts live in Rex's `init.lua` and update with `rex config reload`.
 
 ### Projects
 
@@ -90,18 +90,33 @@ cwd = "~/work"
 command = ["fd", "-t", "d", "-d", "2", ".", "."]
 ```
 
-[See more in examples](examples/config/sources.toml).
+The source ID is used in source order, unions, and the `resh_source` action.
+Changing its title leaves those references intact.
+
+[Source options and examples](examples/config/sources.toml).
 
 ### Custom shortcuts
 
-```toml
-[keymap]
-"ctrl+j" = "next"
-"ctrl+k" = "previous"
-"cmd+a" = "none"
+Add bindings **after** the installed resh integration in Rex's `init.lua`:
+
+```lua
+rex.bind("resh/ctrl+[KeyJ]", "resh_next")
+rex.bind("resh/ctrl+[KeyK]", "resh_previous")
+rex.unbind("resh/cmd+[KeyA]", "resh_source") -- let the search field select all
 ```
 
-[See more in examples](examples/config/keymap.toml).
+The `resh/` key mode is active only inside the picker. Character keys such as
+`ctrl+j` follow the keyboard layout; physical keys such as `ctrl+[KeyJ]` keep
+working in other layouts. Rex key sequences (`ctrl+b>j`) and nested modes,
+including `once`, `exclusive`, and blocked keys, are supported for picker actions.
+Unbound keys go to the search field. Escape cancels an unfinished sequence.
+
+Use `rex config reload` to apply bindings to both Rex and an already-running
+picker. No resh restart or file watcher is involved. Open/close is the normal
+Rex action `resh`; its default shortcut is `cmd+[KeyS]`.
+
+[Picker actions and a Ctrl preset](examples/config/keymap.lua).
+See [config examples](examples/config) for annotated settings.
 
 ## Remote hosts
 

@@ -225,6 +225,31 @@ extension PickerTests {
         #expect(controller.panel.isVisible)
     }
 
+    @Test @MainActor func pickerKeymapUpdatesKeepSearchAndSelection() throws {
+        _ = NSApplication.shared
+        let tools = Tools(rex: "/not/rex", zoxide: nil, fd: nil, rexApp: "/not/Rex.app")
+        let service = ReshService(client: RexClient(tools: tools, target: RexTarget(clientID: "client:test")))
+        let controller = PanelController(service: service, tools: tools, readTheme: { _, _ in .fixture })
+        defer { controller.model.clear() }
+        controller.prepare(service: service, snapshot: RexSnapshot(client: "client:test", rexAppPID: 1,
+            sessions: [RexSession(sessionID: "a", label: "Session A"), RexSession(sessionID: "b", label: "Session B")]))
+        controller.model.query = "session"
+        let event = try #require(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [.control], timestamp: 0,
+            windowNumber: 0, context: nil, characters: "j", charactersIgnoringModifiers: "j", isARepeat: false, keyCode: 38))
+        for (action, expectedSelection) in [("resh_next", 1), ("resh_previous", 0)] {
+            let json = """
+            {"bindings":[{"keys":["ctrl+[KeyJ]"],"mode":"resh","action":"\(action)"}],
+             "modes":[{"name":"resh","exclusive":false}]}
+            """
+            let map = Keymap(try JSONDecoder().decode(RexKeymap.self, from: Data(json.utf8)))
+            let selection = controller.model.selection
+            controller.model.receive(.success(.keymap(map)))
+            #expect(controller.model.selection == selection && controller.model.query == "session")
+            #expect(controller.handle(event))
+            #expect(controller.model.selection == expectedSelection)
+        }
+    }
+
     @Test(arguments: [false, true])
     @MainActor func launcherCommandsUseResidentState(_ cached: Bool) async throws {
         var created = false

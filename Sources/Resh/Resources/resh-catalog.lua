@@ -14,6 +14,24 @@ local function call(method, args)
   return result
 end
 
+-- The local picker supplies its defaults; remote catalogs only list sessions.
+local keymap_request = rex.args.keymap
+local function publish_keymap()
+  if not keymap_request then return end
+  local keymap, err = rex.call("client.keymap", keymap_request)
+  if keymap then
+    -- Rex's Lua encoder represents an empty table as {}. Omit empty arrays,
+    -- as the session and client publishers below do.
+    for _, field in ipairs({ "bindings", "modes", "diagnostics" }) do
+      if keymap[field] and #keymap[field] == 0 then keymap[field] = nil end
+    end
+    for _, mode in ipairs(keymap.modes or {}) do
+      if mode.blocked and #mode.blocked == 0 then mode.blocked = nil end
+    end
+  end
+  reply({ type = "keymap", keymap = keymap, keymap_error = err and tostring(err) })
+end
+
 local function publish_sessions(listed)
   listed = listed or call("session.list")
   local value = { type = "sessions" }
@@ -52,10 +70,14 @@ rex.on("client_changed", function(_, ev)
   if ev.client.info and ev.client.info.kind == "app" then publish_clients() end
 end)
 rex.on("hosts_changed", function() reply({ type = "hosts" }) end)
-rex.on("keymap_changed", function() reply({ type = "capabilities" }) end)
+rex.on("keymap_changed", function()
+  publish_keymap()
+  reply({ type = "capabilities" })
+end)
 
 -- Attach before the initial reads so events cover changes during initialization.
 local listed = call("session.attach_all", { event_scope = "all" })
+publish_keymap()
 publish_clients()
 publish_sessions(listed)
 
