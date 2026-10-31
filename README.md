@@ -137,7 +137,3 @@ bash install.sh --remote
 ```
 
 The remote machine also needs to have `zoxide` and `fd` configured.
-
-## License
-
-[MIT](LICENSE). See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for attribution.

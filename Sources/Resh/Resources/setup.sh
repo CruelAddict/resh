@@ -113,7 +113,7 @@ find_source() {
         bundle=$source_dir
         [[ -x $bundle/resh && -r $bundle/resh.lua && -d $bundle/resh_Resh.bundle ]] || die 'Missing prebuilt picker. Run bash scripts/build.sh or use a macOS release.'
         local name
-        for name in LICENSE THIRD_PARTY_NOTICES.md; do
+        for name in LICENSE resh_Resh.bundle/Contents/Resources/ThirdPartyNotices.txt; do
             [[ -r $bundle/$name ]] || die "Missing $name in the distribution."
         done
         module="$destination/resh.lua"
@@ -226,7 +226,7 @@ install_native() {
     "$bundle/resh" service stop >/dev/null
     if [[ $bundle -ef $destination ]]; then return 0; fi
     local name
-    for name in resh LICENSE THIRD_PARTY_NOTICES.md; do
+    for name in resh LICENSE; do
         if [[ $linked == true ]]; then
             ln -s "$bundle/$name" "$work/$name.link"
             atomic_copy "$work/$name.link" "$destination/$name"

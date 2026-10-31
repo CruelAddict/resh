@@ -1,11 +1,10 @@
-# sesh
+sesh
 
-resh's directory/Git/worktree naming and source-switching workflow are adapted
-from [sesh](https://github.com/joshmedeski/sesh), v2.17.1,
-commit `532518523873df01903688492dd1cecf3a97ac8e`.
-The implementation is in Swift; sesh and tmux are not runtime dependencies.
+resh's session naming is adapted from sesh v2.17.1,
+https://github.com/joshmedeski/sesh,
+commit 532518523873df01903688492dd1cecf3a97ac8e.
 
-## MIT License
+MIT License
 
 Copyright (c) 2023 Josh Medeski
 
@@ -27,9 +26,9 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
-# TOMLDecoder
+TOMLDecoder
 
-resh includes [TOMLDecoder](https://github.com/dduan/TOMLDecoder), licensed under MIT.
+resh includes TOMLDecoder (https://github.com/dduan/TOMLDecoder), licensed under MIT.
 
 Copyright (c) 2019 TOMLDecoder contributors
 
