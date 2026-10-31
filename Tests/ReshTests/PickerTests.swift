@@ -23,6 +23,34 @@ private final class CommandStub: CommandRunning, @unchecked Sendable {
     }
 }
 
+private final class ScreenStub: NSScreen {
+    private let number: UInt32
+    private let bounds: CGRect
+
+    init(_ number: UInt32, frame: CGRect) {
+        self.number = number; self.bounds = frame
+        super.init()
+    }
+    override var frame: CGRect { bounds }
+    override var visibleFrame: CGRect { bounds }
+    override var deviceDescription: [NSDeviceDescriptionKey: Any] {
+        [NSDeviceDescriptionKey("NSScreenNumber"): NSNumber(value: number)]
+    }
+}
+
+private final class WindowFrameStub: @unchecked Sendable {
+    let ready = DispatchSemaphore(value: 0)
+    private let lock = NSLock()
+    private var frames: [CGRect?]
+
+    init(_ frames: [CGRect?]) { self.frames = frames }
+    func read() -> CGRect? {
+        let frame = lock.withLock { frames.removeFirst() }
+        ready.wait()
+        return frame
+    }
+}
+
 extension PickerTests {
     @Test(arguments: [
         ("сщву", "code"), ("GHBDTN", "ПРИВЕТ"), ("йц", "qw"),
@@ -245,8 +273,98 @@ extension PickerTests {
         #expect(controller.toggle(open: present))
         #expect(!controller.panel.isVisible && !controller.model.isOpening && controller.model.query.isEmpty)
         #expect(controller.toggle(open: present))
-        for _ in 0..<300 where !controller.panel.isVisible { try await Task.sleep(for: .milliseconds(10)) }
         #expect(controller.panel.isVisible)
+    }
+
+    @Test(arguments: ["unchanged", "moved", "disconnected"])
+    @MainActor func launcherUpdatesDisplayWithoutInterruptingInput(_ change: String) async throws {
+        _ = NSApplication.shared
+        let primary = ScreenStub(1, frame: CGRect(x: 0, y: 0, width: 1440, height: 900))
+        let secondary = ScreenStub(2, frame: CGRect(x: 1440, y: 0, width: 1920, height: 1080))
+        var screens = [primary, secondary]
+        let frames = WindowFrameStub([
+            CGRect(x: 100, y: 100, width: 800, height: 600),
+            CGRect(x: change == "unchanged" ? 100 : 1600, y: 100, width: 800, height: 600),
+        ])
+        let tools = Tools(rex: "/not/rex", zoxide: nil, fd: nil, rexApp: "/not/Rex.app")
+        let service = ReshService(client: RexClient(tools: tools, target: RexTarget(clientID: "client:test")), stateURL: nil)
+        let controller = PanelController(service: service, tools: tools,
+            readWindowFrame: { _ in frames.read() }, readScreens: { screens }, readTheme: { _, _ in .fixture })
+        defer { frames.ready.signal(); controller.dismiss(focusRex: false); controller.model.clear() }
+        controller.presentLoading()
+        #expect(!controller.panel.isVisible)
+        frames.ready.signal()
+        await controller.positioningTask?.value
+        #expect(controller.panel.isVisible)
+        controller.dismiss(focusRex: false)
+        if change == "disconnected" { screens = [secondary] }
+        controller.presentLoading()
+        #expect(controller.panel.isVisible == (change != "disconnected"))
+        if change == "disconnected" {
+            frames.ready.signal()
+            await controller.positioningTask?.value
+            #expect(controller.panel.isVisible && controller.panel.frame.minX >= secondary.frame.minX)
+            return
+        }
+        #expect(controller.panel.isKeyWindow)
+        controller.model.prepare(service: service, sessions: [
+            RexSession(sessionID: "a", label: "Session A"), RexSession(sessionID: "b", label: "Session B"),
+        ])
+        controller.model.query = "session"
+        let json = """
+        {"bindings":[{"keys":["ctrl+b","j"],"mode":"resh","action":"resh_next"}],
+         "modes":[{"name":"resh","exclusive":false}]}
+        """
+        controller.model.receive(.success(.keymap(Keymap(try JSONDecoder().decode(RexKeymap.self, from: Data(json.utf8))))))
+        let prefix = try #require(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [.control], timestamp: 0,
+            windowNumber: controller.panel.windowNumber, context: nil, characters: "b", charactersIgnoringModifiers: "b", isARepeat: false, keyCode: 11))
+        #expect(controller.handle(prefix))
+        let origin = controller.panel.frame.origin
+        let responder = controller.panel.firstResponder
+        let selected = controller.model.selected?.id
+        frames.ready.signal()
+        await controller.positioningTask?.value
+        #expect(controller.panel.isVisible && controller.panel.isKeyWindow)
+        #expect(controller.panel.firstResponder === responder)
+        #expect(controller.model.query == "session" && controller.model.selected?.id == selected)
+        if change == "moved" { #expect(controller.panel.frame.minX >= secondary.frame.minX) }
+        else { #expect(controller.panel.frame.origin == origin) }
+        let suffix = try #require(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+            windowNumber: controller.panel.windowNumber, context: nil, characters: "j", charactersIgnoringModifiers: "j", isARepeat: false, keyCode: 38))
+        #expect(controller.handle(suffix))
+        #expect(controller.model.selection == 1)
+    }
+
+    @Test @MainActor func launcherDismissalCancelsDisplayCorrection() async throws {
+        _ = NSApplication.shared
+        let primary = ScreenStub(1, frame: CGRect(x: 0, y: 0, width: 1440, height: 900))
+        let secondary = ScreenStub(2, frame: CGRect(x: 1440, y: 0, width: 1920, height: 1080))
+        let frames = WindowFrameStub([
+            CGRect(x: 100, y: 100, width: 800, height: 600),
+            CGRect(x: 1600, y: 100, width: 800, height: 600),
+            CGRect(x: 100, y: 100, width: 800, height: 600),
+        ])
+        let tools = Tools(rex: "/not/rex", zoxide: nil, fd: nil, rexApp: "/not/Rex.app")
+        let service = ReshService(client: RexClient(tools: tools, target: RexTarget(clientID: "client:test")), stateURL: nil)
+        let controller = PanelController(service: service, tools: tools,
+            readWindowFrame: { _ in frames.read() }, readScreens: { [primary, secondary] }, readTheme: { _, _ in .fixture })
+        defer { frames.ready.signal(); controller.dismiss(focusRex: false); controller.model.clear() }
+        controller.presentLoading()
+        frames.ready.signal()
+        await controller.positioningTask?.value
+        controller.dismiss(focusRex: false)
+        controller.presentLoading()
+        let origin = controller.panel.frame.origin
+        let positioning = controller.positioningTask
+        controller.dismiss(focusRex: false)
+        frames.ready.signal()
+        await positioning?.value
+        #expect(!controller.panel.isVisible && controller.panel.frame.origin == origin)
+        controller.presentLoading()
+        #expect(controller.panel.isVisible && controller.panel.frame.origin == origin)
+        frames.ready.signal()
+        await controller.positioningTask?.value
+        #expect(controller.panel.frame.origin == origin)
     }
 
     @Test @MainActor func pickerKeymapUpdatesKeepSearchAndSelection() throws {
