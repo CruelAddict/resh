@@ -298,8 +298,7 @@ final class SearchModel: ObservableObject {
         let alternatives = keyboardLayouts.alternatives(for: query)
         let updated: [Candidate]
         if configuration.source(scope)?.kind == .agents {
-            let matching = Set(search.filter(query: query, alternatives: alternatives, limit: search.entries.count).map(\.id))
-            let entries = search.entries.filter { matching.contains($0.id) }
+            let entries = search.filter(query: query, alternatives: alternatives, limit: search.entries.count)
             updated = Array((entries.filter { floatingIDs.contains($0.id) }
                 + entries.filter { !floatingIDs.contains($0.id) }).prefix(100))
         } else if pinnedSessionIDs.isEmpty, currentID == nil, floatingIDs.isEmpty {

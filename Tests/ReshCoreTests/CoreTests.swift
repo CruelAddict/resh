@@ -86,9 +86,12 @@ struct FuzzyTests {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         let entry = Candidate(id: "one", kind: .directory, title: "api", path: home + "/work/api")
         #expect(entry.displayTitle == "~/work/api")
-        #expect(entry.searchText == "~/work/api This Mac")
+        #expect(FuzzyMatcher([entry]).filter(query: "work api").map(\.id) == ["one"])
+        let host = RexHost(id: "host:build", label: "Build", endpoints: ["https://build.example"])
+        let remote = Candidate(id: "remote", kind: .directory, title: "api", path: home + "/work/api", host: host)
+        #expect(remote.displayTitle == home + "/work/api")
     }
-    @Test func agentTitlesAndContext() {
+    @Test func agentTitles() {
         let host = RexHost(id: "build", label: "Build", endpoints: ["https://build.example"])
         let session = Candidate(id: "work", kind: .session, title: "Work", sessionID: "work", host: host)
         let records = [("parser", "opencode", "Fix parser"), ("notes", "codex", "Release notes"),
@@ -99,18 +102,20 @@ struct FuzzyTests {
         let search = FuzzyMatcher(RexAgent.panes(in: records, session: session).map(\.candidate))
         #expect(search.filter(query: "code").map(\.blockID) == ["integration"])
         #expect(search.filter(query: "parser").map(\.blockID) == ["parser"])
-        #expect(search.filter(query: "work build").count == 3)
+        #expect(search.filter(query: "release notes").map(\.blockID) == ["notes"])
+        #expect(search.filter(query: "work").isEmpty)
+        #expect(search.filter(query: "build").isEmpty)
     }
-    @Test func hostNamesDisambiguateSessionsAndRemotePathsStayRemote() {
+    @Test(arguments: [Candidate.Kind.session, .directory, .project])
+    func primaryTextAcrossHosts(_ kind: Candidate.Kind) {
         let host = RexHost(id: "host:build", label: "Build", endpoints: ["https://build.example"])
-        let local = Candidate(id: "local", kind: .session, title: "api", sessionID: "local")
-        let remote = Candidate(id: "remote", kind: .session, title: "api", sessionID: "remote", host: host)
+        let local = Candidate(id: "local", kind: kind, title: "api", path: "/work/api")
+        let remote = Candidate(id: "remote", kind: kind, title: "api", path: "/work/api", host: host)
         let search = FuzzyMatcher([local, remote])
-        #expect(search.filter(query: "api build").map(\.id) == ["remote"])
-        #expect(search.filter(query: "api this mac").map(\.id) == ["local"])
-        let path = FileManager.default.homeDirectoryForCurrentUser.path + "/work/api"
-        let folder = Candidate(id: "folder", kind: .directory, title: "api", path: path, host: host)
-        #expect(folder.displayTitle == path)
+        #expect(search.filter(query: "api").map(\.id) == ["local", "remote"])
+        #expect(search.filter(query: "build").isEmpty)
+        #expect(search.filter(query: "this mac").isEmpty)
+        #expect(search.filter(query: "work").map(\.id) == (kind == .directory ? ["local", "remote"] : []))
     }
 }
 

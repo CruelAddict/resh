@@ -47,12 +47,8 @@ public struct Candidate: Identifiable, Hashable, Codable, Sendable {
     }
     public var deduplicationID: String { path.map { Self.identity("path:" + $0, host: host) } ?? id }
     public static func identity(_ id: String, host: RexHost?) -> String { host.map { $0.id + "/" + id } ?? id }
-    // Never match the common /Users/<name> prefix of every project.
-    public var searchText: String {
-        if let agent { return agent.title + " " + agent.sessionTitle + " " + hostLabel }
-        let path = path.map { host == nil ? PathIdentity.shortenHome($0) : $0 } ?? ""
-        return (kind == .project ? title + " " + path : displayTitle) + " " + hostLabel
-    }
+    // Search only the row's primary text, without its metadata.
+    public var searchText: String { agent?.title ?? displayTitle }
 }
 
 public enum PathIdentity {

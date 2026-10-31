@@ -829,13 +829,11 @@ extension PickerTests {
         model.receive(.success(.sessions([RexSession(sessionID: "remote", label: "api")])), host: host)
         #expect(model.results.count == 2 && model.showsHosts)
         #expect(model.results.map(\.id) == ["local", "host:build/remote"])
-        model.query = "api build"
-        #expect(model.results.count == 1 && model.selected?.host == host && model.showsHosts)
+        model.query = "api"
+        model.selection = try #require(model.results.firstIndex { $0.host == host })
         let selectedID = model.selected?.id
         model.receive(.success(.sessions([RexSession(sessionID: "another", label: "api"), local])))
-        #expect(model.selected?.id == selectedID && model.query == "api build")
-        model.query = "api"
-        model.selection = try #require(model.results.firstIndex { $0.id == selectedID })
+        #expect(model.selected?.id == selectedID && model.query == "api")
         model.receive(.success(.records([RexAttentionRecord(sessionID: "remote", blockID: "b", state: "done",
             updatedAt: "2026-10-23T12:00:00Z", app: "codex")])), host: host)
         await model.attentionTask?.value
@@ -1023,6 +1021,27 @@ extension PickerTests {
         model.prepare(service: service, sessions: sessions, recentSessionIDs: ["a", "b"])
         model.changeScope(.agents)
         #expect(model.results.map(\.blockID) == ["first", "other", "left", "right", "tenth"])
+    }
+
+    @Test @MainActor func agentSearchRelevance() throws {
+        let stub = try CommandStub { _ in [:] }
+        let service = ReshService(client: RexClient(tools: stub.tools, target: RexTarget(), runner: stub), stateURL: nil)
+        let model = SearchModel(service: service, tools: stub.tools,
+            sessions: [RexSession(sessionID: "work", label: "Work")], configurationURL: ConfigurationFile.emptyFixture,
+            readTheme: { _, _ in .fixture }, readPreferences: { [:] })
+        defer { model.clear() }
+        let titles = ["Pipeline analysis", "Plan parser", "Plan docs", "Release notes"]
+        model.updateAttention(titles.enumerated().map { index, title in
+            RexAttentionRecord(sessionID: "work", blockID: "pane\(index)", state: "working",
+                updatedAt: "2026-10-31T12:00:00Z", app: "opencode", title: title, paneIndex: index)
+        })
+        model.changeScope(.agents)
+        #expect(model.results.map(\.agent?.title) == titles)
+        model.query = "plan"
+        #expect(model.results.map(\.agent?.title) == ["Plan parser", "Plan docs", "Pipeline analysis"])
+        #expect(model.selected?.agent?.title == "Plan parser")
+        model.query = ""
+        #expect(model.results.map(\.agent?.title) == titles)
     }
 
     @Test(arguments: [false, true], [false, true])
