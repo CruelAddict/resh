@@ -77,7 +77,8 @@ extension PickerTests {
         }
         let service = ReshService(client: RexClient(tools: stub.tools, target: RexTarget(clientID: "client:test"), runner: stub),
             stateURL: stub.directory.appendingPathComponent("state.json"))
-        let model = SearchModel(service: service, tools: stub.tools, readTheme: { _, _ in .fixture })
+        let model = SearchModel(service: service, tools: stub.tools, configurationURL: ConfigurationFile.emptyFixture,
+            readTheme: { _, _ in .fixture })
         defer { model.clear() }
         let sessions = ["a", "b", "c"].map { RexSession(sessionID: $0, label: $0) }
         model.prepare(service: service, sessions: sessions)
@@ -96,8 +97,8 @@ extension PickerTests {
         #expect(model.results.map(\.id) == ["c", "b", "a"])
         var connected = false
         model.onDismiss = { _ in connected = true }
-        model.openResult(2)
-        for _ in 0..<300 where !connected { try await Task.sleep(for: .milliseconds(10)) }
+        await model.openResult(2)?.value
+        await model.catalog.refreshState().value
         #expect(connected)
         #expect(model.catalog.recentSessionIDs == ["a", "b"])
         #expect(selected == "a")
@@ -163,7 +164,7 @@ extension PickerTests {
         await model.hostsTask?.value
         let host = try #require(model.hosts.first)
         model.receive(.success(.sessions([RexSession(sessionID: "remote", label: "Build")])), host: host)
-        for _ in 0..<300 where model.isRemoteLoading { try await Task.sleep(for: .milliseconds(10)) }
+        try await waitForValue(model.$isRemoteLoading) { !$0 }
         model.prepare(service: service, sessions: sessions, rexAppPID: 42, currentSessionID: activeHost == "none" ? nil : activeHost)
         let expectedHost = activeHost == "remote" ? host : nil
         #expect(model.newSessionHost == expectedHost)
@@ -172,14 +173,13 @@ extension PickerTests {
         #expect(model.offersNewSession)
         var connected = false
         model.onDismiss = { _ in connected = true }
-        if selectionRefused { model.createSession() }
-        else { model.openSelection() }
-        for _ in 0..<300 where model.isConnecting && !connected { try await Task.sleep(for: .milliseconds(10)) }
+        if selectionRefused { await model.createSession()?.value }
+        else { await model.openSelection()?.value }
         if selectionRefused {
             #expect(!connected && model.error?.contains("Remote Control") == true)
-            model.createSession()
-            for _ in 0..<300 where !connected { try await Task.sleep(for: .milliseconds(10)) }
+            await model.createSession()?.value
         }
+        await model.catalog.refreshState().value
         #expect(connected)
         let expectedHistory = ["new"] + (activeHost == "none" ? [] : [activeHost])
         #expect(model.catalog.recentSessionIDs == expectedHistory)
@@ -239,7 +239,7 @@ extension PickerTests {
         await model.hostsTask?.value
         let host = try #require(model.hosts.first)
         model.receive(.success(.sessions([RexSession(sessionID: "remote", label: "Build")])), host: host)
-        for _ in 0..<300 where model.isRemoteLoading { try await Task.sleep(for: .milliseconds(10)) }
+        try await waitForValue(model.$isRemoteLoading) { !$0 }
         #expect(model.canCreateSession && model.offersNewSession && model.newSessionHost == host)
         focus = "local"
         model.refreshFocus()
@@ -252,6 +252,7 @@ extension PickerTests {
         let tools = Tools(rex: "/not/rex", zoxide: nil, fd: nil, rexApp: "/not/Rex.app")
         let service = ReshService(client: RexClient(tools: tools, target: RexTarget(clientID: "client:test")), stateURL: nil)
         let controller = PanelController(service: service, tools: tools,
+            configurationURL: ConfigurationFile.emptyFixture,
             readWindowFrame: { _ in CGRect(x: 0, y: 0, width: 800, height: 600) }, readTheme: { _, _ in .fixture })
         defer { controller.dismiss(focusRex: false); controller.model.clear() }
         func present() -> Bool {
@@ -267,7 +268,10 @@ extension PickerTests {
             return true
         }
         #expect(controller.toggle(open: present))
-        for _ in 0..<300 where !controller.panel.isVisible { try await Task.sleep(for: .milliseconds(10)) }
+        while let task = controller.positioningTask {
+            try Task.checkCancellation()
+            await task.value
+        }
         #expect(controller.panel.isVisible)
         controller.model.query = "session"
         #expect(controller.toggle(open: present))
@@ -289,6 +293,7 @@ extension PickerTests {
         let service = ReshService(client: RexClient(tools: tools, target: RexTarget(clientID: "client:test")), stateURL: nil)
         let sessions = [RexSession(sessionID: "a", label: "Session A"), RexSession(sessionID: "b", label: "Session B")]
         let controller = PanelController(service: service, tools: tools, sessions: sessions,
+            configurationURL: ConfigurationFile.emptyFixture,
             readWindowFrame: { _ in frames.read() }, readScreens: { screens }, readTheme: { _, _ in .fixture })
         defer { frames.ready.signal(); controller.dismiss(focusRex: false); controller.model.clear() }
         controller.presentLoading()
@@ -351,6 +356,7 @@ extension PickerTests {
         let tools = Tools(rex: "/not/rex", zoxide: nil, fd: nil, rexApp: "/not/Rex.app")
         let service = ReshService(client: RexClient(tools: tools, target: RexTarget(clientID: "client:test")), stateURL: nil)
         let controller = PanelController(service: service, tools: tools,
+            configurationURL: ConfigurationFile.emptyFixture,
             readWindowFrame: { _ in frames.read() }, readScreens: { [primary, secondary] }, readTheme: { _, _ in .fixture })
         defer { frames.ready.signal(); controller.dismiss(focusRex: false); controller.model.clear() }
         controller.presentLoading()
@@ -375,7 +381,8 @@ extension PickerTests {
         _ = NSApplication.shared
         let tools = Tools(rex: "/not/rex", zoxide: nil, fd: nil, rexApp: "/not/Rex.app")
         let service = ReshService(client: RexClient(tools: tools, target: RexTarget(clientID: "client:test")), stateURL: nil)
-        let controller = PanelController(service: service, tools: tools, readTheme: { _, _ in .fixture })
+        let controller = PanelController(service: service, tools: tools, configurationURL: ConfigurationFile.emptyFixture,
+            readTheme: { _, _ in .fixture })
         defer { controller.model.clear() }
         controller.prepare(service: service, snapshot: RexSnapshot(client: "client:test", rexAppPID: 1,
             sessions: [RexSession(sessionID: "a", label: "Session A"), RexSession(sessionID: "b", label: "Session B")]))
@@ -444,7 +451,8 @@ extension PickerTests {
             return [:]
         }
         let service = ReshService(client: RexClient(tools: stub.tools, target: RexTarget(clientID: "client:test", server: "home"), runner: stub), stateURL: nil)
-        let controller = PanelController(service: service, tools: stub.tools, readTheme: { _, _ in .fixture })
+        let controller = PanelController(service: service, tools: stub.tools, configurationURL: ConfigurationFile.emptyFixture,
+            readTheme: { _, _ in .fixture })
         defer { controller.model.clear() }
         controller.prepare(service: service, snapshot: RexSnapshot(client: "client:test", rexAppPID: 1,
             sessions: [RexSession(sessionID: "a", label: "Current"), RexSession(sessionID: "b", label: "Other")]), currentSessionID: "a")
@@ -641,10 +649,7 @@ extension PickerTests {
         await model.hostsTask?.value
         model.prepare(service: selectedService, sessions: [RexSession(sessionID: "s", label: "First")],
             rexAppPID: 42, currentSessionID: focus)
-        for _ in 0..<300 {
-            if model.results.first?.title == "First", model.catalog.recentSessionIDs == ["s"] { break }
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        try await waitForValue(model.catalog.$recentSessionIDs) { $0 == ["s"] }
         #expect(model.results.map(\.title) == ["First"])
         model.query = "first"
         model.endPresentation()
@@ -656,9 +661,7 @@ extension PickerTests {
         focus = "new"
         if presented { model.prepare(service: selectedService, sessions: sessions, rexAppPID: 42, currentSessionID: focus) }
         else { model.refreshFocus() }
-        for _ in 0..<300 where model.catalog.recentSessionIDs != ["new", "s"] {
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        try await waitForValue(model.catalog.$recentSessionIDs) { $0 == ["new", "s"] }
         #expect(model.catalog.recentSessionIDs == ["new", "s"])
         if presented {
             #expect(model.results.map(\.title) == ["New", "Renamed"])
@@ -668,24 +671,18 @@ extension PickerTests {
             focus = sessionID
             model.refreshFocus()
             let recent = sessionID == "s" ? ["s", "new"] : ["new", "s"]
-            for _ in 0..<300 where model.catalog.recentSessionIDs != recent {
-                try await Task.sleep(for: .milliseconds(10))
-            }
+            try await waitForValue(model.catalog.$recentSessionIDs) { $0 == recent }
             #expect(model.catalog.recentSessionIDs == recent)
         }
         #expect(!model.isLoading)
-        if presented { model.selection = 0; model.deleteSelection() }
+        if presented { model.selection = 0; await model.deleteSelection()?.value }
         else {
             model.receive(.success(.sessions([sessions[0]])))
         }
-        for _ in 0..<300 where model.isConnecting { try await Task.sleep(for: .milliseconds(10)) }
         #expect(model.results.map(\.id) == ["s"] && model.currentCandidateID == nil)
         focus = "s"
         model.refreshFocus()
-        for _ in 0..<300 {
-            if !model.isConnecting, model.catalog.recentSessionIDs == ["s"] { break }
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        try await waitForValue(model.catalog.$recentSessionIDs) { $0 == ["s"] }
         #expect(model.results.map(\.id) == ["s"] && !model.isConnecting)
         if presented { #expect(model.currentCandidateID == "s" && model.numberedRows.isEmpty) }
         #expect(selectedService.recentSessionIDs() == ["s"])
@@ -721,8 +718,7 @@ extension PickerTests {
             model.prepare(service: service, sessions: [RexSession(sessionID: "old", label: "Session")], currentSessionID: "current")
         }
         model.query = "session"
-        model.openSelection()
-        for _ in 0..<300 where model.isConnecting { try await Task.sleep(for: .milliseconds(10)) }
+        await model.openSelection()?.value
         #expect(model.error != nil && model.canRetry)
         model.retry()
         await model.loadingTask?.value
@@ -761,9 +757,7 @@ extension PickerTests {
         #expect(model.catalog.recentSessionIDs == ["closed", "remote", "local"])
         #expect(model.pinnedSessionIDs == ["closed", "remote", "remote-closed", "local"])
         model.receive(.success(.sessions([RexSession(sessionID: "remote", label: "Remote")])), host: host)
-        for _ in 0..<300 where model.catalog.recentSessionIDs != ["remote", "local"] {
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        try await waitForValue(model.catalog.$recentSessionIDs) { $0 == ["remote", "local"] }
         #expect(model.catalog.recentSessionIDs == ["remote", "local"])
         #expect(model.pinnedSessionIDs == ["remote", "local"])
         let restarted = ReshService(client: RexClient(tools: stub.tools, target: RexTarget()), stateURL: stateURL)
@@ -851,7 +845,7 @@ extension PickerTests {
         #expect(model.selected?.id == selectedID && model.query == "api")
         model.receive(.success(.sessions([RexSession(sessionID: "new", label: "api")])), host: host)
         #expect(model.sessionCount == 3)
-        for _ in 0..<200 where model.visibleSources.map(\.id) != [.sessions] { try await Task.sleep(for: .milliseconds(10)) }
+        try await waitForValue(model.$visibleSources) { $0.map(\.id) == [.sessions] }
         #expect(model.visibleSources.map(\.id) == [.sessions])
     }
 
@@ -888,13 +882,6 @@ extension PickerTests {
         case "custom": expected = [.find]
         default: expected = [.sessions]
         }
-        func waitForSources(_ sources: [SearchScope]) async throws {
-            for _ in 0..<200 {
-                if model.visibleSources.map(\.id) == sources { return }
-                try await Task.sleep(for: .milliseconds(10))
-            }
-            Issue.record("Source availability did not update")
-        }
         model.loadInitial()
         await model.loadingTask?.value
         await model.hostsTask?.value
@@ -906,7 +893,7 @@ extension PickerTests {
             model.receive(.success(.records([RexAttentionRecord(sessionID: "work", blockID: "pane", state: "idle",
                 updatedAt: "2026-10-31T12:00:00Z", app: "new-agent")])), host: host)
         }
-        try await waitForSources(expected)
+        try await waitForValue(model.$visibleSources) { $0.map(\.id) == expected }
         if scenario != "remote agents" {
             for host in model.hosts { model.receive(.success(.sessions([])), host: host) }
         }
@@ -923,12 +910,12 @@ extension PickerTests {
         if scenario == "remote" {
             model.changeScope(.directories)
             await model.loadingTask?.value
-            for _ in 0..<200 where model.isRemoteLoading { try await Task.sleep(for: .milliseconds(10)) }
+            try await waitForValue(model.$isRemoteLoading) { !$0 }
             #expect(model.results.isEmpty && model.visibleSources.map(\.id) == expected)
             enabled = false
             let host = try #require(model.hosts.first { $0.label == "second" })
             model.receive(.success(.capabilitiesChanged), host: host)
-            try await waitForSources([.sessions])
+            try await waitForValue(model.$visibleSources) { $0.map(\.id) == [.sessions] }
             #expect(model.scope == .sessions)
             model.changeScope(.directories)
             model.cycleSource(1)
@@ -962,7 +949,7 @@ extension PickerTests {
         type = "union"
         sources = ["Folders"]
         """.write(to: config, atomically: true, encoding: .utf8)
-        let service = ReshService(client: RexClient(tools: stub.tools, target: RexTarget(), runner: stub))
+        let service = ReshService(client: RexClient(tools: stub.tools, target: RexTarget(), runner: stub), stateURL: nil)
         let model = SearchModel(service: service, tools: stub.tools, configurationURL: config,
             readTheme: { _, _ in .fixture })
         defer { model.clear() }
