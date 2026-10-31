@@ -53,11 +53,6 @@ the one you opened through resh before.
 If you have a harness open in one of your sessions, the `Agents` view appears so
 you can use it for status monitoring and navigation.
 
-Unread dots use Rex's read receipts. When multiple panes report the same task,
-activity and unread indicators follow the pane whose title matches that task.
-This requires a task ID and an observed report before completion; ambiguous
-reports keep Rex's indicators. Activity tracking continues while the picker is closed.
-
 ### Default shortcuts
 
 | Key | Action |
