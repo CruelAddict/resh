@@ -330,6 +330,8 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
         self.keymap = model.keymap
         super.init(frame: NSRect(x: 0, y: 0, width: PanelLayout.width, height: model.panelHeight))
         autoresizingMask = [.width, .height]
+        addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseMoved, .activeInKeyWindow, .inVisibleRect],
+            owner: self, userInfo: nil))
 
         searchBackground.wantsLayer = true
         searchBackground.layer?.cornerRadius = PanelLayout.controlCornerRadius
@@ -736,6 +738,17 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
     func tableViewSelectionDidChange(_ notification: Notification) {
         if !isSelecting, table.selectedRow >= 0 { model.selection = table.selectedRow }
         refreshCells()
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        // Opening or relayout beneath a stationary pointer must preserve the selection.
+        guard event.deltaX != 0 || event.deltaY != 0,
+              table.isEnabled, !model.isConnecting, !scroll.isHidden else { return }
+        let point = table.convert(event.locationInWindow, from: nil)
+        guard table.visibleRect.contains(point) else { return }
+        let row = table.row(at: point)
+        guard row >= 0, row != model.selection else { return }
+        model.selection = row
     }
 
     private func selectRow(_ row: Int) {
