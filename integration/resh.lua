@@ -1,5 +1,4 @@
--- Homebrew can supply its stable opt path without copying managed files.
-local executable = ... or os.getenv("HOME") .. "/Library/Application Support/resh/resh"
+local executable = os.getenv("HOME") .. "/Library/Application Support/resh/resh"
 
 local function with_client(arguments, ctx)
   local client = ctx.client_id

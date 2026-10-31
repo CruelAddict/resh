@@ -311,7 +311,12 @@ struct ReshMain {
     @MainActor
     static func main() {
         do {
-            let options = try Options(Array(CommandLine.arguments.dropFirst()))
+            let arguments = Array(CommandLine.arguments.dropFirst())
+            if arguments.first == "setup" {
+                try setup(Array(arguments.dropFirst()))
+                return
+            }
+            let options = try Options(arguments)
             DebugLog.shared.setEnabled(options.debug)
             if options.debug {
                 FileHandle.standardError.write(Data(("resh: Debug log: \(DebugLog.shared.url.path)\n").utf8))
@@ -326,6 +331,7 @@ struct ReshMain {
                 resh --action ACTION [--args JSON] [--client CLIENT_ID]
                 resh --name DIRECTORY
                 resh --diagnose
+                resh setup [--config REX_CONFIG_FILE] [--yes]
                 resh service start|stop|restart|status [--config FILE] [--debug]
                 resh serve [--config FILE] [--debug]
                 resh --check-config [--config FILE]
@@ -428,6 +434,19 @@ struct ReshMain {
             app.delegate = delegate
             withExtendedLifetime(delegate) { app.run() }
         } catch { report(error); exit(1) }
+    }
+    nonisolated private static func setup(_ arguments: [String]) throws {
+        guard let script = Bundle.module.url(forResource: "setup", withExtension: "sh"),
+              let executable = Bundle.main.executableURL else {
+            throw ReshError("The resh setup resources are missing. Reinstall resh.")
+        }
+        let directory = executable.resolvingSymlinksInPath().deletingLastPathComponent()
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/bash")
+        process.arguments = [script.path, "--source", directory.path] + arguments
+        try process.run()
+        process.waitUntilExit()
+        exit(process.terminationStatus)
     }
     nonisolated private static func report(_ error: Error) {
         DebugLog.shared.record(error, source: "cli")

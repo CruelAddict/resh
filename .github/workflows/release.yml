@@ -9,6 +9,8 @@ on:
       - scripts/build.sh
       - scripts/package.sh
       - install.sh
+      - Sources/Resh/Resources/setup.sh
+      - Sources/Resh/ReshMain.swift
       - Packaging/**
 
 permissions:
@@ -84,6 +86,7 @@ jobs:
           swift test
           bash scripts/build.sh
           dist/resh/resh --help
+          dist/resh/resh setup --help
           test "$(dist/resh/resh --name /tmp/resh-release-check)" = resh-release-check
           codesign --verify --strict dist/resh/resh
       - name: Package
@@ -121,7 +124,7 @@ jobs:
           persist-credentials: false
       - name: Check scripts and package remote adapter
         run: |
-          shellcheck install.sh scripts/build.sh scripts/package.sh
+          shellcheck install.sh scripts/build.sh scripts/package.sh Sources/Resh/Resources/setup.sh
           bash scripts/package.sh
           cp install.sh dist/releases/install.sh
       - name: Attest installer and remote adapter
@@ -196,7 +199,7 @@ jobs:
           else
             gh release create "$RELEASE_TAG" --verify-tag --draft \
               --title "$RELEASE_TAG" --generate-notes --prerelease="$PRERELEASE" \
-              --notes "Built on GitHub-hosted runners with signed build provenance. [Verify and install](https://github.com/$GH_REPO/blob/$RELEASE_TAG/docs/releases.md)."
+              --notes "Built on GitHub-hosted runners with signed build provenance. [Attestations](https://github.com/$GH_REPO/attestations). Run resh setup after installing to connect it to Rex."
           fi
           gh release upload "$RELEASE_TAG" dist/releases/* --clobber
           # A resumed draft must contain exactly this run's assets.

@@ -56,7 +56,8 @@ jobs:
         run: |
           bash -n install.sh
           bash -n scripts/build.sh
+          bash -n Sources/Resh/Resources/setup.sh
           sh -n scripts/package.sh
-          shellcheck install.sh scripts/build.sh scripts/package.sh
+          shellcheck install.sh scripts/build.sh scripts/package.sh Sources/Resh/Resources/setup.sh
       - name: Check Lua syntax
         run: luac5.1 -p Sources/Resh/Resources/*.lua integration/*.lua examples/config/*.lua
