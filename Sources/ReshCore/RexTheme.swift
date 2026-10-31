@@ -2,9 +2,12 @@ import CoreFoundation
 import Foundation
 
 public struct RGBA: Codable, Equatable, Sendable {
+    public enum ColorSpace: String, Codable, Sendable { case sRGB = "srgb", displayP3 = "display-p3" }
     public var red: Double, green: Double, blue: Double, alpha: Double
-    public init(red: Double, green: Double, blue: Double, alpha: Double = 1) {
+    public var colorSpace: ColorSpace
+    public init(red: Double, green: Double, blue: Double, alpha: Double = 1, colorSpace: ColorSpace = .sRGB) {
         self.red = red; self.green = green; self.blue = blue; self.alpha = alpha
+        self.colorSpace = colorSpace
     }
     public init?(hex: String) {
         let string = hex.hasPrefix("#") ? String(hex.dropFirst()) : hex
@@ -20,7 +23,8 @@ public struct RGBA: Codable, Equatable, Sendable {
         guard let object = value as? [String: Any], let r = object["red"] as? Double,
               let g = object["green"] as? Double, let b = object["blue"] as? Double,
               [r, g, b].allSatisfy({ $0.isFinite && (0...1).contains($0) }) else { return nil }
-        return RGBA(red: r, green: g, blue: b, alpha: object["alpha"] as? Double ?? 1)
+        return RGBA(red: r, green: g, blue: b, alpha: object["alpha"] as? Double ?? 1,
+            colorSpace: object["colorSpace"] as? String == "display-p3" ? .displayP3 : .sRGB)
     }
 }
 

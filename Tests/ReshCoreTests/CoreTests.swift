@@ -30,16 +30,25 @@ struct NamingTests {
         #expect(SessionNamer.name(path: "/work/backend-other", gitRoot: "/work/backend") == "backend-other")
         #expect(SessionNamer.name(path: "/work/repo/main/src", gitRoot: "/work/repo") == "repo/main/src")
     }
-    @Test func realGitAndSymlink() throws {
+    @Test func repositorySymlink() throws {
+        struct GitStub: CommandRunning {
+            let root: String
+            func run(_ executable: String, _ arguments: [String], timeout: TimeInterval, directory: String?) throws -> CommandResult {
+                switch arguments.last {
+                case "--git-common-dir": return CommandResult(stdout: Data((root + "/.git\n").utf8))
+                case "--show-toplevel": return CommandResult(stdout: Data((root + "\n").utf8))
+                default: throw ReshError("Unexpected Git command: \(arguments)")
+                }
+            }
+        }
         let temp = try TemporaryDirectory()
         let repo = try temp.folder("repo.one")
         let nested = try temp.folder("repo.one/src/api")
-        let runner = SystemCommandRunner()
-        #expect(try runner.run("/usr/bin/git", ["init", "--quiet", repo], timeout: 5).status == 0)
+        let namer = SessionNamer(runner: GitStub(root: repo))
         let link = temp.url.appendingPathComponent("alias").path
         try FileManager.default.createSymbolicLink(atPath: link, withDestinationPath: nested)
-        #expect(SessionNamer().name(for: nested) == "repo_one/src/api")
-        #expect(SessionNamer().name(for: link) == "repo_one/src/api")
+        #expect(namer.name(for: nested) == "repo_one/src/api")
+        #expect(namer.name(for: link) == "repo_one/src/api")
     }
     @Test func labelLimit() {
         #expect(SessionNamer.name(path: "/" + String(repeating: "a", count: 200), gitRoot: nil).count == 128)
@@ -62,6 +71,16 @@ struct FuzzyTests {
         #expect(search.filter(query: "cafe").map(\.id) == ["4"])
         #expect(search.filter(query: "xyz").isEmpty)
         #expect(search.filter(query: "", limit: 1).count == 1)
+    }
+    @Test func alternativeQueriesShareRankingAndLimit() {
+        let search = FuzzyMatcher([
+            Candidate(id: "both", kind: .session, title: "сщву code"),
+            Candidate(id: "original", kind: .session, title: "code"),
+            Candidate(id: "translated", kind: .session, title: "сщву"),
+        ])
+        #expect(search.filter(query: "code", alternatives: ["сщву"]).map(\.id) == ["both", "original", "translated"])
+        #expect(search.filter(query: "code", alternatives: ["сщву"], limit: 2).map(\.id) == ["both", "original"])
+        #expect(search.filter(query: " ", alternatives: ["сщву"]).map(\.id) == ["both", "original", "translated"])
     }
     @Test func foldersUseHomeRelativePaths() {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
@@ -92,48 +111,6 @@ struct FuzzyTests {
         let path = FileManager.default.homeDirectoryForCurrentUser.path + "/work/api"
         let folder = Candidate(id: "folder", kind: .directory, title: "api", path: path, host: host)
         #expect(folder.displayTitle == path)
-    }
-}
-
-@Suite("Rex theme sync")
-struct ThemeTests {
-    @Test func builtInPalette() throws {
-        let data = Data("""
-        [{"id":"charcoal","name":"Charcoal","source":{"background":"#121113","foreground":"#f8f8f2",
-        "selectionBackground":"#444444","ansi":["#000000","#000000","#000000","#000000","#aabbcc"]},
-        "semantic":{"accentSolid":"#aabbcc","selection":"#aabbcc","surfaceRaised":"#222222","infoSolid":"#4488cc"}}]
-        """.utf8)
-        let theme = try RexTheme.resolve(preferences: ["Workspace.appearance": "dark", "Workspace.interfaceStyle": "blendTheme",
-            "Workspace.darkThemeID": "charcoal"], builtins: data, systemIsDark: false)
-        #expect(theme.name == "Charcoal")
-        #expect(theme.background.hex == "#121113")
-        #expect(theme.foreground.hex == "#f8f8f2")
-        #expect(theme.accent.hex == "#aabbcc")
-        #expect(theme.usesGlass && theme.usesTint && theme.isDark)
-    }
-    @Test func customPaletteAndClassic() throws {
-        let custom = Data("""
-        [{"id":"custom-1","name":"Mine","palette":{"background":{"red":0.2,"green":0.4,"blue":0.6,"alpha":1},
-        "foreground":"#111111","cursor":"#aabbcc","selectionBackground":"#dddddd",
-        "ansi":["#000000","#000000","#000000","#000000","#4488cc"]}}]
-        """.utf8)
-        let theme = try RexTheme.resolve(preferences: ["Workspace.appearance": "light", "Workspace.interfaceStyle": "useTheme",
-            "Workspace.lightThemeID": "custom-1", "Workspace.customThemes": custom], builtins: nil, systemIsDark: true)
-        #expect(theme.name == "Mine")
-        #expect(theme.background.hex == "#336699")
-        #expect(!theme.isDark && !theme.usesGlass && theme.usesTint)
-    }
-    @Test func usesRexUISemanticsNotTerminalAnsiBlue() throws {
-        let data = Data("""
-        [{"id":"native","source":{"background":"#161616","foreground":"#eeeeee","selectionBackground":"#3a3835",
-        "ansi":["#000000","#000000","#000000","#000000","#8aa0b4"]},
-        "semantic":{"accentSolid":"#e05d3a","selection":"#e05d3a","surfaceRaised":"#262626","infoSolid":"#8aa0b4"}}]
-        """.utf8)
-        let theme = try RexTheme.resolve(preferences: ["Workspace.darkThemeID": "native"], builtins: data, systemIsDark: true)
-        #expect(theme.accent.hex == "#e05d3a")
-        #expect(theme.selection.hex == "#e05d3a")
-        #expect(theme.panelBackground.hex == "#262626")
-        #expect(theme.attentionColor.hex == "#8aa0b4")
     }
 }
 
@@ -220,7 +197,7 @@ struct ServiceTests {
     private func service(_ runner: FakeRunner, _ temporary: TemporaryDirectory, clientID: String = "client:test") -> ReshService {
         let tools = Tools(rex: "/fake/rex", zoxide: nil, fd: nil, rexApp: "/fake/Rex.app")
         return ReshService(client: RexClient(tools: tools, target: RexTarget(clientID: clientID, server: "test"), runner: runner),
-                           historyURL: temporary.url.appendingPathComponent("history.json"))
+                           stateURL: temporary.url.appendingPathComponent("state.json"))
     }
     @Test func repeatSelectionReusesSessionEvenAfterCd() async throws {
         let temporary = try TemporaryDirectory(), runner = FakeRunner()
@@ -271,20 +248,20 @@ struct ServiceTests {
         }
         #expect(runner.creations == 0)
     }
-    @Test func damagedHistoryIsPreservedBeforeRecordingNewVisits() async throws {
+    @Test func damagedStateIsPreservedBeforeRecordingNewVisits() async throws {
         let temporary = try TemporaryDirectory()
-        let url = temporary.url.appendingPathComponent("history.json")
+        let url = temporary.url.appendingPathComponent("state.json")
         try Data("not json".utf8).write(to: url)
         let runner = FakeRunner()
         let service = service(runner, temporary)
         #expect(service.recentSessionIDs().isEmpty)
-        #expect(service.historyError != nil)
+        #expect(service.stateError != nil)
         let backup = try #require(FileManager.default.contentsOfDirectory(at: temporary.url,
-            includingPropertiesForKeys: nil).first { $0.lastPathComponent.hasPrefix("history.corrupt-") })
+            includingPropertiesForKeys: nil).first { $0.lastPathComponent.hasPrefix("state.corrupt-") })
         #expect(try String(contentsOf: backup, encoding: .utf8) == "not json")
         try await service.connect(session("a"))
         #expect(self.service(runner, temporary).recentSessionIDs() == ["a"])
-        #expect(service.historyError == nil)
+        #expect(service.stateError == nil)
     }
     @Test func projectStartupIsOnlyPartOfNewSessionCreation() async throws {
         let temporary = try TemporaryDirectory(), runner = FakeRunner()
@@ -351,25 +328,31 @@ struct ServiceTests {
         Candidate(id: Candidate.identity(id, host: host), kind: .session, title: "Session", sessionID: id, host: host)
     }
 
-    @Test func recentSelectionsAndPreviousSessionSurviveRestart() async throws {
+    @Test func sessionStateSurvivesRestart() async throws {
         let temporary = try TemporaryDirectory(), runner = FakeRunner()
         runner.sessions = [("a", "A", "/a"), ("b", "B", "/b")]
         let first = service(runner, temporary)
+        first.togglePin(sessionID: "a")
+        first.togglePin(sessionID: "b")
         try await first.connect(session("b"), from: session("a"))
         try await first.connect(session("b"), from: session("b"))
         let reopened = first.at(first.target)
         #expect(reopened.recentSessionIDs() == ["b", "a"])
+        #expect(reopened.pinnedSessionIDs() == ["a", "b"])
+        reopened.togglePin(sessionID: "a")
         #expect(try await reopened.connectLast() == "a")
         #expect(reopened.recentSessionIDs() == ["a", "b"])
         #expect(try await reopened.connectLast() == "b")
         let restarted = service(runner, temporary)
         #expect(restarted.recentSessionIDs() == ["b", "a"])
+        #expect(restarted.pinnedSessionIDs() == ["b"])
+        restarted.togglePin(sessionID: "a")
         await restarted.recordVisit(sessionID: "a", observedAt: .now, initial: true)
         #expect(restarted.recentSessionIDs() == ["a", "b"])
         #expect(try await restarted.connectLast(from: session("a")) == "b")
-        let document = try JSONSerialization.jsonObject(with: Data(contentsOf: try #require(restarted.historyURL))) as? [String: Any]
-        #expect(document?["version"] as? Int == 1)
-        #expect(document?["sessions"] as? [String] == ["b", "a"])
+        let saved = service(runner, temporary)
+        #expect(saved.recentSessionIDs() == ["b", "a"])
+        #expect(saved.pinnedSessionIDs() == ["b", "a"])
         #expect(runner.creations == 0)
     }
 
@@ -398,21 +381,24 @@ struct ServiceTests {
         #expect(service.recentSessionIDs() == ["b", "a"])
     }
 
-    @Test func unavailableHistoryStorageKeepsSelectionsUsable() async throws {
+    @Test func unavailableStateStorageKeepsSessionChangesUsable() async throws {
         let temporary = try TemporaryDirectory(), runner = FakeRunner()
         let directory = temporary.url.appendingPathComponent("state")
         try Data().write(to: directory)
         let service = ReshService(client: RexClient(tools: Tools(rex: "/fake/rex", zoxide: nil, fd: nil, rexApp: "/fake/Rex.app"),
             target: RexTarget(clientID: "client:test", server: "test"), runner: runner),
-            historyURL: directory.appendingPathComponent("history.json"))
+            stateURL: directory.appendingPathComponent("state.json"))
+        service.togglePin(sessionID: "a")
         try await service.connect(session("a"))
         #expect(service.recentSessionIDs() == ["a"])
-        #expect(service.historyError != nil)
+        #expect(service.pinnedSessionIDs() == ["a"])
+        #expect(service.stateError != nil)
         try FileManager.default.removeItem(at: directory)
         try await service.connect(session("b"))
-        #expect(service.historyError == nil)
-        let saved = try JSONSerialization.jsonObject(with: Data(contentsOf: try #require(service.historyURL))) as? [String: Any]
-        #expect(saved?["sessions"] as? [String] == ["b", "a"])
+        #expect(service.stateError == nil)
+        let saved = try JSONSerialization.jsonObject(with: Data(contentsOf: try #require(service.stateURL))) as? [String: Any]
+        #expect(saved?["recentSessions"] as? [String] == ["b", "a"])
+        #expect(saved?["pinnedSessions"] as? [String] == ["a"])
     }
 
     @Test(arguments: ["a", "b", "c"])

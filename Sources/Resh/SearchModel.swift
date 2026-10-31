@@ -22,7 +22,7 @@ final class SearchModel: ObservableObject {
     @Published private(set) var pinnedSessionIDs: [String] = []
     @Published private(set) var currentCandidateID: String?
     private var currentSessionID: String?
-    private(set) var animatedSessionID: String?
+    private(set) var animatesResultChanges = false
     let configuration: ReshConfiguration
     @Published private(set) var keymap = Keymap.defaults
     @Published var keyModes = ["resh"]
@@ -32,6 +32,7 @@ final class SearchModel: ObservableObject {
     let configurationError: String?
     var isConfigurationReady: Bool { configurationError == nil }
     private var search = FuzzyMatcher([])
+    private var keyboardLayouts = KeyboardLayouts([])
     private var sessionSnapshot: [Candidate] = []
     private var agentSnapshot: [Candidate] = []
     private var sessionRanks: [String: Int] = [:]
@@ -52,13 +53,14 @@ final class SearchModel: ObservableObject {
     private(set) var keymapError: String?
     private let focusTracker: RexFocusTracker?
     private var observedFocus: String?
-    private var historyReconciliationTask: Task<Void, Never>?
+    private var stateReconciliationTask: Task<Void, Never>?
     private var pendingCreation: (name: String, sessionID: String, host: RexHost?)?
     private var isBackgroundActive = false
     private var subscriptions = Set<AnyCancellable>()
     private let snapshotProvider: any RexSnapshotProviding
     private let readPreferences: @Sendable () -> [String: Any]
     private let readFocusedSession: @MainActor (Int32?) -> String?
+    private let readKeyboardLayouts: @MainActor () -> KeyboardLayouts
     private let readTheme: @Sendable (String, Bool) throws -> RexTheme
     private var diagnostics: [String: String] = [:]
     private(set) var service: ReshService
@@ -78,7 +80,8 @@ final class SearchModel: ObservableObject {
          snapshotProvider: (any RexSnapshotProviding)? = nil,
          readTheme: @escaping @Sendable (String, Bool) throws -> RexTheme = { try RexTheme.read(rexApp: $0, systemIsDark: $1) },
          readPreferences: @escaping @Sendable () -> [String: Any] = { RexTheme.preferences(keys: ["Workspace.programActivitySeen"]) },
-         readFocusedSession: (@MainActor (Int32?) -> String?)? = nil) {
+         readFocusedSession: (@MainActor (Int32?) -> String?)? = nil,
+         readKeyboardLayouts: @escaping @MainActor () -> KeyboardLayouts = { .enabled() }) {
         self.service = service; self.tools = tools
         self.catalog = SessionStore(tools: tools, service: service)
         self.configurationURL = (configurationURL ?? ConfigurationFile.url()).standardizedFileURL
@@ -95,12 +98,15 @@ final class SearchModel: ObservableObject {
         self.focusTracker = tracker
         self.readFocusedSession = readFocusedSession ?? { tracker?.selectedSession(in: $0) }
         self.readTheme = readTheme
+        self.readKeyboardLayouts = readKeyboardLayouts
+        if configuration.keyboardLayoutSearch { keyboardLayouts = readKeyboardLayouts() }
         do { self.theme = try readTheme(tools.rexApp, Self.systemIsDark) }
         catch {
             self.theme = .fallback(systemIsDark: Self.systemIsDark)
             DebugLog.shared.record(error, source: "theme")
         }
         sessionSnapshot = ReshService.candidates(from: sessions)
+        pinnedSessionIDs = service.pinnedSessionIDs()
         sessionRanks = Dictionary(recentSessionIDs.enumerated().map { ($0.element, $0.offset) }, uniquingKeysWith: min)
         scope = configuration.initialSource
         error = configurationError
@@ -112,8 +118,8 @@ final class SearchModel: ObservableObject {
         catalog.$recentSessionIDs.dropFirst().sink { [weak self] history in
             self?.updateRecentSessions(history)
         }.store(in: &subscriptions)
-        catalog.$historyError.sink { [weak self] message in
-            self?.reportDiagnostic(message.map { ReshError($0) }, source: "history")
+        catalog.$stateError.sink { [weak self] message in
+            self?.reportDiagnostic(message.map { ReshError($0) }, source: "state")
         }.store(in: &subscriptions)
         tracker?.onChange = { [weak self] in self?.refreshFocus() }
         tracker?.onDiagnostic = { [weak self] in self?.reportDiagnostic($0, source: "focus") }
@@ -175,7 +181,7 @@ final class SearchModel: ObservableObject {
     func stopBackground() -> [RexEventConnection] {
         isBackgroundActive = false
         focusTracker?.stop()
-        historyReconciliationTask?.cancel(); historyReconciliationTask = nil
+        stateReconciliationTask?.cancel(); stateReconciliationTask = nil
         generation += 1
         hostGeneration += 1
         hostsTask?.cancel(); hostsTask = nil
@@ -213,11 +219,13 @@ final class SearchModel: ObservableObject {
 
     func prepare(service: ReshService, sessions: [RexSession], recentSessionIDs: [String] = [], rexAppPID: Int32? = nil,
                  currentSessionID: String? = nil) {
+        if configuration.keyboardLayoutSearch { keyboardLayouts = readKeyboardLayouts() }
         if !isOpening { query = ""; selection = 0 }
         self.service = service
         self.rexAppPID = rexAppPID
         self.currentSessionID = currentSessionID
         sessionSnapshot = ReshService.candidates(from: sessions)
+        pinnedSessionIDs = service.pinnedSessionIDs()
         verifiedSessionHosts.insert(service.target.server)
         sessionRanks = Dictionary(recentSessionIDs.enumerated().map { ($0.element, $0.offset) }, uniquingKeysWith: min)
         scope = configuration.initialSource
@@ -282,17 +290,28 @@ final class SearchModel: ObservableObject {
         // from attachment order, a session label, or resh's MRU history.
         let currentID = currentSession?.id
         if currentCandidateID != currentID { currentCandidateID = currentID }
+        let floatingIDs = (configuration.floatUnreadSessions ? attentionSessionIDs : [])
+            .union(configuration.floatUnreadAgents ? attentionAgentIDs : [])
+        let alternatives = keyboardLayouts.alternatives(for: query)
         let updated: [Candidate]
         if configuration.source(scope)?.kind == .agents {
-            let matching = Set(search.filter(query: query, limit: search.entries.count).map(\.id))
-            updated = Array(search.entries.filter { matching.contains($0.id) }.prefix(100))
-        } else if pinnedSessionIDs.isEmpty, currentID == nil {
-            updated = search.filter(query: query)
+            let matching = Set(search.filter(query: query, alternatives: alternatives, limit: search.entries.count).map(\.id))
+            let entries = search.entries.filter { matching.contains($0.id) }
+            updated = Array((entries.filter { floatingIDs.contains($0.id) }
+                + entries.filter { !floatingIDs.contains($0.id) }).prefix(100))
+        } else if pinnedSessionIDs.isEmpty, currentID == nil, floatingIDs.isEmpty {
+            updated = search.filter(query: query, alternatives: alternatives)
         } else {
-            let matching = search.filter(query: query, limit: search.entries.count)
+            let matching = search.filter(query: query, alternatives: alternatives, limit: search.entries.count)
             var byID = Dictionary(matching.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-            var ordered = pinnedSessionIDs.compactMap { byID.removeValue(forKey: $0) }
+            var ordered = pinnedSessionIDs.compactMap { sessionID -> Candidate? in
+                guard let entry = matching.first(where: { $0.kind == .session && $0.sessionID == sessionID }) else { return nil }
+                return byID.removeValue(forKey: entry.id)
+            }
             if let currentID, let entry = byID.removeValue(forKey: currentID) { ordered.append(entry) }
+            for entry in matching where floatingIDs.contains(entry.id) {
+                if let entry = byID.removeValue(forKey: entry.id) { ordered.append(entry) }
+            }
             ordered += matching.filter { byID[$0.id] != nil }
             updated = Array(ordered.prefix(100))
         }
@@ -305,13 +324,14 @@ final class SearchModel: ObservableObject {
     }
 
     func togglePin() {
-        guard isConfigurationReady, !isOpening, !isConnecting, let selected, selected.kind == .session else { return }
-        animatedSessionID = selected.id
-        if pinnedSessionIDs.contains(selected.id) { pinnedSessionIDs.removeAll { $0 == selected.id } }
-        else { pinnedSessionIDs.append(selected.id) }
+        guard isConfigurationReady, !isOpening, !isConnecting, let selected, selected.kind == .session,
+              let sessionID = selected.sessionID else { return }
+        animatesResultChanges = true
+        defer { animatesResultChanges = false }
+        pinnedSessionIDs = service.togglePin(sessionID: sessionID)
+        catalog.refreshState()
         updateResults()
         selection = results.firstIndex { $0.id == selected.id } ?? 0
-        animatedSessionID = nil
     }
 
     func openResult(_ number: Int) {
@@ -396,15 +416,15 @@ final class SearchModel: ObservableObject {
             if let id = candidate.sessionID { removeSession(id, host: host) }
         }
         if let host {
-            guard updated != hostSessions[host.id] else { reconcileHistory(); return }
+            guard updated != hostSessions[host.id] else { reconcileState(); return }
             hostSessions[host.id] = updated
         } else {
-            guard updated != sessionSnapshot else { reconcileHistory(); return }
+            guard updated != sessionSnapshot else { reconcileState(); return }
             sessionSnapshot = updated
         }
         if isConfigurationReady { refreshEntries() }
         refreshFocus()
-        reconcileHistory()
+        reconcileState()
     }
 
     private func watchFocus(updateCurrent: Bool = true) {
@@ -437,21 +457,26 @@ final class SearchModel: ObservableObject {
             Task {
                 await service.recordVisit(sessionID: sessionID, observedAt: observedAt, initial: previous == nil)
                 guard self.service.target.server == service.target.server else { return }
-                await catalog.refreshHistory().value
+                await catalog.refreshState().value
             }
         }
     }
 
-    private func reconcileHistory() {
+    private func reconcileState() {
         guard hasAuthoritativeHostCatalog, verifiedSessionHosts.contains(service.target.server),
               hosts.allSatisfy({ verifiedSessionHosts.contains($0.id) }) else { return }
         let service = service, ids = Set(sessionCandidates.compactMap(\.sessionID))
-        historyReconciliationTask?.cancel()
-        historyReconciliationTask = Task {
+        stateReconciliationTask?.cancel()
+        stateReconciliationTask = Task {
             guard !Task.isCancelled else { return }
-            await service.reconcileHistory(sessionIDs: ids)
+            await service.reconcileState(sessionIDs: ids)
             guard !Task.isCancelled else { return }
-            await catalog.refreshHistory().value
+            let pins = service.pinnedSessionIDs()
+            if pins != pinnedSessionIDs {
+                pinnedSessionIDs = pins
+                refreshEntries()
+            }
+            await catalog.refreshState().value
         }
     }
 
@@ -462,15 +487,11 @@ final class SearchModel: ObservableObject {
         }
         if let host { hostSessions[host.id]?.removeAll { $0.id == id } }
         else { sessionSnapshot.removeAll { $0.id == id } }
-        pinnedSessionIDs.removeAll { $0 == id }
+        service.forgetSession(sessionID: sessionID)
+        pinnedSessionIDs = service.pinnedSessionIDs()
         refreshEntries()
         refreshFocus()
-        let service = service, request = generation
-        Task {
-            await service.forgetSession(sessionID: sessionID)
-            guard generation == request else { return }
-            await catalog.refreshHistory().value
-        }
+        catalog.refreshState()
     }
 
     private func discoverHosts() {
@@ -493,8 +514,6 @@ final class SearchModel: ObservableObject {
                 let ids = Set(updated.map(\.id))
                 let previousHosts = Dictionary(uniqueKeysWithValues: hosts.map { ($0.id, $0) })
                 for host in hosts where !ids.contains(host.id) {
-                    let removed = Set((hostSessions[host.id] ?? []).map(\.id))
-                    pinnedSessionIDs.removeAll(where: removed.contains)
                     reportDiagnostic(nil, source: "sources:\(host.id)")
                     reportDiagnostic(nil, source: "attention:\(host.id)")
                 }
@@ -514,7 +533,7 @@ final class SearchModel: ObservableObject {
                 reportDiagnostic(catalog.warnings.isEmpty ? nil : ReshError(catalog.warnings.joined(separator: "\n")), source: "hosts")
                 refreshEntries()
                 loadRemoteSources()
-                reconcileHistory()
+                reconcileState()
             } catch {
                 guard !Task.isCancelled, hostGeneration == request else { return }
                 reportDiagnostic(error, source: "hosts")
@@ -607,7 +626,7 @@ final class SearchModel: ObservableObject {
                         let snapshot = try await Task.detached { try provider.snapshot(target: target, rexAppPID: rexAppPID) }.value
                         guard generation == request else { return }
                         service = service.at(RexTarget(clientID: snapshot.client, server: target.server))
-                        await catalog.refreshHistory().value
+                        await catalog.refreshState().value
                         guard generation == request else { return }
                         sessionRanks = Dictionary(catalog.recentSessionIDs.enumerated().map { ($0.element, $0.offset) }, uniquingKeysWith: min)
                         sessionSnapshot = ReshService.candidates(from: snapshot.sessions)
@@ -652,13 +671,14 @@ final class SearchModel: ObservableObject {
         guard count > 0 else { return }
         selection = (selection + delta + count) % count
     }
-    func openSelection() {
-        if offersNewSession { createSession(); return }
-        guard isConfigurationReady, !isOpening, !isConnecting, let candidate = selected else { return }
+    @discardableResult
+    func openSelection() -> Task<Void, Never>? {
+        if offersNewSession { return createSession() }
+        guard isConfigurationReady, !isOpening, !isConnecting, let candidate = selected else { return nil }
         isConnecting = true; error = nil
         let request = generation, service = service, current = currentSession
         let currentID = currentSessionID, candidates = sessionCandidates
-        Task {
+        return Task {
             do {
                 var source = current
                 if source == nil, let currentID {
@@ -667,7 +687,7 @@ final class SearchModel: ObservableObject {
                 }
                 try await service.connect(candidate, from: source)
                 guard generation == request else { return }
-                catalog.refreshHistory()
+                catalog.refreshState()
                 onDismiss?(true)
             } catch {
                 guard generation == request else { return }
@@ -687,13 +707,14 @@ final class SearchModel: ObservableObject {
             }
         }
     }
-    func createSession() {
-        guard canCreateSession else { return }
+    @discardableResult
+    func createSession() -> Task<Void, Never>? {
+        guard canCreateSession else { return nil }
         isConnecting = true; error = nil
         let name = query.trimmingCharacters(in: .whitespacesAndNewlines)
         let host = newSessionHost
         let request = generation, service = service, current = currentSession
-        Task {
+        return Task {
             do {
                 let sessionID: String
                 if let pendingCreation, pendingCreation.name == name, pendingCreation.host?.id == host?.id {
@@ -707,7 +728,7 @@ final class SearchModel: ObservableObject {
                 try await service.connect(Candidate(id: Candidate.identity(sessionID, host: host), kind: .session,
                     title: name, sessionID: sessionID, host: host), from: current)
                 guard generation == request else { return }
-                catalog.refreshHistory()
+                catalog.refreshState()
                 pendingCreation = nil
                 onDismiss?(true)
             } catch {
@@ -771,7 +792,7 @@ final class SearchModel: ObservableObject {
                 }
                 if try await service.connectLast(from: source) != nil {
                     guard generation == request else { return }
-                    catalog.refreshHistory()
+                    catalog.refreshState()
                     onDismiss?(true)
                 }
             } catch { reportDiagnostic(error, source: "last") }
@@ -863,7 +884,7 @@ final class SearchModel: ObservableObject {
         let records = attentionRecords, remoteRecords = hostAttentionRecords, hosts = hosts
         let request = generation, preferences = readPreferences
         guard !records.isEmpty || remoteRecords.values.contains(where: { !$0.isEmpty }) else {
-            attentionSessionIDs = []; attentionAgentIDs = []; attentionTask = nil
+            applyAttention(sessionIDs: [], agentIDs: []); attentionTask = nil
             reportDiagnostic(nil, source: "receipts")
             return
         }
@@ -882,19 +903,34 @@ final class SearchModel: ObservableObject {
                     return (sessions, agents)
                 }.value
                 guard !Task.isCancelled, generation == request else { return }
-                if attentionSessionIDs != unseen.0 { attentionSessionIDs = unseen.0 }
-                if attentionAgentIDs != unseen.1 { attentionAgentIDs = unseen.1 }
+                applyAttention(sessionIDs: unseen.0, agentIDs: unseen.1)
                 reportDiagnostic(nil, source: "receipts")
             } catch {
                 guard !Task.isCancelled, generation == request else { return }
-                attentionSessionIDs = []
-                attentionAgentIDs = []
+                applyAttention(sessionIDs: [], agentIDs: [])
                 reportDiagnostic(error, source: "receipts")
             }
         }
     }
+
+    private func applyAttention(sessionIDs: Set<String>, agentIDs: Set<String>) {
+        guard attentionSessionIDs != sessionIDs || attentionAgentIDs != agentIDs else { return }
+        let selectedID = selected?.id, previousSelection = selection
+        animatesResultChanges = true
+        defer { animatesResultChanges = false }
+        if attentionSessionIDs != sessionIDs { attentionSessionIDs = sessionIDs }
+        if attentionAgentIDs != agentIDs { attentionAgentIDs = agentIDs }
+        updateResults()
+        selection = selectedID.flatMap { id in results.firstIndex { $0.id == id } }
+            ?? min(previousSelection, max(0, results.count - 1))
+    }
 }
 
 extension RGBA {
-    var nsColor: NSColor { NSColor(srgbRed: red, green: green, blue: blue, alpha: alpha) }
+    var nsColor: NSColor {
+        switch colorSpace {
+        case .sRGB: NSColor(srgbRed: red, green: green, blue: blue, alpha: alpha)
+        case .displayP3: NSColor(displayP3Red: red, green: green, blue: blue, alpha: alpha)
+        }
+    }
 }

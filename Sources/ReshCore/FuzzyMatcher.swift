@@ -31,14 +31,23 @@ public struct FuzzyMatcher: Sendable {
         return total
     }
 
-    public func filter(query: String, limit: Int = 100) -> [Candidate] {
+    /// Alternative queries share ranking and a single result limit; each entry appears once.
+    public func filter(query: String, alternatives: [String] = [], limit: Int = 100) -> [Candidate] {
         let words = Self.normalized(query).split(whereSeparator: \.isWhitespace).map(Array.init)
         if words.isEmpty { return Array(entries.prefix(limit)) }
+        var seen = Set([words])
+        let queries = [words] + alternatives.compactMap { alternative -> [[Character]]? in
+            let words = Self.normalized(alternative).split(whereSeparator: \.isWhitespace).map(Array.init)
+            return !words.isEmpty && seen.insert(words).inserted ? words : nil
+        }
         return entries.enumerated().compactMap { index, entry -> (Candidate, Int, Int)? in
-            let pathScore = Self.score(words, in: keys[index].text)
-            let titleScore = Self.score(words, in: keys[index].title).map { $0 + 50 }
-            guard pathScore != nil || titleScore != nil else { return nil }
-            return (entry, max(pathScore ?? Int.min, titleScore ?? Int.min), index)
+            var best = Int.min
+            for words in queries {
+                if let score = Self.score(words, in: keys[index].text) { best = max(best, score) }
+                if let score = Self.score(words, in: keys[index].title) { best = max(best, score + 50) }
+            }
+            guard best != Int.min else { return nil }
+            return (entry, best, index)
         }.sorted { $0.1 == $1.1 ? $0.2 < $1.2 : $0.1 > $1.1 }.prefix(limit).map(\.0)
     }
 

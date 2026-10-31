@@ -7,6 +7,7 @@ public enum PanelLayout {
     public static let sectionGap: CGFloat = 8
     public static let searchHeight: CGFloat = 32
     public static let sourcesHeight: CGFloat = 22
+    public static let controlCornerRadius: CGFloat = 12
     public static let sourcesTop = outerPadding + searchHeight + sectionGap
     public static let listTop = sourcesTop + sourcesHeight + sectionGap
     public static let maximumVisibleRows = 12

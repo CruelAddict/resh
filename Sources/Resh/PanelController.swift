@@ -51,6 +51,7 @@ final class PanelController: NSObject, NSWindowDelegate {
         panel.isFloatingPanel = true
         panel.level = .floating
         panel.isMovableByWindowBackground = false
+        panel.acceptsMouseMovedEvents = true
         panel.hidesOnDeactivate = false
         panel.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
         model.onDismiss = { [weak self] focusRex in self?.dismiss(focusRex: focusRex) }

@@ -28,6 +28,10 @@ public struct ReshConfiguration: Equatable, Sendable {
     public let initialSource: SearchScope
     public let projects: [ProjectDefinition]
     public let defaultStartupCommand: String?
+    public let shortenHomePath: Bool
+    public let floatUnreadSessions: Bool
+    public let floatUnreadAgents: Bool
+    public let keyboardLayoutSearch: Bool
 
     public static let defaults: Self = try! parse("")
 
@@ -109,7 +113,9 @@ public struct ReshConfiguration: Equatable, Sendable {
         guard visibleIDs.contains(initial) else { throw ReshError("initial_source must appear in source_order.") }
         return Self(sources: sources, visibleSources: visibleIDs.compactMap { id in sources.first { $0.id == id } },
                     initialSource: initial, projects: projects,
-                    defaultStartupCommand: raw.default_session?.startup_command)
+                    defaultStartupCommand: raw.default_session?.startup_command, shortenHomePath: raw.shorten_home_path ?? false,
+                    floatUnreadSessions: raw.float_unread_sessions ?? true, floatUnreadAgents: raw.float_unread_agents ?? true,
+                    keyboardLayoutSearch: raw.keyboard_layout_search ?? true)
     }
 }
 
@@ -153,7 +159,14 @@ private struct Document: Decodable {
     let source_order: [String]?
     let initial_source: String?
     let default_session: Defaults?
-    enum CodingKeys: String, CodingKey, CaseIterable { case sources, session, source_order, initial_source, default_session }
+    let shorten_home_path: Bool?
+    let float_unread_sessions: Bool?
+    let float_unread_agents: Bool?
+    let keyboard_layout_search: Bool?
+    enum CodingKeys: String, CodingKey, CaseIterable {
+        case sources, session, source_order, initial_source, default_session, shorten_home_path
+        case float_unread_sessions, float_unread_agents, keyboard_layout_search
+    }
     init(from decoder: Decoder) throws {
         if try decoder.container(keyedBy: AnyKey.self).allKeys.contains(where: { $0.stringValue == "keymap" }) {
             throw ReshError("Move [keymap] shortcuts to rex.bind in Rex's init.lua. See examples/config/keymap.lua, then restart resh.")
@@ -165,6 +178,10 @@ private struct Document: Decodable {
         source_order = try c.decodeIfPresent([String].self, forKey: .source_order)
         initial_source = try c.decodeIfPresent(String.self, forKey: .initial_source)
         default_session = try c.decodeIfPresent(Defaults.self, forKey: .default_session)
+        shorten_home_path = try c.decodeIfPresent(Bool.self, forKey: .shorten_home_path)
+        float_unread_sessions = try c.decodeIfPresent(Bool.self, forKey: .float_unread_sessions)
+        float_unread_agents = try c.decodeIfPresent(Bool.self, forKey: .float_unread_agents)
+        keyboard_layout_search = try c.decodeIfPresent(Bool.self, forKey: .keyboard_layout_search)
     }
 }
 private struct RawSource: Decodable {

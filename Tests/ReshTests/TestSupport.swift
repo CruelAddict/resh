@@ -8,11 +8,16 @@ struct PickerTests {}
 
 extension RexTheme {
     static var fixture: RexTheme {
-        try! resolve(preferences: ["Workspace.darkThemeID": "fixture"], builtins: Data("""
-        [{"id":"fixture","source":{"background":"#161616","foreground":"#eeeeee"},
-        "semantic":{"accentSolid":"#cc6600","selection":"#cc6600","surfaceRaised":"#262626","infoSolid":"#4488cc"}}]
-        """.utf8), systemIsDark: true)
+        .fallback(systemIsDark: true)
     }
+}
+
+extension KeyboardLayouts {
+    static let fixture = KeyboardLayouts([
+        "qwertyuiop[]asdfghjkl;'zxcvbnm,./`",
+        "йцукенгшщзхъфывапролджэячсмитьбю.ё",
+        "qwertzuiopü+asdfghjklöäyxcvbnm,.-^",
+    ].map { ($0 + $0.uppercased()).map(String.init) })
 }
 
 final class SnapshotStub: RexSnapshotProviding, @unchecked Sendable {
@@ -31,64 +36,84 @@ final class SnapshotStub: RexSnapshotProviding, @unchecked Sendable {
     }
 }
 
-final class RexBridgeStub: CommandRunning {
+final class RexBridgeStub: CommandRunning, @unchecked Sendable {
     let directory: URL
-    let tools: Tools
+    let tools = Tools(rex: "/not/rex", zoxide: nil, fd: nil, rexApp: "/not/Rex.app")
+    private let lock = NSLock()
+    private var hosts: [RexHost] = []
 
     init() throws {
         directory = FileManager.default.temporaryDirectory.appendingPathComponent("resh-bridge-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let executable = directory.appendingPathComponent("rex")
-        tools = Tools(rex: executable.path, zoxide: nil, fd: nil, rexApp: "/not/Rex.app")
-        try saveHosts([])
-        try #"""
-        #!/usr/bin/python3 -u
-        import json, sys
-        from pathlib import Path
-        attached = False
-        def reply(value):
-            print(json.dumps(value), flush=True)
-        hosts = json.loads((Path(__file__).parent / 'hosts.json').read_text())
-        server = sys.argv[sys.argv.index('--server') + 1]
-        host = next((host for host in hosts if host['label'] == server), None)
-        endpoint = host['endpoints'][0] if host else server
-        reply({'ready': True})
-        for line in sys.stdin:
-            request = json.loads(line)
-            method, args = request.get('method'), request.get('args', {})
-            if method == 'session.attach_all':
-                attached = True
-                reply({'result': {'sessions': []}})
-            elif method == 'client.list':
-                reply({'result': {'clients': [{'client_id': 'client:test', 'info': {'kind': 'app', 'platform': 'macos'}}]}})
-            elif method == 'session.create':
-                reply({'result': {'session_id': endpoint + '/' + args['label']}})
-            elif method == 'client.perform':
-                reply({'result': {'performed_by': args['client_id']}})
-            elif method == 'session.focus_block':
-                if attached:
-                    reply({'result': {'revision': 1}})
-                else:
-                    reply({'error': 'stream is not attached to session ' + args['session_id']})
-            else:
-                reply({'error': 'Unexpected method: ' + str(method)})
-        """#.write(to: executable, atomically: true, encoding: .utf8)
-        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: executable.path)
     }
 
-    func saveHosts(_ hosts: [RexHost]) throws {
-        try JSONEncoder().encode(hosts).write(to: directory.appendingPathComponent("hosts.json"), options: .atomic)
+    func setHosts(_ hosts: [RexHost]) {
+        lock.lock(); defer { lock.unlock() }
+        self.hosts = hosts
+    }
+
+    func openTransport(server: String) -> any RexDataTransport {
+        lock.lock(); defer { lock.unlock() }
+        let endpoint = hosts.first { $0.server == server }?.endpoints.first ?? server
+        return Transport(endpoint: endpoint)
     }
 
     func run(_ executable: String, _ arguments: [String], timeout: TimeInterval, directory: String?) throws -> CommandResult {
         guard executable == tools.rex, arguments.contains("hosts") else { throw ReshError("Unexpected command: \(arguments)") }
-        // Keep Python startup outside the host catalog's two-second command budget.
-        // The bridge still reads this same file when each real connection starts.
-        let hosts = try JSONDecoder().decode([RexHost].self, from: Data(contentsOf: self.directory.appendingPathComponent("hosts.json")))
+        lock.lock(); defer { lock.unlock() }
         return CommandResult(stdout: try JSONSerialization.data(withJSONObject: [
             "hosts": hosts.map { ["host": ["id": $0.id, "label": $0.label, "endpoints": $0.endpoints]] },
         ]))
     }
 
     deinit { try? FileManager.default.removeItem(at: directory) }
+
+    private final class Transport: RexDataTransport, @unchecked Sendable {
+        private let endpoint: String
+        private let lock = NSLock()
+        private var running = true
+        private var attached = false
+        private var responses = [Data("{\"ready\":true}\n".utf8)]
+        var isRunning: Bool { lock.lock(); defer { lock.unlock() }; return running }
+
+        init(endpoint: String) { self.endpoint = endpoint }
+
+        func write(_ data: Data) throws -> Int {
+            lock.lock(); defer { lock.unlock() }
+            guard running else { return 0 }
+            let request = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+            let method = try #require(request["method"] as? String)
+            let args = request["args"] as? [String: Any] ?? [:]
+            let response: [String: Any]
+            switch method {
+            case "session.attach_all":
+                attached = true
+                response = ["result": ["sessions": []]]
+            case "client.list":
+                response = ["result": ["clients": [["client_id": "client:test", "info": ["kind": "app", "platform": "macos"]]]]]
+            case "session.create":
+                let label = try #require(args["label"] as? String)
+                response = ["result": ["session_id": endpoint + "/" + label]]
+            case "client.perform":
+                response = ["result": ["performed_by": try #require(args["client_id"] as? String)]]
+            case "session.focus_block":
+                response = attached ? ["result": ["revision": 1]] : ["error": "stream is not attached to session"]
+            default:
+                throw ReshError("Unexpected method: \(method)")
+            }
+            var reply = try JSONSerialization.data(withJSONObject: response)
+            reply.append(10)
+            responses.append(reply)
+            return data.count
+        }
+
+        func read(timeout: TimeInterval) throws -> Data? {
+            lock.lock(); defer { lock.unlock() }
+            guard running else { return Data() }
+            guard !responses.isEmpty else { throw ReshError("Unexpected bridge read without a response.") }
+            return responses.removeFirst()
+        }
+
+        func stop() { lock.lock(); defer { lock.unlock() }; running = false }
+    }
 }
