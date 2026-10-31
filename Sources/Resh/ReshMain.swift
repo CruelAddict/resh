@@ -441,12 +441,11 @@ struct ReshMain {
             throw ReshError("The resh setup resources are missing. Reinstall resh.")
         }
         let directory = executable.resolvingSymlinksInPath().deletingLastPathComponent()
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/bash")
-        process.arguments = [script.path, "--source", directory.path] + arguments
-        try process.run()
-        process.waitUntilExit()
-        exit(process.terminationStatus)
+        let argv = (["/bin/bash", script.path, "--source", directory.path] + arguments).map { strdup($0) } + [nil]
+        defer { argv.forEach { free($0) } }
+        // Keep the foreground terminal so setup can read confirmation from /dev/tty.
+        _ = argv.withUnsafeBufferPointer { execv("/bin/bash", $0.baseAddress!) }
+        throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
     }
     nonisolated private static func report(_ error: Error) {
         DebugLog.shared.record(error, source: "cli")
