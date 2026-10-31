@@ -28,8 +28,13 @@ a proper API for a plugin such as resh, so things might and will likely break.
 
 Enable **Rex Settings → Rex Server → Remote Control** to allow session switching.
 
-To find directories with `Recent` and `Find`, install the optional dependencies
-`zoxide` and `fd`:
+```sh
+brew install CruelAddict/tap/resh
+resh setup
+```
+
+To find directories with `Recent` and `Find`, also install `zoxide` and `fd`
+(they're optional but highly recommended):
 
 ```sh
 brew install zoxide fd
