@@ -42,10 +42,16 @@ private final class WindowFrameStub: @unchecked Sendable {
     let ready = DispatchSemaphore(value: 0)
     private let lock = NSLock()
     private var frames: [CGRect?]
+    private let starts = AsyncStream<Void>.makeStream()
 
     init(_ frames: [CGRect?]) { self.frames = frames }
+    func waitUntilStarted() async throws {
+        var iterator = starts.stream.makeAsyncIterator()
+        try #require(await iterator.next() != nil)
+    }
     func read() -> CGRect? {
         let frame = lock.withLock { frames.removeFirst() }
+        starts.continuation.yield(())
         ready.wait()
         return frame
     }
@@ -253,7 +259,8 @@ extension PickerTests {
         let service = ReshService(client: RexClient(tools: tools, target: RexTarget(clientID: "client:test")), stateURL: nil)
         let controller = PanelController(service: service, tools: tools,
             configurationURL: ConfigurationFile.emptyFixture,
-            readWindowFrame: { _ in CGRect(x: 0, y: 0, width: 800, height: 600) }, readTheme: { _, _ in .fixture })
+            readWindowFrame: { _ in CGRect(x: 0, y: 0, width: 800, height: 600) },
+            readWindowVisibility: { _ in true }, readTheme: { _, _ in .fixture })
         defer { controller.dismiss(focusRex: false); controller.model.clear() }
         func present() -> Bool {
             if state == "error" {
@@ -294,17 +301,18 @@ extension PickerTests {
         let sessions = [RexSession(sessionID: "a", label: "Session A"), RexSession(sessionID: "b", label: "Session B")]
         let controller = PanelController(service: service, tools: tools, sessions: sessions,
             configurationURL: ConfigurationFile.emptyFixture,
-            readWindowFrame: { _ in frames.read() }, readScreens: { screens }, readTheme: { _, _ in .fixture })
+            readWindowFrame: { _ in frames.read() }, readScreens: { screens },
+            readWindowVisibility: { _ in true }, readTheme: { _, _ in .fixture })
         defer { frames.ready.signal(); controller.dismiss(focusRex: false); controller.model.clear() }
         controller.presentLoading()
-        #expect(!controller.panel.isVisible)
+        #expect(controller.panel.isVisible && controller.panel.isKeyWindow)
         frames.ready.signal()
         await controller.positioningTask?.value
         #expect(controller.panel.isVisible)
         controller.dismiss(focusRex: false)
         if change == "disconnected" { screens = [secondary] }
         controller.presentLoading()
-        #expect(controller.panel.isVisible == (change != "disconnected"))
+        #expect(controller.panel.isVisible)
         if change == "disconnected" {
             frames.ready.signal()
             await controller.positioningTask?.value
@@ -318,7 +326,7 @@ extension PickerTests {
         }
         controller.model.query = "session"
         let json = """
-        {"bindings":[{"keys":["ctrl+b","j"],"mode":"resh","action":"resh_next"}],
+        {"bindings":[{"keys":["ctrl+[KeyB]","[KeyJ]"],"mode":"resh","action":"resh_next"}],
          "modes":[{"name":"resh","exclusive":false}]}
         """
         controller.model.receive(.success(.keymap(Keymap(try JSONDecoder().decode(RexKeymap.self, from: Data(json.utf8))))))
@@ -357,13 +365,16 @@ extension PickerTests {
         let service = ReshService(client: RexClient(tools: tools, target: RexTarget(clientID: "client:test")), stateURL: nil)
         let controller = PanelController(service: service, tools: tools,
             configurationURL: ConfigurationFile.emptyFixture,
-            readWindowFrame: { _ in frames.read() }, readScreens: { [primary, secondary] }, readTheme: { _, _ in .fixture })
+            readWindowFrame: { _ in frames.read() }, readScreens: { [primary, secondary] },
+            readWindowVisibility: { _ in true }, readTheme: { _, _ in .fixture })
         defer { frames.ready.signal(); controller.dismiss(focusRex: false); controller.model.clear() }
         controller.presentLoading()
         frames.ready.signal()
         await controller.positioningTask?.value
+        try await frames.waitUntilStarted()
         controller.dismiss(focusRex: false)
         controller.presentLoading()
+        try await frames.waitUntilStarted()
         let origin = controller.panel.frame.origin
         let positioning = controller.positioningTask
         controller.dismiss(focusRex: false)

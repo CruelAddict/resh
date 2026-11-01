@@ -21,9 +21,11 @@ final class PanelController: NSObject, NSWindowDelegate {
     private var rexAppPID: Int32?
     private var presentationAppPID: Int32?
     private(set) var positioningTask: Task<Void, Never>?
+    private var visibilityWaiter: CheckedContinuation<Void, Never>?
     private var lastScreenID: CGDirectDisplayID?
     private let readWindowFrame: @Sendable (Int32?) -> CGRect?
     private let readScreens: () -> [NSScreen]
+    private let readWindowVisibility: @MainActor (NSWindow) -> Bool
     private var isDismissing = false
     private var keyRuntime = KeymapRuntime()
     private static let permissionPromptBundleID = "com.apple.UserNotificationCenter"
@@ -32,11 +34,13 @@ final class PanelController: NSObject, NSWindowDelegate {
          snapshotProvider: (any RexSnapshotProviding)? = nil,
          readWindowFrame: @escaping @Sendable (Int32?) -> CGRect? = { $0.flatMap { PanelPlacement.windowFrame(rexAppPID: $0) } },
          readScreens: @escaping () -> [NSScreen] = { NSScreen.screens },
+         readWindowVisibility: @escaping @MainActor (NSWindow) -> Bool = { $0.occlusionState.contains(.visible) },
          readTheme: @escaping @Sendable (String, Bool) throws -> RexTheme = { try RexTheme.read(rexApp: $0, systemIsDark: $1) }) {
         self.model = SearchModel(service: service, tools: tools, sessions: sessions, configurationURL: configurationURL,
             snapshotProvider: snapshotProvider, readTheme: readTheme)
         self.readWindowFrame = readWindowFrame
         self.readScreens = readScreens
+        self.readWindowVisibility = readWindowVisibility
         panel = LauncherPanel(contentRect: NSRect(x: 0, y: 0, width: PanelLayout.width,
             height: PanelLayout.height(resultCount: sessions.count)),
             styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
@@ -122,19 +126,33 @@ final class PanelController: NSObject, NSWindowDelegate {
         guard positioningTask == nil else { return }
         let frontmost = NSWorkspace.shared.frontmostApplication
         presentationAppPID = frontmost?.processIdentifier
-        if let lastScreenID, let screen = readScreens().first(where: { screenID($0) == lastScreenID }) {
-            position(on: screen)
-            displayPositioned()
-        }
+        // Show immediately, including the first open or a disconnected display.
+        let screens = readScreens()
+        if let screen = screens.first(where: { screenID($0) == lastScreenID }) ?? screens.first { position(on: screen) }
+        displayPositioned()
         updatePosition()
+    }
+
+    private func waitUntilVisible() async {
+        guard !readWindowVisibility(panel) else { return }
+        await withCheckedContinuation { visibilityWaiter = $0 }
+    }
+
+    func windowDidChangeOcclusionState(_ notification: Notification) {
+        guard panel.isVisible, readWindowVisibility(panel) else { return }
+        visibilityWaiter?.resume()
+        visibilityWaiter = nil
     }
 
     private func updatePosition() {
         let frontmost = NSWorkspace.shared.frontmostApplication
         let pid = rexAppPID ?? (frontmost?.bundleIdentifier == RexAppMonitor.bundleIdentifier ? frontmost?.processIdentifier : nil)
         let readWindowFrame = self.readWindowFrame
-        // Reuse the last display for immediate keyboard focus, then correct it once.
+        // Let WindowServer acknowledge visibility before querying Rex's window.
         positioningTask = Task { [weak self] in
+            guard !Task.isCancelled else { return }
+            await self?.waitUntilVisible()
+            guard !Task.isCancelled, self != nil else { return }
             let frame = await Task.detached { readWindowFrame(pid) }.value
             guard !Task.isCancelled, let self else { return }
             self.positioningTask = nil
@@ -336,6 +354,8 @@ final class PanelController: NSObject, NSWindowDelegate {
         isDismissing = true
         positioningTask?.cancel()
         positioningTask = nil
+        visibilityWaiter?.resume()
+        visibilityWaiter = nil
         keyRuntime.reset()
         DebugLog.shared.record("Hiding panel (focusRex: \(focusRex))", source: "panel")
         onDismiss?()
