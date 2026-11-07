@@ -592,6 +592,15 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
         searchField.insertionPointColor = theme.accent.nsColor
     }
 
+    private var selectionColor: NSColor {
+        let accent = theme.accent.nsColor
+        guard theme.isDark, let color = accent.usingColorSpace(.extendedSRGB) else { return accent }
+        // Rex darkens extended-sRGB components while preserving the accent's alpha.
+        var components = [color.redComponent * 0.78, color.greenComponent * 0.78,
+            color.blueComponent * 0.78, color.alphaComponent]
+        return NSColor(colorSpace: .extendedSRGB, components: &components, count: 4)
+    }
+
     private func updateSources() {
         for (index, button) in sourceButtons.enumerated() {
             let source = sources[index], selected = source.id == activeScope
@@ -772,7 +781,7 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
 
     func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
         let view = SelectionRow()
-        view.color = theme.selection.nsColor.withAlphaComponent(0.75)
+        view.color = selectionColor
         return view
     }
 
