@@ -858,6 +858,52 @@ extension PickerTests {
         #expect(model.visibleSources.map(\.id) == [.sessions])
     }
 
+    @Test(arguments: [SearchScope.sessions, .agents], [false, true])
+    @MainActor func pickerRowMetadata(scope: SearchScope, multipleHosts: Bool) async throws {
+        _ = NSApplication.shared
+        let stub = try CommandStub { arguments in
+            if arguments.contains("hosts") {
+                return ["hosts": multipleHosts
+                    ? [["host": ["id": "host:build", "label": "build", "endpoints": ["https://build.example"]]]]
+                    : []]
+            }
+            if arguments.contains("actions") { return ["actions": []] }
+            throw ReshError("Unexpected command: \(arguments)")
+        }
+        let service = ReshService(client: RexClient(tools: stub.tools, target: RexTarget(), runner: stub), stateURL: nil)
+        let sessions = [RexSession(sessionID: "work", label: "Work"), RexSession(sessionID: "notes", label: "Notes")]
+        let model = SearchModel(service: service, tools: stub.tools, sessions: sessions,
+            configurationURL: ConfigurationFile.emptyFixture, readTheme: { _, _ in .fixture }, readPreferences: { [:] })
+        defer { model.clear() }
+        let view = PanelView(model: model)
+        model.loadInitial()
+        await model.hostsTask?.value
+        model.updateAttention(sessions.map {
+            RexAttentionRecord(sessionID: $0.sessionID, blockID: "pane", state: "idle",
+                updatedAt: "2026-10-31T12:00:00Z", app: "opencode", title: "Task")
+        })
+        model.changeScope(scope)
+        view.layoutSubtreeIfNeeded()
+        let tables = view.subviews.compactMap { ($0 as? NSScrollView)?.documentView as? NSTableView }
+        let table = try #require(tables.first)
+        #expect(model.results.count == 2)
+        for selection in model.results.indices {
+            model.selection = selection
+            for row in model.results.indices {
+                let cell = try #require(table.view(atColumn: 0, row: row, makeIfNecessary: true) as? SessionCellView)
+                let showsMetadata = row == selection && (multipleHosts || scope == .agents)
+                #expect(cell.metadataLabel.isHidden == !showsMetadata)
+                if showsMetadata {
+                    let host = multipleHosts ? "This Mac" : ""
+                    let session = model.results[row].agent?.sessionTitle
+                    let metadata = session.map { $0 + (multipleHosts ? " | " + host : "") } ?? host
+                    #expect(cell.metadataLabel.stringValue == metadata)
+                }
+                #expect(cell.accessibilityLabel()?.contains(", This Mac") == (multipleHosts && row == selection))
+            }
+        }
+    }
+
     @Test(arguments: ["none", "local", "remote", "projects", "custom", "agents", "remote agents"])
     @MainActor func sourceAvailability(_ scenario: String) async throws {
         var enabled = scenario == "remote"

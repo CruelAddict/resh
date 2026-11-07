@@ -49,7 +49,7 @@ final class SessionCellView: NSTableCellView {
     private let attention = AttentionIndicatorView()
     private let working = NSProgressIndicator()
     let agentIcon = NSImageView()
-    let hostLabel = NSTextField(labelWithString: "")
+    let metadataLabel = NSTextField(labelWithString: "")
     let pin = NSImageView()
     private let currentSession = NSImageView()
     let shortcutLabel = NSTextField(labelWithString: "")
@@ -103,17 +103,17 @@ final class SessionCellView: NSTableCellView {
             hint.isHidden = true
             addSubview(hint)
         }
-        hostLabel.font = .systemFont(ofSize: 11)
-        hostLabel.lineBreakMode = .byTruncatingMiddle
-        hostLabel.alignment = .right
-        hostLabel.isHidden = true
-        addSubview(hostLabel)
+        metadataLabel.font = .systemFont(ofSize: 11)
+        metadataLabel.lineBreakMode = .byTruncatingMiddle
+        metadataLabel.alignment = .right
+        metadataLabel.isHidden = true
+        addSubview(metadataLabel)
     }
 
     required init?(coder: NSCoder) { nil }
 
     func configure(_ candidate: Candidate, needsAttention: Bool, color: NSColor, textColor: NSColor,
-                   showHost: Bool = false, hostWidth: CGFloat = 0, isPinned: Bool = false,
+                   showSessionTitle: Bool = false, showHost: Bool = false, hostWidth: CGFloat = 0, isPinned: Bool = false,
                    isCurrent: Bool = false, shortcut: String = "", shortcutWidth: CGFloat = 24,
                    pinHint: String = "", closeHint: String = "", isWorking: Bool = false, agentImage: NSImage? = nil,
                    shortenHomePath: Bool = false) {
@@ -158,12 +158,13 @@ final class SessionCellView: NSTableCellView {
             hint.isHidden = hint.stringValue.isEmpty
         }
         hostColumnWidth = hostWidth
-        hostLabel.stringValue = agent.map { $0.sessionTitle + " | " + candidate.hostLabel } ?? candidate.hostLabel
-        hostLabel.textColor = hintColor
-        hostLabel.isHidden = !showHost
+        metadataLabel.stringValue = [showSessionTitle ? agent?.sessionTitle : nil, showHost ? candidate.hostLabel : nil]
+            .compactMap { $0 }.joined(separator: " | ")
+        metadataLabel.textColor = hintColor
+        metadataLabel.isHidden = metadataLabel.stringValue.isEmpty
         let accessibleTitle = agent.map { "\($0.sessionTitle), \($0.app), \($0.title)" } ?? title
         setAccessibilityLabel("\(candidate.kind == .agent ? "Agent" : candidate.kind == .session ? "Session" : "Folder"), \(accessibleTitle)"
-            + (showHost || agent != nil ? ", \(candidate.hostLabel)" : "")
+            + (showHost ? ", \(candidate.hostLabel)" : "")
             + (pinned ? ", pinned" : "")
             + (isCurrent ? ", current session" : "")
             + (attention.isHidden ? "" : ", unread activity")
@@ -174,19 +175,19 @@ final class SessionCellView: NSTableCellView {
     override func layout() {
         super.layout()
         guard let textField else { return }
-        let hostWidth = hostLabel.isHidden ? 0 : min(bounds.width * 0.3,
-            max(hostColumnWidth, ceil(hostLabel.cell?.cellSize.width ?? 0)))
+        let hostWidth = metadataLabel.isHidden ? 0 : min(bounds.width * 0.3,
+            max(hostColumnWidth, ceil(metadataLabel.cell?.cellSize.width ?? 0)))
         // Smaller metadata text shares the title's baseline, not its frame origin.
         let titleBaselineOffset = textField.firstBaselineOffsetFromTop
-        hostLabel.frame = NSRect(x: bounds.width - 8 - hostWidth,
-            y: 5 + hostLabel.firstBaselineOffsetFromTop - titleBaselineOffset, width: hostWidth, height: 17)
+        metadataLabel.frame = NSRect(x: bounds.width - 8 - hostWidth,
+            y: 5 + metadataLabel.firstBaselineOffsetFromTop - titleBaselineOffset, width: hostWidth, height: 17)
         shortcutLabel.frame = NSRect(x: 8,
             y: 5 + shortcutLabel.firstBaselineOffsetFromTop - titleBaselineOffset, width: shortcutColumnWidth, height: 17)
         currentSession.frame = NSRect(x: 8 + (shortcutColumnWidth - 12) / 2, y: 6, width: 12, height: 14)
         let gap: CGFloat = 6
         let titleStart = shortcutLabel.frame.maxX + gap
         pin.frame = NSRect(x: titleStart, y: 6, width: 12, height: 14)
-        var trailing = hostLabel.frame.minX - (hostLabel.isHidden ? 0 : gap)
+        var trailing = metadataLabel.frame.minX - (metadataLabel.isHidden ? 0 : gap)
         // Size each item to its text: a wide, right-aligned number field adds
         // invisible padding that makes the preceding gap look much larger.
         for hint in [closeHintLabel, pinHintLabel] {
@@ -730,7 +731,7 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
         }
         cell.configure(entry, needsAttention: (entry.kind == .agent ? attentionAgentIDs : attentionSessionIDs).contains(entry.id),
             color: theme.attentionColor.nsColor, textColor: selected ? .white : theme.foreground.nsColor,
-            showHost: selected && (showsHosts || entry.kind == .agent), hostWidth: hostColumnWidth,
+            showSessionTitle: selected && entry.kind == .agent, showHost: selected && showsHosts, hostWidth: hostColumnWidth,
             isPinned: pinned,
             isCurrent: entry.id == currentCandidateID,
             shortcut: number.map { resultShortcut(for: $0) } ?? "", shortcutWidth: shortcutColumnWidth,
