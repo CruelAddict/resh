@@ -349,7 +349,7 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
         searchField.isBordered = false
         searchField.drawsBackground = false
         searchField.focusRingType = .none
-        searchField.font = .systemFont(ofSize: 14)
+        searchField.font = .systemFont(ofSize: 13)
         searchField.placeholderString = "Filter or create…"
         searchField.delegate = self
         searchField.setAccessibilityIdentifier("resh.search")
@@ -560,7 +560,7 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
         searchBackground.layer?.borderColor = theme.foreground.nsColor.withAlphaComponent(0.2).cgColor
         searchField.textColor = theme.foreground.nsColor
         searchField.placeholderAttributedString = NSAttributedString(string: "Filter or create…",
-            attributes: [.foregroundColor: theme.foreground.nsColor.withAlphaComponent(0.45), .font: NSFont.systemFont(ofSize: 14)])
+            attributes: [.foregroundColor: theme.foreground.nsColor.withAlphaComponent(0.45), .font: NSFont.systemFont(ofSize: 13)])
         emptyLabel.textColor = theme.foreground.nsColor.withAlphaComponent(0.5)
         createHintLabel.textColor = theme.foreground.nsColor.withAlphaComponent(0.55)
         updateSources()
