@@ -12,6 +12,9 @@ public enum PanelLayout {
     public static let listTop = sourcesTop + sourcesHeight + sectionGap
     public static let maximumVisibleRows = 12
 
+    public static func titleInset(shortcutWidth: CGFloat) -> CGFloat {
+        8 + shortcutWidth + 6
+    }
     public static func listHeight(resultCount: Int) -> CGFloat {
         CGFloat(min(maximumVisibleRows, max(1, resultCount))) * rowHeight
     }

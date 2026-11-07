@@ -11,6 +11,23 @@ private final class OverlayScrollView: NSScrollView {
     }
 }
 
+@MainActor
+final class SearchField: NSTextField {
+    var insertionPointColor = NSColor.textInsertionPointColor {
+        didSet { updateInsertionPointColor() }
+    }
+
+    override func becomeFirstResponder() -> Bool {
+        guard super.becomeFirstResponder() else { return false }
+        updateInsertionPointColor()
+        return true
+    }
+
+    private func updateInsertionPointColor() {
+        (currentEditor() as? NSTextView)?.insertionPointColor = insertionPointColor
+    }
+}
+
 private final class SelectionRow: NSTableRowView {
     var color = NSColor.selectedContentBackgroundColor
     override func drawSelection(in dirtyRect: NSRect) {
@@ -185,7 +202,7 @@ final class SessionCellView: NSTableCellView {
             y: 5 + shortcutLabel.firstBaselineOffsetFromTop - titleBaselineOffset, width: shortcutColumnWidth, height: 17)
         currentSession.frame = NSRect(x: 8 + (shortcutColumnWidth - 12) / 2, y: 6, width: 12, height: 14)
         let gap: CGFloat = 6
-        let titleStart = shortcutLabel.frame.maxX + gap
+        let titleStart = PanelLayout.titleInset(shortcutWidth: shortcutColumnWidth)
         pin.frame = NSRect(x: titleStart, y: 6, width: 12, height: 14)
         var trailing = metadataLabel.frame.minX - (metadataLabel.isHidden ? 0 : gap)
         // Size each item to its text: a wide, right-aligned number field adds
@@ -294,10 +311,11 @@ private final class NewSessionCellView: NSTableCellView {
 /// AppKit controls keep the picker compact and avoid cold-start SwiftUI layout work.
 @MainActor
 final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTextFieldDelegate {
-    let searchField = NSTextField()
+    let searchField = SearchField()
     private let model: SearchModel
     private let agentIcons: RexAgentIcons
     private let searchBackground = NSView()
+    private let searchIcon = NSImageView()
     private let createHintLabel = NSTextField(labelWithString: "")
     private let progress = NSProgressIndicator()
     private let table = NSTableView()
@@ -346,6 +364,10 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
         searchBackground.layer?.cornerRadius = PanelLayout.controlCornerRadius
         searchBackground.layer?.borderWidth = 1
         addSubview(searchBackground)
+        searchIcon.image = NSImage(systemSymbolName: "magnifyingglass", accessibilityDescription: nil)
+        searchIcon.imageScaling = .scaleNone
+        searchIcon.setAccessibilityElement(false)
+        searchBackground.addSubview(searchIcon)
         searchField.isBordered = false
         searchField.drawsBackground = false
         searchField.focusRingType = .none
@@ -558,6 +580,7 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
         self.theme = theme
         searchBackground.layer?.backgroundColor = NSColor.black.withAlphaComponent(theme.isDark ? 0.12 : 0.03).cgColor
         searchBackground.layer?.borderColor = theme.foreground.nsColor.withAlphaComponent(0.2).cgColor
+        searchIcon.contentTintColor = theme.foreground.nsColor.withAlphaComponent(0.45)
         searchField.textColor = theme.foreground.nsColor
         searchField.placeholderAttributedString = NSAttributedString(string: "Filter or create…",
             attributes: [.foregroundColor: theme.foreground.nsColor.withAlphaComponent(0.45), .font: NSFont.systemFont(ofSize: 13)])
@@ -566,7 +589,7 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
         updateSources()
         table.reloadData()
         selectRow(model.selection)
-        (searchField.currentEditor() as? NSTextView)?.insertionPointColor = theme.accent.nsColor
+        searchField.insertionPointColor = theme.accent.nsColor
     }
 
     private func updateSources() {
@@ -591,11 +614,19 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
         let width = bounds.width
         let padding = PanelLayout.outerPadding
         searchBackground.frame = NSRect(x: padding, y: padding, width: width - padding * 2, height: PanelLayout.searchHeight)
+        let iconSize = searchIcon.image?.size ?? .zero
+        searchIcon.frame = NSRect(x: 12, y: (PanelLayout.searchHeight - iconSize.height) / 2,
+            width: iconSize.width, height: iconSize.height)
+        let titleX = PanelLayout.titleInset(shortcutWidth: shortcutColumnWidth)
         let hintWidth = createHintLabel.isHidden ? 0 : ceil(createHintLabel.cell?.cellSize.width ?? 0)
         let trailing = searchBackground.bounds.width - (progress.isHidden ? 10 : 32)
+        let searchHeight = searchField.fittingSize.height
+        searchField.frame = NSRect(x: titleX, y: (PanelLayout.searchHeight - searchHeight) / 2,
+            width: max(0, trailing - titleX - (hintWidth > 0 ? hintWidth + 12 : 0)), height: searchHeight)
+        let hintHeight = createHintLabel.fittingSize.height
         createHintLabel.frame = NSRect(x: trailing - hintWidth,
-            y: 7 + createHintLabel.firstBaselineOffsetFromTop - searchField.firstBaselineOffsetFromTop, width: hintWidth, height: 19)
-        searchField.frame = NSRect(x: 10, y: 7, width: max(0, trailing - 10 - (hintWidth > 0 ? hintWidth + 12 : 0)), height: 19)
+            y: searchField.frame.maxY - hintHeight + createHintLabel.firstBaselineOffsetFromTop - searchField.firstBaselineOffsetFromTop,
+            width: hintWidth, height: hintHeight)
         progress.frame = NSRect(x: width - 45, y: 10, width: 12, height: 12)
         sourceScroll.frame = NSRect(x: padding, y: PanelLayout.sourcesTop, width: width - padding * 2, height: PanelLayout.sourcesHeight)
         var x: CGFloat = 0
@@ -772,9 +803,6 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
     }
 
     func controlTextDidChange(_ notification: Notification) { model.query = searchField.stringValue }
-    func controlTextDidBeginEditing(_ notification: Notification) {
-        (searchField.currentEditor() as? NSTextView)?.insertionPointColor = theme.accent.nsColor
-    }
 
     @objc private func sourceClicked(_ sender: NSButton) {
         model.changeScope(sources[sender.tag].id)
