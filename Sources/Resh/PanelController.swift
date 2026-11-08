@@ -219,10 +219,11 @@ final class PanelController: NSObject, NSWindowDelegate {
         let material: NSView
         let glass = theme.usesGlass && !NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency
         if glass, #available(macOS 26.0, *) {
+            let tintOpacity = CGFloat(model.configuration.tintOpacity)
             let effect = NSGlassEffectView(frame: view.frame)
             effect.style = .regular
             effect.cornerRadius = 16
-            effect.tintColor = theme.usesTint ? theme.panelBackground.nsColor.withAlphaComponent(0.35) : nil
+            effect.tintColor = theme.usesTint && tintOpacity > 0 ? theme.panelBackground.nsColor.withAlphaComponent(tintOpacity) : nil
             effect.contentView = view
             material = effect
         } else if glass {

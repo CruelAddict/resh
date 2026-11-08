@@ -12,9 +12,14 @@ struct ConfigurationTests {
         #expect(config.visibleSources.map(\.name) == ["Sessions", "Agents", "Recent", "Find"])
         #expect(config.projects.isEmpty)
     }
+    @Test(arguments: [0.0, 0.15, 0.35, 1.0])
+    func tintOpacity(_ opacity: Double) throws {
+        let config = try ReshConfiguration.parse("tint_opacity = \(opacity)")
+        #expect(config.tintOpacity == opacity)
+    }
     @Test func configurationExamples() throws {
         let directory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
-            .deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("examples/config")
+            .deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("config")
         let examples = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
             .filter { $0.pathExtension == "toml" }.sorted { $0.path < $1.path }
         #expect(!examples.isEmpty)
@@ -71,6 +76,8 @@ struct ConfigurationTests {
         "source_order = ['sessions']",
         "typo = true", "[keymap]\n'ctrl+n' = 'next'",
         "keyboard_layout_search = 'true'",
+        "tint_opacity = -0.1", "tint_opacity = 1.1", "tint_opacity = nan",
+        "tint_opacity = inf", "tint_opacity = -inf", "tint_opacity = '0.15'",
         "[[sources]]\nname = 'a'\ntype = 'union'\nsources = ['a']",
         "[[sources]]\nname = 'a'\ntype = 'union'\nsources = ['b']\n[[sources]]\nname = 'b'\ntype = 'union'\nsources = ['a']",
         "[[sources]]\nname = 'a'\ntype = 'union'\nsources = ['missing']",
