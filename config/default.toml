@@ -1,0 +1,31 @@
+# Settings for ~/.config/resh/config.toml. No need to copy, keep only your overrides
+# Apply changes with `resh service restart`
+# Shortcuts live in keymap-default.lua
+
+initial_source = "Sessions"
+
+# Optional: visible views in order. Unlisted views are hidden when this setting is specified
+# source_order = ["Sessions", "Agents", "Recent", "Find"]
+
+# Display the local home directory as ~ in paths
+shorten_home_path = false
+
+# Raise unread results below pinned/current sessions
+float_unread_sessions = true
+float_unread_agents = true
+
+# Also search using the other enabled macOS keyboard layouts
+keyboard_layout_search = true
+
+# Theme tint on macOS 26 glass: 0 = off, 1 = full
+tint_opacity = 0.15
+
+# Custom projects; see custom.toml for examples
+session = []
+
+# Custom sources; see custom.toml for examples
+sources = []
+
+[default_session]
+# Startup command for folders/projects; omitted or empty = none. {} = quoted path
+# startup_command = ""

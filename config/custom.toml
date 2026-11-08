@@ -1,0 +1,35 @@
+# Example configuration for ~/.config/resh/config.toml
+# Apply with `resh service restart`
+
+[[session]]
+name = "Backend" # Required; unique project name
+path = "~/work/backend" # Required; unique directory, relative to this file; ~ expands
+startup_command = "nvim {}" # {} = quoted path; omitted inherits default_session; "" disables it
+
+[[sources]]
+name = "Work" # Required; case-sensitive view label and key for source references
+type = "paths" # Required; provider types are listed below
+paths = ["~/work/backend", "~/work/frontend"] # Missing folders are skipped
+
+[[sources]]
+name = "Repositories"
+type = "command"
+cwd = "~/work" # Base for argv/output paths; defaults to this file's directory
+command = ["fd", "-t", "d", "-d", "2", ".", "."] # Required argv, no shell; one UTF-8 directory per line
+format = "paths" # Optional; the only supported command output format
+timeout = 5 # Seconds, > 0 and <= 60; built-in Find uses 12
+
+[[sources]]
+name = "All" # Reusing a built-in name replaces that source
+type = "union"
+sources = ["Sessions", "Projects", "Work", "Repositories"] # Priority order; deduplicated, cycles forbidden
+
+# Source types determine where results come from
+# sessions — open Rex sessions
+# agents — agent panes in Rex
+# projects — projects configured with [[session]]
+# zoxide — directory history from zoxide
+# find — directories under ~, found with fd (max depth 2)
+# paths — directories listed in paths
+# command — directories printed by command, one UTF-8 path per line
+# union — sources listed in sources, combined in order without duplicates

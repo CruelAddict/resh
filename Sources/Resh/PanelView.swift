@@ -11,6 +11,23 @@ private final class OverlayScrollView: NSScrollView {
     }
 }
 
+@MainActor
+final class SearchField: NSTextField {
+    var insertionPointColor = NSColor.textInsertionPointColor {
+        didSet { updateInsertionPointColor() }
+    }
+
+    override func becomeFirstResponder() -> Bool {
+        guard super.becomeFirstResponder() else { return false }
+        updateInsertionPointColor()
+        return true
+    }
+
+    private func updateInsertionPointColor() {
+        (currentEditor() as? NSTextView)?.insertionPointColor = insertionPointColor
+    }
+}
+
 private final class SelectionRow: NSTableRowView {
     var color = NSColor.selectedContentBackgroundColor
     override func drawSelection(in dirtyRect: NSRect) {
@@ -49,7 +66,7 @@ final class SessionCellView: NSTableCellView {
     private let attention = AttentionIndicatorView()
     private let working = NSProgressIndicator()
     let agentIcon = NSImageView()
-    let hostLabel = NSTextField(labelWithString: "")
+    let metadataLabel = NSTextField(labelWithString: "")
     let pin = NSImageView()
     private let currentSession = NSImageView()
     let shortcutLabel = NSTextField(labelWithString: "")
@@ -103,17 +120,17 @@ final class SessionCellView: NSTableCellView {
             hint.isHidden = true
             addSubview(hint)
         }
-        hostLabel.font = .systemFont(ofSize: 11)
-        hostLabel.lineBreakMode = .byTruncatingMiddle
-        hostLabel.alignment = .right
-        hostLabel.isHidden = true
-        addSubview(hostLabel)
+        metadataLabel.font = .systemFont(ofSize: 11)
+        metadataLabel.lineBreakMode = .byTruncatingMiddle
+        metadataLabel.alignment = .right
+        metadataLabel.isHidden = true
+        addSubview(metadataLabel)
     }
 
     required init?(coder: NSCoder) { nil }
 
     func configure(_ candidate: Candidate, needsAttention: Bool, color: NSColor, textColor: NSColor,
-                   showHost: Bool = false, hostWidth: CGFloat = 0, isPinned: Bool = false,
+                   showSessionTitle: Bool = false, showHost: Bool = false, hostWidth: CGFloat = 0, isPinned: Bool = false,
                    isCurrent: Bool = false, shortcut: String = "", shortcutWidth: CGFloat = 24,
                    pinHint: String = "", closeHint: String = "", isWorking: Bool = false, agentImage: NSImage? = nil,
                    shortenHomePath: Bool = false) {
@@ -158,12 +175,13 @@ final class SessionCellView: NSTableCellView {
             hint.isHidden = hint.stringValue.isEmpty
         }
         hostColumnWidth = hostWidth
-        hostLabel.stringValue = agent.map { $0.sessionTitle + " | " + candidate.hostLabel } ?? candidate.hostLabel
-        hostLabel.textColor = hintColor
-        hostLabel.isHidden = !showHost
+        metadataLabel.stringValue = [showSessionTitle ? agent?.sessionTitle : nil, showHost ? candidate.hostLabel : nil]
+            .compactMap { $0 }.joined(separator: " | ")
+        metadataLabel.textColor = hintColor
+        metadataLabel.isHidden = metadataLabel.stringValue.isEmpty
         let accessibleTitle = agent.map { "\($0.sessionTitle), \($0.app), \($0.title)" } ?? title
         setAccessibilityLabel("\(candidate.kind == .agent ? "Agent" : candidate.kind == .session ? "Session" : "Folder"), \(accessibleTitle)"
-            + (showHost || agent != nil ? ", \(candidate.hostLabel)" : "")
+            + (showHost ? ", \(candidate.hostLabel)" : "")
             + (pinned ? ", pinned" : "")
             + (isCurrent ? ", current session" : "")
             + (attention.isHidden ? "" : ", unread activity")
@@ -174,19 +192,19 @@ final class SessionCellView: NSTableCellView {
     override func layout() {
         super.layout()
         guard let textField else { return }
-        let hostWidth = hostLabel.isHidden ? 0 : min(bounds.width * 0.3,
-            max(hostColumnWidth, ceil(hostLabel.cell?.cellSize.width ?? 0)))
+        let hostWidth = metadataLabel.isHidden ? 0 : min(bounds.width * 0.3,
+            max(hostColumnWidth, ceil(metadataLabel.cell?.cellSize.width ?? 0)))
         // Smaller metadata text shares the title's baseline, not its frame origin.
         let titleBaselineOffset = textField.firstBaselineOffsetFromTop
-        hostLabel.frame = NSRect(x: bounds.width - 8 - hostWidth,
-            y: 5 + hostLabel.firstBaselineOffsetFromTop - titleBaselineOffset, width: hostWidth, height: 17)
+        metadataLabel.frame = NSRect(x: bounds.width - 8 - hostWidth,
+            y: 5 + metadataLabel.firstBaselineOffsetFromTop - titleBaselineOffset, width: hostWidth, height: 17)
         shortcutLabel.frame = NSRect(x: 8,
             y: 5 + shortcutLabel.firstBaselineOffsetFromTop - titleBaselineOffset, width: shortcutColumnWidth, height: 17)
         currentSession.frame = NSRect(x: 8 + (shortcutColumnWidth - 12) / 2, y: 6, width: 12, height: 14)
         let gap: CGFloat = 6
-        let titleStart = shortcutLabel.frame.maxX + gap
+        let titleStart = PanelLayout.titleInset(shortcutWidth: shortcutColumnWidth)
         pin.frame = NSRect(x: titleStart, y: 6, width: 12, height: 14)
-        var trailing = hostLabel.frame.minX - (hostLabel.isHidden ? 0 : gap)
+        var trailing = metadataLabel.frame.minX - (metadataLabel.isHidden ? 0 : gap)
         // Size each item to its text: a wide, right-aligned number field adds
         // invisible padding that makes the preceding gap look much larger.
         for hint in [closeHintLabel, pinHintLabel] {
@@ -293,10 +311,11 @@ private final class NewSessionCellView: NSTableCellView {
 /// AppKit controls keep the picker compact and avoid cold-start SwiftUI layout work.
 @MainActor
 final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTextFieldDelegate {
-    let searchField = NSTextField()
+    let searchField = SearchField()
     private let model: SearchModel
     private let agentIcons: RexAgentIcons
     private let searchBackground = NSView()
+    private let searchIcon = NSImageView()
     private let createHintLabel = NSTextField(labelWithString: "")
     private let progress = NSProgressIndicator()
     private let table = NSTableView()
@@ -345,10 +364,14 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
         searchBackground.layer?.cornerRadius = PanelLayout.controlCornerRadius
         searchBackground.layer?.borderWidth = 1
         addSubview(searchBackground)
+        searchIcon.image = NSImage(systemSymbolName: "magnifyingglass", accessibilityDescription: nil)
+        searchIcon.imageScaling = .scaleNone
+        searchIcon.setAccessibilityElement(false)
+        searchBackground.addSubview(searchIcon)
         searchField.isBordered = false
         searchField.drawsBackground = false
         searchField.focusRingType = .none
-        searchField.font = .systemFont(ofSize: 14)
+        searchField.font = .systemFont(ofSize: 13)
         searchField.placeholderString = "Filter or create…"
         searchField.delegate = self
         searchField.setAccessibilityIdentifier("resh.search")
@@ -557,15 +580,25 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
         self.theme = theme
         searchBackground.layer?.backgroundColor = NSColor.black.withAlphaComponent(theme.isDark ? 0.12 : 0.03).cgColor
         searchBackground.layer?.borderColor = theme.foreground.nsColor.withAlphaComponent(0.2).cgColor
+        searchIcon.contentTintColor = theme.foreground.nsColor.withAlphaComponent(0.45)
         searchField.textColor = theme.foreground.nsColor
         searchField.placeholderAttributedString = NSAttributedString(string: "Filter or create…",
-            attributes: [.foregroundColor: theme.foreground.nsColor.withAlphaComponent(0.45), .font: NSFont.systemFont(ofSize: 14)])
+            attributes: [.foregroundColor: theme.foreground.nsColor.withAlphaComponent(0.45), .font: NSFont.systemFont(ofSize: 13)])
         emptyLabel.textColor = theme.foreground.nsColor.withAlphaComponent(0.5)
         createHintLabel.textColor = theme.foreground.nsColor.withAlphaComponent(0.55)
         updateSources()
         table.reloadData()
         selectRow(model.selection)
-        (searchField.currentEditor() as? NSTextView)?.insertionPointColor = theme.accent.nsColor
+        searchField.insertionPointColor = theme.accent.nsColor
+    }
+
+    private var selectionColor: NSColor {
+        let accent = theme.accent.nsColor
+        guard theme.isDark, let color = accent.usingColorSpace(.extendedSRGB) else { return accent }
+        // Rex darkens extended-sRGB components while preserving the accent's alpha.
+        var components = [color.redComponent * 0.78, color.greenComponent * 0.78,
+            color.blueComponent * 0.78, color.alphaComponent]
+        return NSColor(colorSpace: .extendedSRGB, components: &components, count: 4)
     }
 
     private func updateSources() {
@@ -590,11 +623,19 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
         let width = bounds.width
         let padding = PanelLayout.outerPadding
         searchBackground.frame = NSRect(x: padding, y: padding, width: width - padding * 2, height: PanelLayout.searchHeight)
+        let iconSize = searchIcon.image?.size ?? .zero
+        searchIcon.frame = NSRect(x: 12, y: (PanelLayout.searchHeight - iconSize.height) / 2,
+            width: iconSize.width, height: iconSize.height)
+        let titleX = PanelLayout.titleInset(shortcutWidth: shortcutColumnWidth)
         let hintWidth = createHintLabel.isHidden ? 0 : ceil(createHintLabel.cell?.cellSize.width ?? 0)
         let trailing = searchBackground.bounds.width - (progress.isHidden ? 10 : 32)
+        let searchHeight = searchField.fittingSize.height
+        searchField.frame = NSRect(x: titleX, y: (PanelLayout.searchHeight - searchHeight) / 2,
+            width: max(0, trailing - titleX - (hintWidth > 0 ? hintWidth + 12 : 0)), height: searchHeight)
+        let hintHeight = createHintLabel.fittingSize.height
         createHintLabel.frame = NSRect(x: trailing - hintWidth,
-            y: 7 + createHintLabel.firstBaselineOffsetFromTop - searchField.firstBaselineOffsetFromTop, width: hintWidth, height: 19)
-        searchField.frame = NSRect(x: 10, y: 7, width: max(0, trailing - 10 - (hintWidth > 0 ? hintWidth + 12 : 0)), height: 19)
+            y: searchField.frame.maxY - hintHeight + createHintLabel.firstBaselineOffsetFromTop - searchField.firstBaselineOffsetFromTop,
+            width: hintWidth, height: hintHeight)
         progress.frame = NSRect(x: width - 45, y: 10, width: 12, height: 12)
         sourceScroll.frame = NSRect(x: padding, y: PanelLayout.sourcesTop, width: width - padding * 2, height: PanelLayout.sourcesHeight)
         var x: CGFloat = 0
@@ -730,7 +771,7 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
         }
         cell.configure(entry, needsAttention: (entry.kind == .agent ? attentionAgentIDs : attentionSessionIDs).contains(entry.id),
             color: theme.attentionColor.nsColor, textColor: selected ? .white : theme.foreground.nsColor,
-            showHost: selected && (showsHosts || entry.kind == .agent), hostWidth: hostColumnWidth,
+            showSessionTitle: selected && entry.kind == .agent, showHost: selected && showsHosts, hostWidth: hostColumnWidth,
             isPinned: pinned,
             isCurrent: entry.id == currentCandidateID,
             shortcut: number.map { resultShortcut(for: $0) } ?? "", shortcutWidth: shortcutColumnWidth,
@@ -740,7 +781,7 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
 
     func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
         let view = SelectionRow()
-        view.color = theme.selection.nsColor.withAlphaComponent(0.75)
+        view.color = selectionColor
         return view
     }
 
@@ -771,9 +812,6 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
     }
 
     func controlTextDidChange(_ notification: Notification) { model.query = searchField.stringValue }
-    func controlTextDidBeginEditing(_ notification: Notification) {
-        (searchField.currentEditor() as? NSTextView)?.insertionPointColor = theme.accent.nsColor
-    }
 
     @objc private func sourceClicked(_ sender: NSButton) {
         model.changeScope(sources[sender.tag].id)

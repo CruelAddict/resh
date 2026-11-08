@@ -32,6 +32,7 @@ public struct ReshConfiguration: Equatable, Sendable {
     public let floatUnreadSessions: Bool
     public let floatUnreadAgents: Bool
     public let keyboardLayoutSearch: Bool
+    public let tintOpacity: Double
 
     public static let defaults: Self = try! parse("")
 
@@ -43,6 +44,10 @@ public struct ReshConfiguration: Equatable, Sendable {
 
     public static func parse(_ text: String, directory: URL = FileManager.default.homeDirectoryForCurrentUser) throws -> Self {
         let raw = try TOMLDecoder().decode(Document.self, from: text)
+        let tintOpacity = raw.tint_opacity ?? 0.15
+        guard tintOpacity.isFinite, (0...1).contains(tintOpacity) else {
+            throw ReshError("tint_opacity must be between 0 and 1.")
+        }
         func absolute(_ path: String) -> String {
             let expanded = (path as NSString).expandingTildeInPath
             let url = expanded.hasPrefix("/") ? URL(fileURLWithPath: expanded) : directory.appendingPathComponent(expanded)
@@ -115,7 +120,7 @@ public struct ReshConfiguration: Equatable, Sendable {
                     initialSource: initial, projects: projects,
                     defaultStartupCommand: raw.default_session?.startup_command, shortenHomePath: raw.shorten_home_path ?? false,
                     floatUnreadSessions: raw.float_unread_sessions ?? true, floatUnreadAgents: raw.float_unread_agents ?? true,
-                    keyboardLayoutSearch: raw.keyboard_layout_search ?? true)
+                    keyboardLayoutSearch: raw.keyboard_layout_search ?? true, tintOpacity: tintOpacity)
     }
 }
 
@@ -163,13 +168,14 @@ private struct Document: Decodable {
     let float_unread_sessions: Bool?
     let float_unread_agents: Bool?
     let keyboard_layout_search: Bool?
+    let tint_opacity: Double?
     enum CodingKeys: String, CodingKey, CaseIterable {
         case sources, session, source_order, initial_source, default_session, shorten_home_path
-        case float_unread_sessions, float_unread_agents, keyboard_layout_search
+        case float_unread_sessions, float_unread_agents, keyboard_layout_search, tint_opacity
     }
     init(from decoder: Decoder) throws {
         if try decoder.container(keyedBy: AnyKey.self).allKeys.contains(where: { $0.stringValue == "keymap" }) {
-            throw ReshError("Move [keymap] shortcuts to rex.bind in Rex's init.lua. See examples/config/keymap.lua, then restart resh.")
+            throw ReshError("Move [keymap] shortcuts to rex.bind in Rex's init.lua. See config/keymap-default.lua, then restart resh.")
         }
         try rejectUnknown(decoder, CodingKeys.allCases.map(\.rawValue))
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -182,6 +188,7 @@ private struct Document: Decodable {
         float_unread_sessions = try c.decodeIfPresent(Bool.self, forKey: .float_unread_sessions)
         float_unread_agents = try c.decodeIfPresent(Bool.self, forKey: .float_unread_agents)
         keyboard_layout_search = try c.decodeIfPresent(Bool.self, forKey: .keyboard_layout_search)
+        tint_opacity = try c.decodeIfPresent(Double.self, forKey: .tint_opacity)
     }
 }
 private struct RawSource: Decodable {
