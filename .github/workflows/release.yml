@@ -190,3 +190,25 @@ jobs:
           latest=true
           if [[ $PRERELEASE == true ]]; then latest=false; fi
           gh release edit "$RELEASE_TAG" --draft=false --prerelease="$PRERELEASE" --latest="$latest"
+
+  update-homebrew:
+    needs: [prepare, publish]
+    if: needs.prepare.outputs.prerelease == 'false'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Create Homebrew workflow token
+        id: app
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ vars.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: homebrew-tap
+          permission-actions: write
+      - name: Request Homebrew formula update
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          GH_REPO: ${{ github.repository_owner }}/homebrew-tap
+        run: gh workflow run update.yml --repo "$GH_REPO" --ref main
