@@ -4,11 +4,43 @@ import QuartzCore
 import ReshCore
 
 private final class OverlayScrollView: NSScrollView {
+    var trailingContentInset: CGFloat = 0
+
     // AppKit reapplies the system style after presentation; keep scrollers overlaid.
     override var scrollerStyle: NSScroller.Style {
         get { super.scrollerStyle }
         set { super.scrollerStyle = .overlay }
     }
+
+    override func tile() {
+        super.tile()
+        // Keep rows padded while allowing the scroller to reach the panel's edge.
+        if trailingContentInset > 0 {
+            var frame = contentView.frame
+            frame.size.width = max(0, frame.width - trailingContentInset)
+            contentView.frame = frame
+        }
+    }
+}
+
+private final class PickerScroller: NSScroller {
+    var color = NSColor.white.withAlphaComponent(0.25) {
+        didSet { needsDisplay = true }
+    }
+
+    override class var isCompatibleWithOverlayScrollers: Bool { true }
+
+    override func drawKnob() {
+        let knobWidth: CGFloat = 6
+        let trailingInset: CGFloat = 3
+        let knob = rect(for: .knob)
+        let frame = NSRect(x: bounds.maxX - trailingInset - knobWidth, y: knob.minY,
+            width: knobWidth, height: knob.height)
+        color.setFill()
+        NSBezierPath(roundedRect: frame, xRadius: frame.width / 2, yRadius: frame.width / 2).fill()
+    }
+
+    override func drawKnobSlot(in slotRect: NSRect, highlight flag: Bool) {}
 }
 
 @MainActor
@@ -28,12 +60,35 @@ final class SearchField: NSTextField {
     }
 }
 
+private final class SourceButtonCell: NSButtonCell {
+    override func titleRect(forBounds rect: NSRect) -> NSRect {
+        super.titleRect(forBounds: rect.insetBy(dx: PanelLayout.sourcesHorizontalPadding, dy: 0))
+    }
+}
+
 private final class SelectionRow: NSTableRowView {
-    var color = NSColor.selectedContentBackgroundColor
-    override func drawSelection(in dirtyRect: NSRect) {
-        color.setFill()
-        let radius = PanelLayout.controlCornerRadius
-        NSBezierPath(roundedRect: bounds, xRadius: radius, yRadius: radius).fill()
+    var color = NSColor.selectedContentBackgroundColor {
+        didSet { updateSelection() }
+    }
+
+    override var isSelected: Bool { didSet { updateSelection() } }
+    override var selectionHighlightStyle: NSTableView.SelectionHighlightStyle { didSet { updateSelection() } }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        layer?.cornerRadius = PanelLayout.controlCornerRadius
+        layer?.cornerCurve = .continuous
+        updateSelection()
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    // The backing layer draws the highlight with continuous corners.
+    override func drawSelection(in dirtyRect: NSRect) {}
+
+    private func updateSelection() {
+        layer?.backgroundColor = isSelected && selectionHighlightStyle != .none ? color.cgColor : nil
     }
 }
 
@@ -192,31 +247,33 @@ final class SessionCellView: NSTableCellView {
     override func layout() {
         super.layout()
         guard let textField else { return }
+        let textY = ceil((bounds.height - 17) / 2)
+        let iconY = (bounds.height - 14) / 2
         let hostWidth = metadataLabel.isHidden ? 0 : min(bounds.width * 0.3,
             max(hostColumnWidth, ceil(metadataLabel.cell?.cellSize.width ?? 0)))
         // Smaller metadata text shares the title's baseline, not its frame origin.
         let titleBaselineOffset = textField.firstBaselineOffsetFromTop
         metadataLabel.frame = NSRect(x: bounds.width - 8 - hostWidth,
-            y: 5 + metadataLabel.firstBaselineOffsetFromTop - titleBaselineOffset, width: hostWidth, height: 17)
+            y: textY + metadataLabel.firstBaselineOffsetFromTop - titleBaselineOffset, width: hostWidth, height: 17)
         shortcutLabel.frame = NSRect(x: 8,
-            y: 5 + shortcutLabel.firstBaselineOffsetFromTop - titleBaselineOffset, width: shortcutColumnWidth, height: 17)
-        currentSession.frame = NSRect(x: 8 + (shortcutColumnWidth - 12) / 2, y: 6, width: 12, height: 14)
+            y: textY + shortcutLabel.firstBaselineOffsetFromTop - titleBaselineOffset, width: shortcutColumnWidth, height: 17)
+        currentSession.frame = NSRect(x: 8 + (shortcutColumnWidth - 12) / 2, y: iconY, width: 12, height: 14)
         let gap: CGFloat = 6
         let titleStart = PanelLayout.titleInset(shortcutWidth: shortcutColumnWidth)
-        pin.frame = NSRect(x: titleStart, y: 6, width: 12, height: 14)
+        pin.frame = NSRect(x: titleStart, y: iconY, width: 12, height: 14)
         var trailing = metadataLabel.frame.minX - (metadataLabel.isHidden ? 0 : gap)
         // Size each item to its text: a wide, right-aligned number field adds
         // invisible padding that makes the preceding gap look much larger.
         for hint in [closeHintLabel, pinHintLabel] {
             let width = hint.stringValue.isEmpty ? 0 : ceil(hint.cell?.cellSize.width ?? 0)
             hint.frame = NSRect(x: trailing - width,
-                y: 5 + hint.firstBaselineOffsetFromTop - titleBaselineOffset, width: width, height: 17)
+                y: textY + hint.firstBaselineOffsetFromTop - titleBaselineOffset, width: width, height: 17)
             if width > 0 { trailing = hint.frame.minX - gap }
         }
         var titleX = titleStart + (isPinned ? 18 : 0)
         let titleEnd = trailing - (working.isHidden ? 14 : 18)
         if !agentIcon.isHidden {
-            agentIcon.frame = NSRect(x: titleX, y: 6, width: 14, height: 14)
+            agentIcon.frame = NSRect(x: titleX, y: iconY, width: 14, height: 14)
             titleX = agentIcon.frame.maxX + 6
         }
         let available = max(0, titleEnd - titleX)
@@ -224,9 +281,9 @@ final class SessionCellView: NSTableCellView {
         // drawing insets. Using it clips even "resh" despite ample row space.
         let fitting = ceil(textField.cell?.cellSize.width ?? available)
         let width = min(available, fitting)
-        let titleFrame = NSRect(x: titleX, y: 5, width: width, height: 17)
-        let attentionFrame = NSRect(x: titleFrame.maxX + 5, y: 9, width: 9, height: 9)
-        working.frame = NSRect(x: titleFrame.maxX + 4, y: 7, width: 12, height: 12)
+        let titleFrame = NSRect(x: titleX, y: textY, width: width, height: 17)
+        let attentionFrame = NSRect(x: titleFrame.maxX + 5, y: ceil((bounds.height - 9) / 2), width: 9, height: 9)
+        working.frame = NSRect(x: titleFrame.maxX + 4, y: (bounds.height - 12) / 2, width: 12, height: 12)
         if animatesPinChange {
             animatesPinChange = false
             NSAnimationContext.runAnimationGroup { context in
@@ -295,16 +352,17 @@ private final class NewSessionCellView: NSTableCellView {
     override func layout() {
         super.layout()
         guard let textField else { return }
+        let textY = ceil((bounds.height - 17) / 2)
         let titleBaselineOffset = textField.firstBaselineOffsetFromTop
         let hostWidth = min(bounds.width * 0.3, max(hostColumnWidth, ceil(hostLabel.cell?.cellSize.width ?? 0)))
         hostLabel.frame = NSRect(x: bounds.width - 8 - hostWidth,
-            y: 5 + hostLabel.firstBaselineOffsetFromTop - titleBaselineOffset, width: hostWidth, height: 17)
+            y: textY + hostLabel.firstBaselineOffsetFromTop - titleBaselineOffset, width: hostWidth, height: 17)
         let shortcutWidth = shortcut.stringValue.isEmpty ? 0 : ceil(shortcut.cell?.cellSize.width ?? 0)
         shortcut.frame = NSRect(x: hostLabel.frame.minX - 6 - shortcutWidth,
-            y: 5 + shortcut.firstBaselineOffsetFromTop - titleBaselineOffset, width: shortcutWidth, height: 17)
-        icon.frame = NSRect(x: 8, y: 5, width: 16, height: 16)
+            y: textY + shortcut.firstBaselineOffsetFromTop - titleBaselineOffset, width: shortcutWidth, height: 17)
+        icon.frame = NSRect(x: 8, y: (bounds.height - 16) / 2, width: 16, height: 16)
         let trailing = shortcutWidth > 0 ? shortcut.frame.minX : hostLabel.frame.minX
-        textField.frame = NSRect(x: 32, y: 5, width: max(0, trailing - 44), height: 17)
+        textField.frame = NSRect(x: 32, y: textY, width: max(0, trailing - 44), height: 17)
     }
 }
 
@@ -362,7 +420,6 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
 
         searchBackground.wantsLayer = true
         searchBackground.layer?.cornerRadius = PanelLayout.controlCornerRadius
-        searchBackground.layer?.borderWidth = 1
         addSubview(searchBackground)
         searchIcon.image = NSImage(systemSymbolName: "magnifyingglass", accessibilityDescription: nil)
         searchIcon.imageScaling = .scaleNone
@@ -409,6 +466,8 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
         table.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle
         scroll.drawsBackground = false
         scroll.hasVerticalScroller = true
+        scroll.verticalScroller = PickerScroller()
+        scroll.trailingContentInset = PanelLayout.outerPadding
         scroll.autohidesScrollers = true
         scroll.scrollerStyle = .overlay
         scroll.borderType = .noBorder
@@ -462,11 +521,14 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
             self.sources = sources
             for button in sourceButtons { button.removeFromSuperview() }
             sourceButtons = sources.enumerated().map { index, source in
-                let button = NSButton(title: "", target: self, action: #selector(self.sourceClicked(_:)))
+                let button = NSButton()
+                button.cell = SourceButtonCell(textCell: "")
+                button.target = self; button.action = #selector(self.sourceClicked(_:))
                 button.tag = index; button.isBordered = false; button.focusRingType = .none
+                button.alignment = .left
                 button.isEnabled = self.model.isConfigurationReady
                 button.wantsLayer = true
-                button.layer?.cornerRadius = min(PanelLayout.controlCornerRadius, PanelLayout.sourcesHeight / 2)
+                button.layer?.cornerRadius = PanelLayout.sourcesHeight / 2
                 button.setAccessibilityIdentifier("resh.scope.\(source.id.rawValue)")
                 self.sourceContainer.addSubview(button)
                 return button
@@ -578,18 +640,29 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
 
     func apply(theme: RexTheme) {
         self.theme = theme
-        searchBackground.layer?.backgroundColor = NSColor.black.withAlphaComponent(theme.isDark ? 0.12 : 0.03).cgColor
-        searchBackground.layer?.borderColor = theme.foreground.nsColor.withAlphaComponent(0.2).cgColor
+        searchBackground.layer?.backgroundColor = controlFill
         searchIcon.contentTintColor = theme.foreground.nsColor.withAlphaComponent(0.45)
         searchField.textColor = theme.foreground.nsColor
         searchField.placeholderAttributedString = NSAttributedString(string: "Filter or create…",
             attributes: [.foregroundColor: theme.foreground.nsColor.withAlphaComponent(0.45), .font: NSFont.systemFont(ofSize: 13)])
         emptyLabel.textColor = theme.foreground.nsColor.withAlphaComponent(0.5)
         createHintLabel.textColor = theme.foreground.nsColor.withAlphaComponent(0.55)
+        (scroll.verticalScroller as? PickerScroller)?.color = (theme.isDark ? NSColor.white : .black).withAlphaComponent(0.25)
         updateSources()
         table.reloadData()
         selectRow(model.selection)
         searchField.insertionPointColor = theme.accent.nsColor
+    }
+
+    private var controlFill: CGColor {
+        // Rex uses neutral overlays for themed interfaces and system fills otherwise.
+        var color = NSColor(calibratedWhite: theme.isDark ? 1 : 0,
+            alpha: theme.isDark ? 0.1 : 0.06).cgColor
+        if !theme.usesTint {
+            let appearance = NSAppearance(named: theme.isDark ? .darkAqua : .aqua) ?? effectiveAppearance
+            appearance.performAsCurrentDrawingAppearance { color = NSColor.quaternarySystemFill.cgColor }
+        }
+        return color
     }
 
     private var selectionColor: NSColor {
@@ -602,6 +675,7 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
     }
 
     private func updateSources() {
+        let selectedFill = controlFill
         for (index, button) in sourceButtons.enumerated() {
             let source = sources[index], selected = source.id == activeScope
             let text = NSMutableAttributedString(string: source.name, attributes: [
@@ -613,7 +687,7 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
                 .font: NSFont.systemFont(ofSize: 10), .foregroundColor: theme.foreground.nsColor.withAlphaComponent(0.4),
             ]))
             button.attributedTitle = text
-            button.layer?.backgroundColor = (selected ? theme.foreground.nsColor.withAlphaComponent(0.1) : .clear).cgColor
+            button.layer?.backgroundColor = selected ? selectedFill : NSColor.clear.cgColor
         }
         needsLayout = true
     }
@@ -636,15 +710,18 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
         createHintLabel.frame = NSRect(x: trailing - hintWidth,
             y: searchField.frame.maxY - hintHeight + createHintLabel.firstBaselineOffsetFromTop - searchField.firstBaselineOffsetFromTop,
             width: hintWidth, height: hintHeight)
-        progress.frame = NSRect(x: width - 45, y: 10, width: 12, height: 12)
-        sourceScroll.frame = NSRect(x: padding, y: PanelLayout.sourcesTop, width: width - padding * 2, height: PanelLayout.sourcesHeight)
+        progress.frame = NSRect(x: searchBackground.bounds.width - 22,
+            y: (PanelLayout.searchHeight - 12) / 2, width: 12, height: 12)
+        sourceScroll.frame = NSRect(x: padding, y: PanelLayout.sourcesTop,
+            width: max(0, width - padding * 2), height: PanelLayout.sourcesHeight)
         var x: CGFloat = 0
         for button in sourceButtons {
-            let size = ceil(button.attributedTitle.size().width) + 24
+            let size = ceil(button.attributedTitle.size().width) + PanelLayout.sourcesHorizontalPadding * 2
             button.frame = NSRect(x: x, y: 0, width: size, height: PanelLayout.sourcesHeight)
-            x += size + 4
+            x += size + PanelLayout.sourcesSpacing
         }
-        sourceContainer.setFrameSize(NSSize(width: max(sourceScroll.contentSize.width, x - 4), height: PanelLayout.sourcesHeight))
+        sourceContainer.setFrameSize(NSSize(width: max(sourceScroll.contentSize.width, x - PanelLayout.sourcesSpacing),
+            height: PanelLayout.sourcesHeight))
         if let index = sources.firstIndex(where: { $0.id == activeScope }) {
             sourceContainer.scrollToVisible(sourceButtons[index].frame)
         }
@@ -655,7 +732,7 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
             height: max(28, ceil(errorLabel.cell?.cellSize(forBounds: area).height ?? 0)))
         retry.frame = NSRect(x: width - 58, y: PanelLayout.listTop + 8, width: 44, height: 24)
         let y = PanelLayout.listTop + errorHeight, listHeight = PanelLayout.listHeight(resultCount: rows.count)
-        scroll.frame = NSRect(x: padding, y: y, width: width - padding * 2, height: listHeight)
+        scroll.frame = NSRect(x: padding, y: y, width: width - padding, height: listHeight)
         table.tableColumns.first?.width = scroll.contentSize.width
         emptyLabel.frame = NSRect(x: 14, y: y + 5, width: width - 28, height: 19)
     }
