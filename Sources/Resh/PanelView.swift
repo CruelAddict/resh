@@ -60,6 +60,12 @@ final class SearchField: NSTextField {
     }
 }
 
+private final class SourceButtonCell: NSButtonCell {
+    override func titleRect(forBounds rect: NSRect) -> NSRect {
+        super.titleRect(forBounds: rect.insetBy(dx: PanelLayout.sourcesHorizontalPadding, dy: 0))
+    }
+}
+
 private final class SelectionRow: NSTableRowView {
     var color = NSColor.selectedContentBackgroundColor {
         didSet { updateSelection() }
@@ -414,7 +420,6 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
 
         searchBackground.wantsLayer = true
         searchBackground.layer?.cornerRadius = PanelLayout.controlCornerRadius
-        searchBackground.layer?.borderWidth = 1
         addSubview(searchBackground)
         searchIcon.image = NSImage(systemSymbolName: "magnifyingglass", accessibilityDescription: nil)
         searchIcon.imageScaling = .scaleNone
@@ -516,8 +521,11 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
             self.sources = sources
             for button in sourceButtons { button.removeFromSuperview() }
             sourceButtons = sources.enumerated().map { index, source in
-                let button = NSButton(title: "", target: self, action: #selector(self.sourceClicked(_:)))
+                let button = NSButton()
+                button.cell = SourceButtonCell(textCell: "")
+                button.target = self; button.action = #selector(self.sourceClicked(_:))
                 button.tag = index; button.isBordered = false; button.focusRingType = .none
+                button.alignment = .left
                 button.isEnabled = self.model.isConfigurationReady
                 button.wantsLayer = true
                 button.layer?.cornerRadius = PanelLayout.sourcesHeight / 2
@@ -632,8 +640,7 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
 
     func apply(theme: RexTheme) {
         self.theme = theme
-        searchBackground.layer?.backgroundColor = NSColor.black.withAlphaComponent(theme.isDark ? 0.12 : 0.03).cgColor
-        searchBackground.layer?.borderColor = theme.foreground.nsColor.withAlphaComponent(0.2).cgColor
+        searchBackground.layer?.backgroundColor = controlFill
         searchIcon.contentTintColor = theme.foreground.nsColor.withAlphaComponent(0.45)
         searchField.textColor = theme.foreground.nsColor
         searchField.placeholderAttributedString = NSAttributedString(string: "Filter or create…",
@@ -647,6 +654,17 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
         searchField.insertionPointColor = theme.accent.nsColor
     }
 
+    private var controlFill: CGColor {
+        // Rex uses neutral overlays for themed interfaces and system fills otherwise.
+        var color = NSColor(calibratedWhite: theme.isDark ? 1 : 0,
+            alpha: theme.isDark ? 0.1 : 0.06).cgColor
+        if !theme.usesTint {
+            let appearance = NSAppearance(named: theme.isDark ? .darkAqua : .aqua) ?? effectiveAppearance
+            appearance.performAsCurrentDrawingAppearance { color = NSColor.quaternarySystemFill.cgColor }
+        }
+        return color
+    }
+
     private var selectionColor: NSColor {
         let accent = theme.accent.nsColor
         guard theme.isDark, let color = accent.usingColorSpace(.extendedSRGB) else { return accent }
@@ -657,10 +675,11 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
     }
 
     private func updateSources() {
+        let selectedFill = controlFill
         for (index, button) in sourceButtons.enumerated() {
             let source = sources[index], selected = source.id == activeScope
             let text = NSMutableAttributedString(string: source.name, attributes: [
-                .font: NSFont.systemFont(ofSize: 13),
+                .font: NSFont.systemFont(ofSize: 11, weight: .medium),
                 .foregroundColor: theme.foreground.nsColor.withAlphaComponent(selected ? 1 : 0.55),
             ])
             let shortcut = keymap.label(for: source.id, modes: keyModes)
@@ -668,7 +687,7 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
                 .font: NSFont.systemFont(ofSize: 10), .foregroundColor: theme.foreground.nsColor.withAlphaComponent(0.4),
             ]))
             button.attributedTitle = text
-            button.layer?.backgroundColor = (selected ? theme.foreground.nsColor.withAlphaComponent(0.1) : .clear).cgColor
+            button.layer?.backgroundColor = selected ? selectedFill : NSColor.clear.cgColor
         }
         needsLayout = true
     }
@@ -691,15 +710,18 @@ final class PanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
         createHintLabel.frame = NSRect(x: trailing - hintWidth,
             y: searchField.frame.maxY - hintHeight + createHintLabel.firstBaselineOffsetFromTop - searchField.firstBaselineOffsetFromTop,
             width: hintWidth, height: hintHeight)
-        progress.frame = NSRect(x: width - 45, y: 10, width: 12, height: 12)
-        sourceScroll.frame = NSRect(x: padding, y: PanelLayout.sourcesTop, width: width - padding * 2, height: PanelLayout.sourcesHeight)
+        progress.frame = NSRect(x: searchBackground.bounds.width - 22,
+            y: (PanelLayout.searchHeight - 12) / 2, width: 12, height: 12)
+        sourceScroll.frame = NSRect(x: padding, y: PanelLayout.sourcesTop,
+            width: max(0, width - padding * 2), height: PanelLayout.sourcesHeight)
         var x: CGFloat = 0
         for button in sourceButtons {
-            let size = ceil(button.attributedTitle.size().width) + 24
+            let size = ceil(button.attributedTitle.size().width) + PanelLayout.sourcesHorizontalPadding * 2
             button.frame = NSRect(x: x, y: 0, width: size, height: PanelLayout.sourcesHeight)
-            x += size + 4
+            x += size + PanelLayout.sourcesSpacing
         }
-        sourceContainer.setFrameSize(NSSize(width: max(sourceScroll.contentSize.width, x - 4), height: PanelLayout.sourcesHeight))
+        sourceContainer.setFrameSize(NSSize(width: max(sourceScroll.contentSize.width, x - PanelLayout.sourcesSpacing),
+            height: PanelLayout.sourcesHeight))
         if let index = sources.firstIndex(where: { $0.id == activeScope }) {
             sourceContainer.scrollToVisible(sourceButtons[index].frame)
         }
