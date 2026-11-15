@@ -481,6 +481,33 @@ extension PickerTests {
         #expect((controller.model.error != nil) == refused)
     }
 
+    @Test func launcherReplacesOutdatedService() throws {
+        var running: [String: Any]? = ["version": "0.0.1"]
+        var lifecycle: [String] = []
+        let stub = try CommandStub { arguments in
+            if arguments.contains("resh_serve") {
+                lifecycle.append("start")
+                running = ["version": ServiceLauncher.version]
+            }
+            return [:]
+        }
+        let launcher = ServiceLauncher(directory: stub.directory, runner: stub, send: { request in
+            if request.operation == "quit" {
+                lifecycle.append("quit")
+                running = nil
+            }
+            return running
+        })
+        let environment = ["RESH_REX_BIN": "/usr/bin/true", "RESH_REX_APP": stub.directory.path]
+
+        try launcher.start(.ifStopped, executable: "/installed/resh", configurationPath: nil, environment: environment)
+        #expect(lifecycle.isEmpty)
+        try launcher.start(.requireCurrentVersion, executable: "/installed/resh", configurationPath: nil, environment: environment)
+        #expect(lifecycle == ["quit", "start"])
+        try launcher.start(.requireCurrentVersion, executable: "/installed/resh", configurationPath: nil, environment: environment)
+        #expect(lifecycle == ["quit", "start"])
+    }
+
     @Test(arguments: [false, true])
     @MainActor func launcherCommandsUseResidentState(_ cached: Bool) async throws {
         var created = false

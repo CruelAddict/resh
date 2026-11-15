@@ -7,6 +7,7 @@ cp "$ROOT/Packaging/Info.plist" "$INFO"
 if [[ -n ${RESH_VERSION:-} ]]; then
     # Apple's bundle version excludes a SemVer prerelease suffix.
     /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString ${RESH_VERSION%%-*}" "$INFO"
+    /usr/libexec/PlistBuddy -c "Add :ReshVersion string $RESH_VERSION" "$INFO"
 fi
 if [[ -n ${RESH_BUILD_NUMBER:-} ]]; then
     /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $RESH_BUILD_NUMBER" "$INFO"
@@ -21,7 +22,6 @@ mkdir -p "$DIST"
 install -m 755 "$BIN/resh" "$DIST/resh"
 install -m 644 "$ROOT/LICENSE" "$DIST/LICENSE"
 ditto "$ROOT/config" "$DIST/config"
-install -m 644 "$ROOT/integration/resh.lua" "$DIST/resh.lua"
 install -m 644 "$ROOT/integration/rex-actions.lua" "$DIST/rex-actions.lua"
 install -m 755 "$ROOT/install.sh" "$DIST/install.sh"
 ditto "$BIN/resh_Resh.bundle" "$DIST/resh_Resh.bundle"

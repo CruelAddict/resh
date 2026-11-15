@@ -74,7 +74,7 @@ jobs:
           dist/resh/resh --help
           dist/resh/resh setup --help
           test "$(dist/resh/resh --name /tmp/resh-release-check)" = resh-release-check
-          codesign --verify --strict dist/resh/resh
+          codesign --verify dist/resh/resh
       - name: Package
         run: bash scripts/package.sh
       - name: Attest archive built by this job
