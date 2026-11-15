@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Download or locate a distribution, then use its shared Rex setup.
+# Install a standalone distribution, then configure its Rex integration.
 set -euo pipefail
 
 usage() {
@@ -13,7 +13,7 @@ Usage: bash install.sh [options]
   --verify                 Verify build provenance with GitHub CLI
   --yes                    Apply Rex configuration changes without prompting
 
-Rex must already be installed and running as the installing account.
+Rex must already be installed. It may be closed during installation.
 The installer previews Rex configuration changes and asks for confirmation.
 EOF
 }
@@ -23,15 +23,15 @@ die() { printf 'resh: %s\n' "$*" >&2; exit 1; }
 parse_options() {
     while (( $# > 0 )); do
         case "$1" in
-            --remote) remote=true; shift ;;
-            --verify) verify=true; download=true; shift ;;
+            --remote) is_remote_installation=true; shift ;;
+            --verify) is_provenance_verification_enabled=true; is_release_download_requested=true; shift ;;
             --yes) setup_options+=(--yes); shift ;;
             --source|--config|--repository|--version)
                 [[ $# -ge 2 && -n $2 ]] || die "Missing value for $1"
                 case "$1" in
                     --source) source_dir=$2 ;;
                     --config) setup_options+=(--config "$2") ;;
-                    --repository) repository=$2; download=true ;;
+                    --repository) repository=$2; is_release_download_requested=true ;;
                     --version) version=$2 ;;
                 esac
                 shift 2 ;;
@@ -39,7 +39,7 @@ parse_options() {
             *) die "Unknown option: $1" ;;
         esac
     done
-    [[ -z $source_dir || $download == false ]] || die '--source cannot be combined with --repository or --verify.'
+    [[ -z $source_dir || $is_release_download_requested == false ]] || die '--source cannot be combined with --repository or --verify.'
 }
 
 sha256() {
@@ -55,7 +55,7 @@ download_release() {
     [[ $repository =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || die 'Invalid repository; expected OWNER/REPO.'
     [[ $version =~ ^[A-Za-z0-9._-]+$ ]] || die 'Invalid release tag.'
 
-    if [[ $verify == true ]]; then
+    if [[ $is_provenance_verification_enabled == true ]]; then
         if ! command -v gh >/dev/null 2>&1 || ! gh attestation verify --help >/dev/null 2>&1; then
             die '--verify requires a current GitHub CLI (gh) with attestation support.'
         fi
@@ -65,7 +65,7 @@ download_release() {
         fi
     fi
 
-    if [[ $remote == true ]]; then
+    if [[ $is_remote_installation == true ]]; then
         artifact=resh-remote.tar.gz
     else
         case "$(uname -m)" in
@@ -88,7 +88,7 @@ download_release() {
     [[ $expected =~ ^[a-fA-F0-9]{64}$ ]] || die 'Release checksum is missing or ambiguous.'
     [[ $(sha256 "$work/archive.tar.gz") == "$expected" ]] || die 'Release checksum mismatch; nothing was installed.'
 
-    if [[ $verify == true ]]; then
+    if [[ $is_provenance_verification_enabled == true ]]; then
         local commit
         commit=$(gh api "repos/$repository/commits/$version" --jq .sha)
         gh attestation verify "$work/archive.tar.gz" --repo "$repository" \
@@ -107,7 +107,7 @@ download_release() {
 }
 
 find_source() {
-    if [[ -z $source_dir && $download == false && -f ${BASH_SOURCE[0]:-} ]]; then
+    if [[ -z $source_dir && $is_release_download_requested == false && -f ${BASH_SOURCE[0]:-} ]]; then
         local candidate
         candidate=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
         if [[ -f $candidate/rex-actions.lua || -f $candidate/integration/rex-actions.lua ]]; then
@@ -119,13 +119,13 @@ find_source() {
 }
 
 main() {
-    remote=false verify=false download=false
+    is_remote_installation=false is_provenance_verification_enabled=false is_release_download_requested=false
     source_dir=""
     repository=${RESH_REPOSITORY:-CruelAddict/resh}
     version=latest
     setup_options=()
     parse_options "$@"
-    [[ $remote == true || $(uname -s) == Darwin ]] || die 'resh requires macOS. Use --remote for a remote Rex host.'
+    [[ $is_remote_installation == true || $(uname -s) == Darwin ]] || die 'resh requires macOS. Use --remote for a remote Rex host.'
     unset REX_SESSION REX_BLOCK REX_CLIENT REX_SERVER
     umask 077
     work=$(mktemp -d "${TMPDIR:-/tmp}/resh-install.XXXXXX")
@@ -135,16 +135,19 @@ main() {
     find_source
 
     # Bash 3.2 needs the + form when expanding an empty array under set -u.
-    if [[ $remote == true ]]; then
+    if [[ $is_remote_installation == true ]]; then
         local setup_script="$source_dir/setup.sh"
         [[ -f $setup_script ]] || setup_script="$source_dir/Sources/Resh/Resources/setup.sh"
         [[ -r $setup_script ]] || die 'Missing remote setup script in the distribution.'
-        bash "$setup_script" --remote --source "$source_dir" ${setup_options[@]+"${setup_options[@]}"}
+        local module_source="$source_dir/rex-actions.lua"
+        [[ -f $module_source ]] || module_source="$source_dir/integration/rex-actions.lua"
+        [[ -r $module_source ]] || die 'Missing rex-actions.lua in the distribution.'
+        bash "$setup_script" --remote --source "$module_source" ${setup_options[@]+"${setup_options[@]}"}
     else
         local bundle=$source_dir
         [[ -f $bundle/resh ]] || bundle="$source_dir/dist/resh"
-        [[ -x $bundle/resh && -f $bundle/resh.lua && -d $bundle/resh_Resh.bundle ]] || die 'Missing prebuilt picker. Run bash scripts/build.sh or install a macOS release archive.'
-        "$bundle/resh" setup ${setup_options[@]+"${setup_options[@]}"}
+        [[ -x $bundle/resh && -d $bundle/resh_Resh.bundle ]] || die 'Missing prebuilt picker. Run bash scripts/build.sh or install a macOS release archive.'
+        "$bundle/resh" setup --source "$bundle" ${setup_options[@]+"${setup_options[@]}"}
     fi
 }
 

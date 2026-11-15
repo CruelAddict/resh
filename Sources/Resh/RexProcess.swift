@@ -2,9 +2,7 @@ import Darwin
 import Foundation
 import ReshCore
 
-/// An owned CLI connection, not a Rex server. Unlike Foundation.Process, this
-/// inherits the launchd job's process group, so launchd can terminate old
-/// bridges after a host crash. Pipes also tie the Lua scripts to their owner.
+/// A Rex CLI connection owned by the panel. Pipes tie its Lua scripts to the panel's lifetime.
 final class RexProcess: @unchecked Sendable {
     private static let registryLock = NSLock()
     private static var registry: [pid_t: RexProcess] = [:]
@@ -47,8 +45,7 @@ final class RexProcess: @unchecked Sendable {
         posix_spawn_file_actions_adddup2(&actions, stdin?.0 ?? null, STDIN_FILENO)
         posix_spawn_file_actions_adddup2(&actions, stdout.1, STDOUT_FILENO)
         posix_spawn_file_actions_adddup2(&actions, null, STDERR_FILENO)
-        // No SETPGROUP: launchd owns this group. Only explicitly duplicated fds
-        // survive exec; neither the app's flock nor other connections leak in.
+        // Only explicitly duplicated fds survive exec. The panel lock and other connections stay private.
         posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_CLOEXEC_DEFAULT))
         var environment = environment
         for key in ["REX_SESSION", "REX_BLOCK", "REX_CLIENT", "REX_SERVER"] { environment.removeValue(forKey: key) }

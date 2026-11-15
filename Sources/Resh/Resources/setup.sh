@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# Shared Rex setup for standalone installations, Homebrew, and remote adapters.
 set -euo pipefail
 
 usage() {
@@ -7,11 +6,10 @@ usage() {
 Usage: resh setup [options]
   --config FILE       Rex config file (required for a custom server config)
   --yes               Apply changes without prompting
-  --source DIRECTORY  Distribution directory (supplied by resh)
-  --remote            Install only the remote folder-source adapter
+  --executable FILE   Selected resh command (supplied by resh)
+  --remote            Configure the remote folder-source adapter
 
-Rex must be installed and running as the installing account.
-Setup asks for confirmation and saves a backup before applying changes.
+Rex may be closed. Setup asks for confirmation and backs up changed configuration.
 EOF
 }
 
@@ -21,13 +19,14 @@ die() { printf 'resh: %s\n' "$*" >&2; exit 1; }
 parse_options() {
     while (( $# > 0 )); do
         case "$1" in
-            --remote) remote=true; shift ;;
-            --yes) yes=true; shift ;;
-            --source|--config)
+            --remote) is_remote_setup=true; shift ;;
+            --yes) is_confirmed=true; shift ;;
+            --executable|--source|--config)
                 [[ $# -ge 2 && -n $2 ]] || die "Missing value for $1"
                 case "$1" in
-                    --source) source_dir=$2 ;;
-                    --config) config=$2; explicit_config=true ;;
+                    --executable) executable=$2 ;;
+                    --source) source=$2 ;;
+                    --config) config=$2; is_config_explicit=true ;;
                 esac
                 shift 2 ;;
             -h|--help) usage; exit 0 ;;
@@ -53,7 +52,7 @@ resolve_config_path() {
 configure_environment() {
     local platform
     platform=$(uname -s)
-    [[ $remote == true || $platform == Darwin ]] || die 'resh requires macOS. Use --remote on a remote Rex host.'
+    [[ $is_remote_setup == true || $platform == Darwin ]] || die 'resh requires macOS. Use --remote on a remote Rex host.'
     export PATH="${PATH:-/usr/bin:/bin}:/opt/homebrew/bin:/usr/local/bin"
     unset REX_SESSION REX_BLOCK REX_CLIENT REX_SERVER
     case "$config" in
@@ -62,10 +61,8 @@ configure_environment() {
         *) config="$PWD/$config" ;;
     esac
     tools_reference=${RESH_TOOLS:-${XDG_CONFIG_HOME:-$HOME/.config}/resh/tools.lua}
-    destination="$HOME/Library/Application Support/resh"
-    if [[ $remote == true ]]; then destination="${XDG_DATA_HOME:-$HOME/.local/share}/resh"; fi
     local path
-    for path in "$HOME" "$config" "$tools_reference" "$destination"; do
+    for path in "$HOME" "$config" "$tools_reference"; do
         [[ $path == /* ]] || die "Installation paths must be absolute: $path"
     done
     config=$(resolve_config_path "$config")
@@ -73,14 +70,27 @@ configure_environment() {
     if [[ -z $rex_bin && $platform == Darwin ]]; then
         rex_bin="$HOME/Library/Application Support/com.superlogical.rex/RexServer/Versions/Current/Rex Server.app/Contents/MacOS/rex"
     fi
-    [[ -n $rex_bin && -x $rex_bin ]] || die 'Rex CLI not found. Install/start Rex first, or set RESH_REX_BIN.'
+    [[ -n $rex_bin && -x $rex_bin ]] || die 'Rex CLI not found. Install Rex first, or set RESH_REX_BIN.'
     rex_command=("$rex_bin" --autostart=false --timeout 40s)
+    if [[ $is_remote_setup == true ]]; then
+        marker=remote
+        module="${XDG_DATA_HOME:-$HOME/.local/share}/resh/rex-actions.lua"
+        [[ $module == /* && -f $source ]] || die 'Missing remote adapter or invalid data directory.'
+    elif [[ -n $source ]]; then
+        [[ -x $source/resh && -d $source/resh_Resh.bundle ]] || die 'Missing prebuilt picker.'
+        executable="$HOME/.local/bin/resh"
+    else
+        [[ $executable == /* && -x $executable ]] || die 'Missing installed resh command.'
+    fi
 }
 
 rex_lua() { "${rex_command[@]}" "do" - "$@"; }
 
 check_rex() {
     local pid command
+    is_rex_server_running=false
+    if ! "${rex_command[@]}" "do" -e 'return rex.call("server.status")' > /dev/null 2>&1; then return 0; fi
+    is_rex_server_running=true
     pid=$(rex_lua "account=$(id -un)" <<'LUA'
 local identity = assert(rex.call("server.whoami"))
 assert(identity.principal.transport == "unix" and identity.account == rex.args.account,
@@ -88,35 +98,9 @@ assert(identity.principal.transport == "unix" and identity.account == rex.args.a
 io.write(tostring(assert(rex.call("server.status")).pid), "\n")
 LUA
     )
-    if [[ $explicit_config == false ]]; then
+    if [[ $is_config_explicit == false ]]; then
         command=$(ps -ww -p "$pid" -o command=)
         [[ ! $command =~ --config[[:space:]=] ]] || die 'This server uses a custom config. Pass --config FILE explicitly.'
-    fi
-}
-
-find_source() {
-    [[ -n $source_dir ]] || die 'Missing distribution directory. Run resh setup from an installed or unpacked release.'
-    source_dir=$(cd -- "$source_dir" && pwd)
-    if [[ $remote == true ]]; then
-        module_source="$source_dir/rex-actions.lua"
-        [[ -f $module_source ]] || module_source="$source_dir/integration/rex-actions.lua"
-        [[ -r $module_source ]] || die 'Missing rex-actions.lua in the distribution.'
-        module="$destination/rex-actions.lua"
-    else
-        if [[ -f $source_dir/.resh-prefix ]]; then
-            # The formula records its opt path so links survive brew upgrades.
-            IFS= read -r source_dir < "$source_dir/.resh-prefix"
-            [[ $source_dir == /* ]] || die 'Invalid Homebrew installation prefix.'
-            source_dir=$(cd -- "$source_dir" && pwd)
-            linked=true
-        fi
-        bundle=$source_dir
-        [[ -x $bundle/resh && -r $bundle/resh.lua && -d $bundle/resh_Resh.bundle ]] || die 'Missing prebuilt picker. Run bash scripts/build.sh or use a macOS release.'
-        if [[ $linked == false ]]; then
-            [[ -r $bundle/LICENSE ]] || die 'Missing LICENSE in the distribution.'
-        fi
-        module="$destination/resh.lua"
-        module_source="$bundle/resh.lua"
     fi
 }
 
@@ -147,45 +131,74 @@ unchanged() {
 }
 
 prepare_rex_config() {
-    rex_lua "input=$work/config.before" "output=$work/config.after" "remote=$remote" \
-        "module=$module" "tools=$tools_reference" "executable=$destination/resh" <<'LUA'
-local args = rex.args
-local file = assert(io.open(args.input, "rb"))
-local text = assert(file:read("*a")); file:close()
-local integration = args.remote
-  and "assert(loadfile(" .. string.format("%q", args.module) .. "))(" .. string.format("%q", args.tools) .. ")"
-  or "dofile(" .. string.format("%q", args.module) .. ")"
-local found = text:find(integration, 1, true) ~= nil
-if not args.remote and not found then
-  for argument in text:gmatch("dofile%s*%(([^\n%)]+)%)") do
-    if argument:find(args.module, 1, true) then found = true end
+    {
+        say "-- >>> $marker >>>"
+        if [[ $is_remote_setup == true ]]; then
+            printf 'assert(loadfile(%s))(%s)\n' "$(lua_quote "$module")" "$(lua_quote "$tools_reference")"
+        else
+            local quoted_executable
+            quoted_executable=$(lua_quote "$executable")
+            cat <<LUA
+do
+  local result = rex.exec({ $quoted_executable, "print-rex-startup-lua" }, { timeout = 5 })
+  if result and result.ok then
+    local startup, err = loadstring(result.stdout, "@resh startup")
+    if startup then startup() else rex.log("warn", err) end
   end
 end
-local additions = {}
-if not found then additions[#additions + 1] = integration end
-if not args.remote then
-  local startup = false
-  for arguments in ("\n" .. text):gmatch("\n[ \t]*rex%.exec%.start%s*%(%s*{(.-)}") do
-    if arguments:find("resh", 1, true) and arguments:match("['\"]service['\"]%s*,%s*['\"]start['\"]") then startup = true end
-  end
-  if not startup then
-    additions[#additions + 1] = "rex.exec.start({ " .. string.format("%q", args.executable) .. ", \"service\", \"start\" },\n  { detach = true, stdout = false, stderr = false })"
-  end
-end
-if #additions > 0 then
-  text = text .. (text == "" and "" or "\n") .. "-- >>> resh >>>\n"
-    .. table.concat(additions, "\n") .. "\n-- <<< resh <<<\n"
-end
-local output = assert(io.open(args.output, "wb"))
-assert(output:write(text)); assert(output:close())
 LUA
+        fi
+        say "-- <<< $marker <<<"
+    } > "$work/block"
+    # Only the managed block is replaced; bindings elsewhere remain untouched.
+    REX_CONFIG_PATH="$config" LEGACY_RESH_LOAD="dofile($(lua_quote "$HOME/Library/Application Support/resh/resh.lua"))" \
+    awk -v marker="$marker" '
+        FILENAME == ARGV[1] { block = block $0 "\n"; next }
+        /^[ \t]*-- >>> (resh|remote) >>>[ \t]*$/ && !role {
+            role = $3; start = FNR; body = ""; next
+        }
+        role && $0 ~ ("^[ \t]*-- <<< " role " <<<[ \t]*$") {
+            if (role == "resh" && body ~ /rex-actions\.lua/) {
+                if (body !~ /^[ \t]*assert\(loadfile\([^\n]+\n$/) {
+                    printf "resh: %s:%d: Move the adapter loader between -- >>> remote >>> and -- <<< remote <<<.\n", ENVIRON["REX_CONFIG_PATH"], start > "/dev/stderr"; role = ""; exit 1
+                }
+                role = "remote"
+            }
+            if (role != marker) printf "-- >>> %s >>>\n%s-- <<< %s <<<\n", role, body, role
+            else if (!found++) printf "%s", block
+            role = ""; lines++; next
+        }
+        role { body = body $0 "\n"; next }
+        marker == "resh" && !legacy_line && $0 == ENVIRON["LEGACY_RESH_LOAD"] { legacy_line = FNR }
+        { print; lines++ }
+        END {
+            if (role) { print "resh: Unclosed block in Rex config." > "/dev/stderr"; exit 1 }
+            if (legacy_line) {
+                printf "resh: %s:%d: Old resh integration outside a managed block: %s\n", ENVIRON["REX_CONFIG_PATH"], legacy_line, ENVIRON["LEGACY_RESH_LOAD"] > "/dev/stderr"
+                print "Remove the old integration or restore its markers, then run resh setup again." > "/dev/stderr"
+                exit 1
+            }
+            if (!found) { if (lines) print ""; printf "%s", block }
+        }
+    ' "$work/block" "$work/config.before" > "$work/config.after"
     touch "$work/config.after.exists"
 }
 
+lua_quote() {
+    local value=$1
+    value=${value//\\/\\\\}
+    value=${value//\"/\\\"}
+    value=${value//$'\n'/\\n}
+    value=${value//$'\r'/\\r}
+    value=${value//$'\t'/\\t}
+    printf '"%s"' "$value"
+}
+
 confirm_setup() {
-    say 'This will configure resh in Rex and reload its configuration.'
+    say 'This will configure resh in Rex. Running Rex will reload the configuration.'
     say "Rex config: $config"
-    if [[ $yes == true ]]; then return 0; fi
+    diff -u "$work/config.before" "$work/config.after" || true
+    if [[ $is_confirmed == true ]]; then return 0; fi
     local answer
     if ! IFS= read -r -p 'Continue? [y/N] ' answer < /dev/tty; then
         die 'Confirmation requires a terminal. Use --yes to apply changes non-interactively.'
@@ -197,14 +210,14 @@ confirm_setup() {
 }
 
 atomic_copy() {
-    local source=$1 target=$2 preserve_mode=${3:-false} status=0
+    local source=$1 target=$2 is_preserving_mode=${3:-false} status=0
     [[ ! -d $target ]] || die "Not a file: $target"
     mkdir -p -- "${target%/*}" || return 1
     pending_file=$(mktemp "${target%/*}/.resh-setup.XXXXXX") || return 1
     if [[ -L $source ]]; then
         rm -f -- "$pending_file"
         ln -s "$(readlink "$source")" "$pending_file" || status=$?
-    elif [[ $preserve_mode == true && -f $target && ! -L $target ]]; then
+    elif [[ $is_preserving_mode == true && -f $target && ! -L $target ]]; then
         cp -p "$target" "$pending_file" && cat "$source" > "$pending_file" || status=$?
     else
         cp -p "$source" "$pending_file" || status=$?
@@ -213,25 +226,6 @@ atomic_copy() {
     if (( status != 0 )); then rm -f -- "$pending_file"; fi
     pending_file=
     return "$status"
-}
-
-install_native() {
-    "$bundle/resh" service stop >/dev/null
-    if [[ $bundle -ef $destination ]]; then return 0; fi
-    if [[ $linked == true ]]; then
-        ln -s "$bundle/resh" "$work/resh.link"
-        atomic_copy "$work/resh.link" "$destination/resh"
-    else
-        atomic_copy "$bundle/resh" "$destination/resh"
-        atomic_copy "$bundle/LICENSE" "$destination/LICENSE"
-    fi
-    # Replace only our resources; retain personal configuration and history.
-    rm -rf -- "$destination/resh_Resh.bundle"
-    if [[ $linked == true ]]; then
-        ln -s "$bundle/resh_Resh.bundle" "$destination/resh_Resh.bundle"
-    else
-        cp -R "$bundle/resh_Resh.bundle" "$destination/resh_Resh.bundle"
-    fi
 }
 
 restore_file() {
@@ -245,32 +239,56 @@ restore_file() {
     fi
 }
 
+install_entry() {
+    local from=$1 target=$2 stage
+    [[ ! -d $target || -L $target || -d $from ]] || die "Not a file: $target"
+    mkdir -p -- "${target%/*}"
+    stage=$(mktemp -d "${target%/*}/.resh-install.XXXXXX")
+    stages+=("$stage")
+    targets+=("$target")
+    cp -pPR "$from" "$stage/new"
+    if [[ -e $target || -L $target ]]; then
+        mv -- "$target" "$stage/old"
+    else
+        touch "$stage/absent"
+    fi
+    mv -- "$stage/new" "$target"
+}
+
 cleanup() {
-    local status=$?
+    local status=$? i stage target
     trap - EXIT
     set +e
     [[ -z $pending_file ]] || rm -f -- "$pending_file"
     pending_file=
-    if [[ $applied == true && $committed == false ]]; then
+    if [[ $is_config_applied == true && $is_setup_complete == false ]]; then
         restore_file "$config" "$work/config.before" "$work/config.after"
-        restore_file "$module" "$work/module.before" "$work/module.after"
-        if [[ $reload_attempted == true ]] && unchanged "$config" "$work/config.before"; then
-            "${rex_command[@]}" config reload >/dev/null 2>&1
+    fi
+    for ((i=${#targets[@]}-1; i>=0; i--)); do
+        stage=${stages[i]} target=${targets[i]}
+        if [[ $is_setup_complete == false ]]; then
+            if [[ -e $stage/old || -L $stage/old ]]; then
+                rm -rf -- "$target" || continue
+                mv -- "$stage/old" "$target" || continue
+            elif [[ -f $stage/absent ]]; then rm -rf -- "$target"; fi
         fi
+        rm -rf -- "$stage"
+    done
+    if [[ $is_reload_attempted == true && $is_setup_complete == false ]] && unchanged "$config" "$work/config.before"; then
+        "${rex_command[@]}" config reload >/dev/null 2>&1
     fi
     [[ -z $work ]] || rm -rf -- "$work"
     exit "$status"
 }
 
 main() {
-    remote=false yes=false linked=false
-    source_dir="" config=""
-    explicit_config=false
-    work="" pending_file="" module=""
-    applied=false committed=false reload_attempted=false
+    is_remote_setup=false is_confirmed=false is_config_explicit=false
+    config="" executable="" source="" marker=resh
+    targets=() stages=()
+    work="" pending_file=""
+    is_config_applied=false is_setup_complete=false is_reload_attempted=false
     parse_options "$@"
     configure_environment
-    find_source
     check_rex
     umask 077
     work=$(mktemp -d "${TMPDIR:-/tmp}/resh-setup.XXXXXX")
@@ -279,36 +297,43 @@ main() {
     trap 'exit 143' TERM
     snapshot_file "$config" "$work/config.before"
     prepare_rex_config
-    snapshot_file "$module" "$work/module.before"
-    if [[ $linked == true ]]; then
-        ln -s "$module_source" "$work/module.after"
-    else
-        cp -p "$module_source" "$work/module.after"
+    local changed=false
+    cmp -s "$work/config.before" "$work/config.after" || changed=true
+    if [[ $changed == true || -n $source ]]; then
+        if ! confirm_setup; then return 0; fi
     fi
-    touch "$work/module.after.exists"
-    if ! confirm_setup; then return 0; fi
-
-    unchanged "$config" "$work/config.before" || die 'Rex config changed during setup; refusing to overwrite concurrent edits.'
-    if [[ $remote == false ]]; then install_native; fi
-    applied=true
-    atomic_copy "$work/module.after" "$module" true
-    unchanged "$config" "$work/config.before" || die 'Rex config changed during setup; refusing to overwrite concurrent edits.'
-    if [[ -f $work/config.before.exists ]] && ! cmp -s "$work/config.before" "$work/config.after"; then
-        local backup
-        backup=$(mktemp "$config.resh-backup-XXXXXX")
-        cp -p "$work/config.before" "$backup"
-        say "Rex config backup: $backup"
+    if [[ $is_remote_setup == true ]]; then
+        install_entry "$source" "$module"
+    elif [[ -n $source ]]; then
+        local destination="$HOME/Library/Application Support/resh"
+        install_entry "$source/resh" "$destination/resh"
+        install_entry "$source/resh_Resh.bundle" "$destination/resh_Resh.bundle"
+        ln -s "$destination/resh" "$work/command"
+        install_entry "$work/command" "$executable"
+        "$executable" print-rex-startup-lua >/dev/null
     fi
-    if [[ ! -f $config ]] || ! cmp -s "$config" "$work/config.after"; then
+    unchanged "$config" "$work/config.before" || die 'Rex config changed during setup; refusing to overwrite concurrent edits.'
+    if [[ $changed == true ]]; then
+        if [[ -f $work/config.before.exists ]]; then
+            local backup
+            backup=$(mktemp "$config.resh-backup-XXXXXX")
+            cp -p "$work/config.before" "$backup"
+            say "Rex config backup: $backup"
+        fi
         atomic_copy "$work/config.after" "$config" true
+        is_config_applied=true
     fi
     "${rex_command[@]}" config check "$config" --json >/dev/null
     unchanged "$config" "$work/config.after" || die 'Rex config changed during setup; reload was not attempted.'
-    reload_attempted=true
-    "${rex_command[@]}" config reload >/dev/null
-    committed=true
+    if [[ $is_rex_server_running == true ]]; then
+        is_reload_attempted=true
+        "${rex_command[@]}" config reload >/dev/null
+    else
+        say 'Rex will load the configuration on its next start.'
+    fi
+    is_setup_complete=true
     say "Connected resh to Rex: $config"
-    if [[ $remote == false ]]; then say 'Rex Server → Remote Control must be enabled for session switching.'; fi
+    if [[ $is_remote_setup == false ]]; then say 'Rex Server → Remote Control must be enabled for session switching.'; fi
 }
 
 main "$@"

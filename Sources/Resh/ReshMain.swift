@@ -73,6 +73,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
     private var controller: PanelController?
     private var lockDescriptor: Int32 = -1
     private var host: LauncherHost?
+    private let version = ServiceLauncher.version
     private var openingID: UUID?
     private let dataConnection: RexDataConnection
     private var rexMonitor: RexAppMonitor?
@@ -104,7 +105,9 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
                 DebugLog.shared.setEnabled(self.options.debug)
             }
             host = try LauncherHost()
-            host?.onRequest = { [weak self] request in await self?.handle(request) ?? ["error": "Host is stopping."] }
+            host?.onRequest = { [weak self] request, version in
+                await self?.handle(request, requiringVersion: version) ?? ["error": "Host is stopping."]
+            }
         } catch { fail(error); return }
         installMenu()
         rexMonitor = RexAppMonitor()
@@ -211,7 +214,10 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         return true
     }
-    private func handle(_ request: LauncherRequest) async -> [String: Any] {
+    private func handle(_ request: LauncherRequest, requiringVersion requiredVersion: String?) async -> [String: Any] {
+        if let requiredVersion, requiredVersion != version || isStopping {
+            return ["needsCurrentService": true]
+        }
         guard let controller else { return ["error": "Panel is not ready."] }
         if request.operation == "quit" {
             DispatchQueue.main.async { NSApp.terminate(nil) }
@@ -273,7 +279,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         if isStopping { connectionState = "stopping" }
         else if controller.model.catalog.isConnected { connectionState = "ready" }
         else { connectionState = rexMonitor?.isAvailable == true ? "unavailable" : "waitingForRex" }
-        return ["running": true, "pid": getpid(), "visible": controller.panel.isVisible,
+        return ["running": true, "pid": getpid(), "visible": controller.panel.isVisible, "version": version,
                  "stopping": isStopping, "connectionState": connectionState,
                  "dataProcessID": controller.model.catalog.processID as Any? ?? NSNull(),
                  "sessions": controller.model.sessionCount,
@@ -311,11 +317,26 @@ struct ReshMain {
     static func main() {
         do {
             let arguments = Array(CommandLine.arguments.dropFirst())
+            // Existing managed blocks from the first version of this loader still call "init".
+            if arguments.first == "print-rex-startup-lua" || arguments.first == "init" {
+                let usage = "Usage: resh print-rex-startup-lua [--executable /path/to/resh]"
+                let options = Array(arguments.dropFirst())
+                if options == ["--help"] || options == ["-h"] {
+                    print(usage)
+                } else {
+                    guard options.isEmpty || (options.count == 2 && options[0] == "--executable") else {
+                        throw ReshError(usage)
+                    }
+                    let executablePath = try options.isEmpty ? RexIntegration.executablePath() : options[1]
+                    print(try RexIntegration.generateIntegrationLua(executablePath: executablePath), terminator: "")
+                }
+                return
+            }
             if arguments.first == "setup" {
                 try setup(Array(arguments.dropFirst()))
                 return
             }
-            let options = try Options(arguments)
+            let options = try Options(arguments == ["serve", "--saved"] ? ServiceLauncher().savedServeArguments() : arguments)
             DebugLog.shared.setEnabled(options.debug)
             if options.debug {
                 FileHandle.standardError.write(Data(("resh: Debug log: \(DebugLog.shared.url.path)\n").utf8))
@@ -330,6 +351,7 @@ struct ReshMain {
                 resh --action ACTION [--args JSON] [--client CLIENT_ID]
                 resh --name DIRECTORY
                 resh --diagnose
+                resh print-rex-startup-lua [--executable /path/to/resh]
                 resh setup [--config REX_CONFIG_FILE] [--yes]
                 resh service start|stop|restart|status [--config FILE] [--debug]
                 resh serve [--config FILE] [--debug]
@@ -376,28 +398,30 @@ struct ReshMain {
                     print("{\"running\":false}")
                     return
                 }
-                if options.serviceOperation != nil { request.operation = "status" }
-                let startsService = options.serviceOperation == .start || options.serviceOperation == .restart
-                if startsService {
-                    try LauncherIPC.launchHost(configurationPath: configURL?.path,
+                if options.serviceOperation == .start || options.serviceOperation == .restart {
+                    try ensureCurrentService(configurationPath: configURL?.path,
                         restart: options.serviceOperation == .restart, debug: options.debug)
-                    request.operation = "status"
-                }
-                var response = try LauncherIPC.send(request)
-                if request.action != nil, response == nil { throw ReshError("Open the resh picker first.") }
-                if response == nil, request.operation == "show" || request.changesSession || startsService {
-                    if !startsService { try LauncherIPC.launchHost(configurationPath: configURL?.path) }
-                    for _ in 0..<200 {
-                        usleep(10_000)
-                        response = try LauncherIPC.send(request)
-                        if response != nil { break }
-                    }
-                    guard response != nil else { throw ReshError("The resh service did not start.") }
+                    return
                 }
                 if options.serviceOperation == .status {
+                    request.operation = "status"
+                    let response = try LauncherIPC.send(request)
                     let data = try JSONSerialization.data(withJSONObject: response ?? ["running": false])
                     FileHandle.standardOutput.write(data); print("")
-                } else if request.changesSession, let response, !response.isEmpty {
+                    return
+                }
+                if request.action != nil {
+                    guard try LauncherIPC.send(request) != nil else { throw ReshError("Open the resh picker first.") }
+                    return
+                }
+                let response = try LauncherIPC.runIfVersionMatches(request) ?? {
+                    try ensureCurrentService(configurationPath: configURL?.path, debug: options.debug)
+                    guard let response = try LauncherIPC.runIfVersionMatches(request) else {
+                        throw ReshError("The resh service is not available.")
+                    }
+                    return response
+                }()
+                if request.changesSession, !response.isEmpty {
                     let data = try JSONSerialization.data(withJSONObject: response, options: [.prettyPrinted, .sortedKeys])
                     FileHandle.standardOutput.write(data); print("")
                 }
@@ -434,13 +458,19 @@ struct ReshMain {
             withExtendedLifetime(delegate) { app.run() }
         } catch { report(error); exit(1) }
     }
+    nonisolated private static func ensureCurrentService(configurationPath: String?, restart: Bool = false, debug: Bool) throws {
+        try ServiceLauncher().ensureCurrentService(executable: RexIntegration.executablePath(),
+            configurationPath: configurationPath, restart: restart, debug: debug)
+    }
     nonisolated private static func setup(_ arguments: [String]) throws {
-        guard let script = Bundle.module.url(forResource: "setup", withExtension: "sh"),
-              let executable = Bundle.main.executableURL else {
+        guard let script = Bundle.module.url(forResource: "setup", withExtension: "sh") else {
             throw ReshError("The resh setup resources are missing. Reinstall resh.")
         }
-        let directory = executable.resolvingSymlinksInPath().deletingLastPathComponent()
-        let argv = (["/bin/bash", script.path, "--source", directory.path] + arguments).map { strdup($0) } + [nil]
+        let executablePath = try RexIntegration.executablePath()
+        let directory = URL(fileURLWithPath: executablePath).resolvingSymlinksInPath().deletingLastPathComponent()
+        let source = FileManager.default.fileExists(atPath: directory.appendingPathComponent("install.sh").path)
+            ? ["--source", directory.path] : []
+        let argv = (["/bin/bash", script.path, "--executable", executablePath] + source + arguments).map { strdup($0) } + [nil]
         defer { argv.forEach { free($0) } }
         // Keep the foreground terminal so setup can read confirmation from /dev/tty.
         _ = argv.withUnsafeBufferPointer { execv("/bin/bash", $0.baseAddress!) }

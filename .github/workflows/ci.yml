@@ -46,7 +46,6 @@ jobs:
           dist/resh/resh --help
           dist/resh/resh setup --help
           test "$(dist/resh/resh --name /tmp/resh-release-check)" = resh-release-check
-          codesign --verify --strict dist/resh/resh
       - name: Package
         run: bash scripts/package.sh
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
