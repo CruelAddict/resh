@@ -141,10 +141,7 @@ if not listed then fail(err) end
 for _, session in ipairs(listed.sessions or {}) do scan(session.session_id) end
 publish()
 
--- launchd sends SIGTERM to the old process group when the UI crashes, but
--- does not promise escalation for a child ignoring it. A quiet event stream
--- must also notice its stdout reader disappeared. No RPC/terminal polling;
--- this timer exists only for the lifetime of the activity stream.
+-- A quiet event stream must still notice when the panel (its stdout reader) exits.
 rex.every(10, function()
   local written = io.stdout:write('{"heartbeat":true}\n')
   if not written then rex.stop(0) end

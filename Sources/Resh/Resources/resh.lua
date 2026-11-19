@@ -1,4 +1,17 @@
-local executable = os.getenv("HOME") .. "/Library/Application Support/resh/resh"
+-- Configuration actions run in Rex Server, whereas `rex do -e` runs in its CLI.
+-- Keep the native host in the server's process tree to inherit its folder access.
+rex.action{
+  name = "resh_serve",
+  title = "resh: Start Service",
+  description = "Start the native picker through Rex Server.",
+  args = { type = "object", additionalProperties = false },
+  run = function()
+    local handle, err = rex.exec.start({ executable, "serve", "--saved" },
+      { detach = true, stdout = false, stderr = false })
+    if not handle then error(tostring(err)) end
+    return { pid = handle.pid }
+  end,
+}
 
 local function with_client(arguments, ctx)
   local client = ctx.client_id
@@ -57,22 +70,23 @@ for _, definition in ipairs({
   }
 end
 
+local function launch(ctx, arguments)
+  with_client(arguments, ctx)
+  if ctx.session_id then
+    table.insert(arguments, "--current-session")
+    table.insert(arguments, ctx.session_id)
+  end
+  local handle, err = rex.exec.start(arguments, { detach = true, stdout = false, stderr = false })
+  if not handle then error(tostring(err)) end
+end
+
 rex.action{
   name = "resh",
   title = "Open resh Session Manager",
   description = "Find a folder or switch to a Rex session.",
   category = "Session",
   args = { type = "object", additionalProperties = false },
-  run = function(ctx)
-    local arguments = with_client({ executable }, ctx)
-    if ctx.session_id then
-      table.insert(arguments, "--current-session")
-      table.insert(arguments, ctx.session_id)
-    end
-    local handle, err = rex.exec.start(arguments,
-      { detach = true, stdout = false, stderr = false })
-    if not handle then error(tostring(err)) end
-  end,
+  run = function(ctx) launch(ctx, { executable }) end,
 }
 
 rex.bind("cmd+[KeyS]", "resh")
@@ -83,16 +97,7 @@ rex.action{
   description = "Toggle between the last two sessions opened through resh.",
   category = "Session",
   args = { type = "object", additionalProperties = false },
-  run = function(ctx)
-    local arguments = with_client({ executable, "--last" }, ctx)
-    if ctx.session_id then
-      table.insert(arguments, "--current-session")
-      table.insert(arguments, ctx.session_id)
-    end
-    local result, err = rex.exec(arguments, { timeout = 15 })
-    if not result then rex.log("debug", tostring(err))
-    elseif not result.ok then rex.log("debug", result.stderr) end
-  end,
+  run = function(ctx) launch(ctx, { executable, "--last" }) end,
 }
 
 rex.bind("cmd+[KeyL]", "resh_last")
