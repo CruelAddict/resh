@@ -227,6 +227,33 @@ struct ConfigurationTests {
         #expect(entries.map(\.path) == [one, two])
         #expect(entries.map(\.kind) == [.project, .directory])
     }
+    @Test func unionHidesProjectWhoseSessionIsOpen() throws {
+        let fixture = try TemporaryDirectory()
+        _ = try fixture.folder("one")
+        let two = try fixture.folder("two")
+        let config = try ReshConfiguration.parse("""
+        [[session]]
+        name = "One"
+        path = "one"
+        [[session]]
+        name = "Two"
+        path = "two"
+        [[sources]]
+        name = "Folders"
+        type = "paths"
+        paths = ["one", "two"]
+        [[sources]]
+        name = "All"
+        type = "union"
+        sources = ["Sessions", "Projects", "Folders"]
+        """, directory: fixture.url)
+        let sessions = [Candidate(id: "session:1", kind: .session, title: "One", sessionID: "session:1")]
+        let loader = SourceLoader(tools: tools)
+        let entries = try loader.load(.all, configuration: config, sessions: sessions).entries
+        #expect(entries.map(\.id) == ["session:1", "project:" + two])
+        let available = loader.availableEntries(.all, configuration: config, sessions: sessions)
+        #expect(available.map(\.id) == ["session:1", "project:" + two])
+    }
     @Test func configLocationHonorsEnvironment() {
         #expect(ConfigurationFile.url(environment: ["RESH_CONFIG":"/custom/a.toml"]).path == "/custom/a.toml")
         #expect(ConfigurationFile.url(environment: ["XDG_CONFIG_HOME":"/custom"]).path == "/custom/resh/config.toml")

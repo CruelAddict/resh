@@ -24,7 +24,7 @@ public struct SourceLoader: Sendable {
         case .union:
             var seen = Set<String>()
             return source.members.flatMap { availableEntries($0, configuration: configuration, sessions: sessions, snapshots: snapshots, agents: agents) }
-                .filter { seen.insert($0.deduplicationID).inserted }
+                .filter { Self.claim($0, &seen) }
         default: return snapshots[id] ?? []
         }
     }
@@ -46,7 +46,7 @@ public struct SourceLoader: Sendable {
                 let part = try load(member, configuration: configuration, sessions: sessions, agents: agents)
                 result.warnings += part.warnings
                 result.snapshots.merge(part.snapshots) { _, latest in latest }
-                result.entries += part.entries.filter { seen.insert($0.deduplicationID).inserted }
+                result.entries += part.entries.filter { Self.claim($0, &seen) }
             }
             return result
         case .paths: return SourceResult(entries: try candidates(source.paths, configuration: configuration))
@@ -81,6 +81,12 @@ public struct SourceLoader: Sendable {
         }
         guard lines.count <= 20_000 else { throw ReshError("\(source.name) returned more than 20,000 paths.") }
         return SourceResult(entries: try candidates(lines, configuration: configuration))
+    }
+    private static func claim(_ candidate: Candidate, _ seen: inout Set<String>) -> Bool {
+        let keys = candidate.deduplicationKeys
+        guard seen.isDisjoint(with: keys) else { return false }
+        seen.formUnion(keys)
+        return true
     }
     private func commandError(_ result: CommandResult, source: SourceDefinition) -> ReshError {
         let message = String(decoding: result.stderr.prefix(1000), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
