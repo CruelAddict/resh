@@ -45,7 +45,13 @@ public struct Candidate: Identifiable, Hashable, Codable, Sendable {
     public var displayTitle: String {
         kind == .directory ? path.map { host == nil ? PathIdentity.shortenHome($0) : $0 } ?? title : title
     }
-    public var deduplicationID: String { path.map { Self.identity("path:" + $0, host: host) } ?? id }
+    /// A union drops a row when any of its keys was already listed. Open sessions have no path,
+    /// so a project also claims the session label it opens (ReshService reuses a session by label).
+    public var deduplicationKeys: [String] {
+        var keys = [path.map { Self.identity("path:" + $0, host: host) } ?? id]
+        if kind == .session || kind == .project { keys.append(Self.identity("session-label:" + title, host: host)) }
+        return keys
+    }
     public static func identity(_ id: String, host: RexHost?) -> String { host.map { $0.id + "/" + id } ?? id }
     // Search only the row's primary text, without its metadata.
     public var searchText: String { agent?.title ?? displayTitle }
