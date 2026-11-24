@@ -7,7 +7,6 @@ Usage: resh setup [options]
   --config FILE       Rex config file (required for a custom server config)
   --yes               Apply changes without prompting
   --executable FILE   Selected resh command (supplied by resh)
-  --remote            Configure the remote folder-source adapter
 
 Rex may be closed. Setup asks for confirmation and backs up changed configuration.
 EOF
@@ -17,9 +16,12 @@ say() { printf '%s\n' "$*"; }
 die() { printf 'resh: %s\n' "$*" >&2; exit 1; }
 
 parse_options() {
+    if [[ ${1:-} == --adapter ]]; then
+        [[ -n ${2:-} ]] || die 'Missing value for --adapter'
+        adapter=$2; shift 2
+    fi
     while (( $# > 0 )); do
         case "$1" in
-            --remote) is_remote_setup=true; shift ;;
             --yes) is_confirmed=true; shift ;;
             --executable|--source|--config)
                 [[ $# -ge 2 && -n $2 ]] || die "Missing value for $1"
@@ -52,7 +54,7 @@ resolve_config_path() {
 configure_environment() {
     local platform
     platform=$(uname -s)
-    [[ $is_remote_setup == true || $platform == Darwin ]] || die 'resh requires macOS. Use --remote on a remote Rex host.'
+    [[ -n $adapter || $platform == Darwin ]] || die 'resh requires macOS. Use bash install.sh --remote on a remote Rex host.'
     export PATH="${PATH:-/usr/bin:/bin}:/opt/homebrew/bin:/usr/local/bin"
     unset REX_SESSION REX_BLOCK REX_CLIENT REX_SERVER
     case "$config" in
@@ -72,10 +74,10 @@ configure_environment() {
     fi
     [[ -n $rex_bin && -x $rex_bin ]] || die 'Rex CLI not found. Install Rex first, or set RESH_REX_BIN.'
     rex_command=("$rex_bin" --autostart=false --timeout 40s)
-    if [[ $is_remote_setup == true ]]; then
+    if [[ -n $adapter ]]; then
         marker=remote
         module="${XDG_DATA_HOME:-$HOME/.local/share}/resh/rex-actions.lua"
-        [[ $module == /* && -f $source ]] || die 'Missing remote adapter or invalid data directory.'
+        [[ $module == /* && -f $adapter ]] || die 'Missing remote adapter or invalid data directory.'
     elif [[ -n $source ]]; then
         [[ -x $source/resh && -d $source/resh_Resh.bundle ]] || die 'Missing prebuilt picker.'
         executable="$HOME/.local/bin/resh"
@@ -133,7 +135,7 @@ unchanged() {
 prepare_rex_config() {
     {
         say "-- >>> $marker >>>"
-        if [[ $is_remote_setup == true ]]; then
+        if [[ -n $adapter ]]; then
             printf 'assert(loadfile(%s))(%s)\n' "$(lua_quote "$module")" "$(lua_quote "$tools_reference")"
         else
             local quoted_executable
@@ -284,8 +286,8 @@ cleanup() {
 }
 
 main() {
-    is_remote_setup=false is_confirmed=false is_config_explicit=false
-    config="" executable="" source="" marker=resh
+    is_confirmed=false is_config_explicit=false
+    config="" executable="" source="" adapter="" marker=resh
     targets=() stages=()
     work="" pending_file=""
     is_config_applied=false is_setup_complete=false is_reload_attempted=false
@@ -301,11 +303,11 @@ main() {
     prepare_rex_config
     local changed=false
     cmp -s "$work/config.before" "$work/config.after" || changed=true
-    if [[ $changed == true || -n $source ]]; then
+    if [[ $changed == true || -n $source || -n $adapter ]]; then
         if ! confirm_setup "$changed"; then return 0; fi
     fi
-    if [[ $is_remote_setup == true ]]; then
-        install_entry "$source" "$module"
+    if [[ -n $adapter ]]; then
+        install_entry "$adapter" "$module"
     elif [[ -n $source ]]; then
         local destination="$HOME/Library/Application Support/resh"
         install_entry "$source/resh" "$destination/resh"

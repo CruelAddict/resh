@@ -142,7 +142,7 @@ main() {
         local module_source="$source_dir/rex-actions.lua"
         [[ -f $module_source ]] || module_source="$source_dir/integration/rex-actions.lua"
         [[ -r $module_source ]] || die 'Missing rex-actions.lua in the distribution.'
-        bash "$setup_script" --remote --source "$module_source" ${setup_options[@]+"${setup_options[@]}"}
+        bash "$setup_script" --adapter "$module_source" ${setup_options[@]+"${setup_options[@]}"}
     else
         local bundle=$source_dir
         [[ -f $bundle/resh ]] || bundle="$source_dir/dist/resh"
