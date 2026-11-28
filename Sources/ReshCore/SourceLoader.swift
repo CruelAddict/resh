@@ -1,9 +1,8 @@
 import Foundation
 
 public struct SourceResult: Sendable {
-    public var entries: [Candidate] = []
     public var warnings: [String] = []
-    public var snapshots: [SearchScope: [Candidate]] = [:]
+    public var entriesBySource: [SearchScope: [Candidate]] = [:]
 }
 
 /// Providers run off the main actor. Their output is data, never shell input.
@@ -15,60 +14,67 @@ public struct SourceLoader: Sendable {
     }
     /// Already available rows can be displayed while filesystem providers run.
     public func availableEntries(_ id: SearchScope, configuration: ReshConfiguration, sessions: [Candidate],
-                                 snapshots: [SearchScope: [Candidate]] = [:], agents: [Candidate] = []) -> [Candidate] {
+                                 entriesBySource: [SearchScope: [Candidate]] = [:], remoteEntriesBySource: [[SearchScope: [Candidate]]] = [],
+                                 agents: [Candidate] = []) -> [Candidate] {
         guard let source = configuration.source(id) else { return [] }
-        switch source.kind {
-        case .sessions: return sessions
-        case .agents: return agents
-        case .projects: return configuration.projects.map(\.candidate)
-        case .union:
-            var seen = Set<String>()
-            return source.members.flatMap { availableEntries($0, configuration: configuration, sessions: sessions, snapshots: snapshots, agents: agents) }
-                .filter { seen.insert($0.deduplicationID).inserted }
-        default: return snapshots[id] ?? []
+        func entries(_ source: SourceDefinition) -> [Candidate] {
+            switch source.kind {
+            case .sessions: return sessions
+            case .agents: return agents
+            case .projects: return configuration.projects.map(\.candidate)
+            default:
+                var rows = entriesBySource[source.id] ?? []
+                for remote in remoteEntriesBySource {
+                    if let extra = remote[source.id] { rows += extra }
+                }
+                return rows
+            }
         }
+        guard source.kind == .union else { return entries(source) }
+        return unionEntries(configuration.flattenedSources(source).flatMap(entries))
     }
-    public func load(_ id: SearchScope, configuration: ReshConfiguration, sessions: [Candidate], agents: [Candidate] = []) throws -> SourceResult {
-        var result = try loadSource(id, configuration: configuration, sessions: sessions, agents: agents)
-        if configuration.source(id)?.kind != .union { result.snapshots[id] = result.entries }
+    public func loadSources(_ id: SearchScope, configuration: ReshConfiguration) throws -> SourceResult {
+        guard let source = configuration.source(id) else { throw ReshError("Unknown source: \(id.rawValue)") }
+        var result = SourceResult()
+        for leaf in configuration.flattenedSources(source) {
+            try Task.checkCancellation()
+            try load(leaf, configuration: configuration, into: &result)
+        }
         return result
     }
-    private func loadSource(_ id: SearchScope, configuration: ReshConfiguration, sessions: [Candidate], agents: [Candidate]) throws -> SourceResult {
-        try Task.checkCancellation()
-        guard let source = configuration.source(id) else { throw ReshError("Unknown source: \(id.rawValue)") }
+    private func load(_ source: SourceDefinition, configuration: ReshConfiguration, into result: inout SourceResult) throws {
         switch source.kind {
-        case .sessions: return SourceResult(entries: sessions)
-        case .agents: return SourceResult(entries: agents)
-        case .projects: return SourceResult(entries: configuration.projects.map(\.candidate))
-        case .union:
-            var result = SourceResult(), seen = Set<String>()
-            for member in source.members {
-                let part = try load(member, configuration: configuration, sessions: sessions, agents: agents)
-                result.warnings += part.warnings
-                result.snapshots.merge(part.snapshots) { _, latest in latest }
-                result.entries += part.entries.filter { seen.insert($0.deduplicationID).inserted }
-            }
-            return result
-        case .paths: return SourceResult(entries: try candidates(source.paths, configuration: configuration))
+        case .sessions, .agents, .projects, .union: break
+        case .paths: result.entriesBySource[source.id] = try candidates(source.paths, configuration: configuration)
         case .zoxide:
-            guard let zoxide = tools.zoxide else { return SourceResult() }
-            let result = try runner.run(zoxide, ["query", "-l"], timeout: source.timeout, directory: source.cwd)
-            guard result.status == 0 else { return SourceResult(warnings: [commandError(result, source: source).message]) }
-            return SourceResult(entries: try candidates(result.text.split(separator: "\n").prefix(20_000).map(String.init), configuration: configuration))
+            guard let zoxide = tools.zoxide else { return }
+            let output = try runner.run(zoxide, ["query", "-l"], timeout: source.timeout, directory: source.cwd)
+            guard output.status == 0 else { result.warnings.append(commandError(output, source: source).message); return }
+            result.entriesBySource[source.id] = try candidates(output.text.split(separator: "\n").prefix(20_000).map(String.init), configuration: configuration)
         case .find:
-            guard let fd = tools.fd else { return SourceResult() }
-            let result = try runner.run(fd, ["-H", "-d", "2", "-t", "d", "-E", ".Trash", "--print0", ".",
+            guard let fd = tools.fd else { return }
+            let output = try runner.run(fd, ["-H", "-d", "2", "-t", "d", "-E", ".Trash", "--print0", ".",
                 FileManager.default.homeDirectoryForCurrentUser.path], timeout: source.timeout, directory: nil)
-            let paths = result.text.split(separator: "\0").prefix(20_000).map(String.init)
-            return SourceResult(entries: try candidates(paths, configuration: configuration),
-                warnings: result.status == 0 ? [] : [commandError(result, source: source).message])
+            let paths = output.text.split(separator: "\0").prefix(20_000).map(String.init)
+            result.entriesBySource[source.id] = try candidates(paths, configuration: configuration)
+            if output.status != 0 { result.warnings.append(commandError(output, source: source).message) }
         case .command:
             let executable = try resolve(source.command[0], cwd: source.cwd)
-            return try command(executable, Array(source.command.dropFirst()), source: source, configuration: configuration)
+            result.entriesBySource[source.id] = try command(executable, Array(source.command.dropFirst()), source: source, configuration: configuration)
+        }
+    }
+    private func unionEntries(_ entries: [Candidate]) -> [Candidate] {
+        var sessionNames: [String?: Set<String>] = [:], seen = Set<String>()
+        for entry in entries where entry.kind == .session {
+            sessionNames[entry.host?.id, default: []].insert(entry.title)
+        }
+        return entries.filter {
+            if $0.kind == .project, sessionNames[$0.host?.id]?.contains($0.title) == true { return false }
+            return seen.insert($0.deduplicationID).inserted
         }
     }
     private func command(_ executable: String, _ arguments: [String], source: SourceDefinition,
-                         configuration: ReshConfiguration) throws -> SourceResult {
+                         configuration: ReshConfiguration) throws -> [Candidate] {
         let result = try runner.run(executable, arguments, timeout: source.timeout, directory: source.cwd)
         guard result.status == 0 else { throw commandError(result, source: source) }
         guard let text = String(data: result.stdout, encoding: .utf8), !text.contains("\0") else {
@@ -80,7 +86,7 @@ public struct SourceLoader: Sendable {
             return expanded.hasPrefix("/") ? expanded : URL(fileURLWithPath: source.cwd).appendingPathComponent(expanded).path
         }
         guard lines.count <= 20_000 else { throw ReshError("\(source.name) returned more than 20,000 paths.") }
-        return SourceResult(entries: try candidates(lines, configuration: configuration))
+        return try candidates(lines, configuration: configuration)
     }
     private func commandError(_ result: CommandResult, source: SourceDefinition) -> ReshError {
         let message = String(decoding: result.stderr.prefix(1000), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)

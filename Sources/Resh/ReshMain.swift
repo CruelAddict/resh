@@ -438,11 +438,11 @@ struct ReshMain {
                         let app = try await service.resolveClient()
                         defer { connection.stop() }
                         let snapshot = try connection.snapshot(target: RexTarget(clientID: app.id, server: target.server))
-                        let folders = try SourceLoader(tools: tools).load(.directories, configuration: .defaults, sessions: [])
+                        let folders = try SourceLoader(tools: tools).loadSources(.directories, configuration: .defaults)
                         let theme = try RexTheme.read(rexApp: tools.rexApp,
                             systemIsDark: UserDefaults.standard.string(forKey: "AppleInterfaceStyle") == "Dark")
                         let result: [String: Any] = ["rex": tools.rex, "client": app.id, "server": target.server,
-                            "sessions": snapshot.sessions.count, "directories": folders.entries.count,
+                            "sessions": snapshot.sessions.count, "directories": folders.entriesBySource[.directories]?.count ?? 0,
                             "theme": theme.name, "glass": theme.usesGlass, "warnings": folders.warnings]
                         let data = try JSONSerialization.data(withJSONObject: result, options: [.prettyPrinted, .sortedKeys])
                         FileHandle.standardOutput.write(data); print("")

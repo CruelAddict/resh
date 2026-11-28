@@ -36,7 +36,8 @@ final class SearchModel: ObservableObject {
     private var sessionSnapshot: [Candidate] = []
     private var agentSnapshot: [Candidate] = []
     private var sessionRanks: [String: Int] = [:]
-    private var sourceSnapshots: [SearchScope: [Candidate]] = [:]
+    private var localEntriesBySource: [SearchScope: [Candidate]] = [:]
+    private var entriesRevision = 0
     private var hostSessions: [String: [Candidate]] = [:]
     private var hostSources: [String: [SearchScope: [Candidate]]] = [:]
     private var hostFunctions: [String: Set<String>] = [:]
@@ -305,7 +306,7 @@ final class SearchModel: ObservableObject {
         isOpening = false
         isLoading = loadingTask != nil
         onRetryOpening = nil
-        if isConfigurationReady, configuration.source(scope)?.kind != .sessions { load(keepingSnapshots: true) }
+        if isConfigurationReady, configuration.source(scope)?.kind != .sessions { load(keepingSourceEntries: true) }
         watchFocus(updateCurrent: currentSessionID == nil)
     }
 
@@ -337,7 +338,7 @@ final class SearchModel: ObservableObject {
         sessionSnapshot = []; sessionRanks = [:]; search = FuzzyMatcher([])
         pinnedSessionIDs = []; currentSessionID = nil; currentCandidateID = nil
         observedFocus = nil; pendingCreation = nil
-        sourceSnapshots = [:]
+        localEntriesBySource = [:]
         rexAppPID = nil
         diagnostics = [:]
         keymapError = nil
@@ -418,7 +419,10 @@ final class SearchModel: ObservableObject {
         reportDiagnostic(nil, source: "source")
     }
 
-    private func refreshEntries() {
+    private var remoteEntriesBySource: [[SearchScope: [Candidate]]] { hosts.compactMap { hostSources[$0.id] } }
+
+    private func refreshEntries(reusing prepared: FuzzyMatcher? = nil) {
+        entriesRevision += 1
         guard configurationError == nil else {
             search = FuzzyMatcher([])
             updateResults()
@@ -426,7 +430,8 @@ final class SearchModel: ObservableObject {
         }
         let workingBlocks = attention.workingBlockIDs
         let remoteWorkingBlocks = hostAttention.mapValues(\.workingBlockIDs)
-        let agents = allSessions.flatMap { session in
+        let sessions = allSessions
+        let agents = sessions.flatMap { session in
             RexAgent.panes(in: session.host.map { hostAttentionRecords[$0.id] ?? [] } ?? attentionRecords, session: session,
                 workingBlockIDs: session.host.map { remoteWorkingBlocks[$0.id] ?? [] } ?? workingBlocks)
         }
@@ -447,17 +452,21 @@ final class SearchModel: ObservableObject {
             else { load() }
             return
         }
-        let selectedID = selected?.id, previousSelection = selection
-        var snapshots = sourceSnapshots
-        for host in hosts {
-            for (source, entries) in hostSources[host.id] ?? [:] { snapshots[source, default: []] += entries }
-        }
         let entries = SourceLoader(tools: tools).availableEntries(scope,
-            configuration: configuration, sessions: allSessions, snapshots: snapshots, agents: agentSnapshot)
-        if entries != search.entries {
+            configuration: configuration, sessions: sessions, entriesBySource: localEntriesBySource, remoteEntriesBySource: remoteEntriesBySource, agents: agentSnapshot)
+        if let prepared, entries == prepared.entries {
+            applySearch(prepared)
+        } else if entries != search.entries {
             DebugLog.shared.record("\(scope.rawValue): \(entries.count) entries from \(hosts.count + 1) hosts", source: "results")
-            search = FuzzyMatcher(entries, reusing: search)
+            applySearch(FuzzyMatcher(entries, reusing: prepared ?? search))
+        } else {
+            applySearch(search)
         }
+    }
+
+    private func applySearch(_ matcher: FuzzyMatcher) {
+        let selectedID = selected?.id, previousSelection = selection
+        search = matcher
         updateResults()
         selection = selectedID.flatMap { id in results.firstIndex { $0.id == id } }
             ?? min(previousSelection, max(0, results.count - 1))
@@ -645,18 +654,18 @@ final class SearchModel: ObservableObject {
             remoteTasks[host.id] = Task {
                 let worker = Task.detached { () throws -> (Set<String>, [SearchScope: [Candidate]], [String]) in
                     let functions = try cached ?? remote.functions()
-                    var snapshots: [SearchScope: [Candidate]] = [:], warnings: [String] = []
+                    var entriesBySource: [SearchScope: [Candidate]] = [:], warnings: [String] = []
                     for (id, function) in sources where functions.contains(function) {
                         try Task.checkCancellation()
                         do {
                             guard functions.contains("resolve") else { throw ReshError("resh integration is missing resolve.") }
-                            snapshots[id] = try remote.paths(function: function, host: host)
+                            entriesBySource[id] = try remote.paths(function: function, host: host)
                         } catch {
                             if error is CancellationError { throw error }
                             warnings.append("\(function): \(error.localizedDescription)")
                         }
                     }
-                    return (functions, snapshots, warnings)
+                    return (functions, entriesBySource, warnings)
                 }
                 do {
                     let result = try await withTaskCancellationHandler(operation: { try await worker.value }, onCancel: { worker.cancel() })
@@ -679,11 +688,11 @@ final class SearchModel: ObservableObject {
 
     private func updateRemoteLoading() { isRemoteLoading = hostsTask != nil || !remoteTasks.isEmpty || !pendingHosts.isEmpty }
 
-    private func load(refreshSessions: Bool = false, keepingSnapshots: Bool = false) {
+    private func load(refreshSessions: Bool = false, keepingSourceEntries: Bool = false) {
         guard isConfigurationReady else { return }
         generation += 1
         loadingTask?.cancel()
-        if !keepingSnapshots { sourceSnapshots = [:]; hostSources = [:] }
+        if !keepingSourceEntries { localEntriesBySource = [:]; hostSources = [:] }
         let request = generation
         error = keymapError
         showAvailableEntries()
@@ -714,18 +723,29 @@ final class SearchModel: ObservableObject {
                     }
                     showAvailableEntries()
                 }
-                let loader = SourceLoader(tools: tools, runner: sourceRunner), sessions = sessionSnapshot, agents = agentSnapshot
+                let loader = SourceLoader(tools: tools, runner: sourceRunner)
                 let source = scope, configuration = configuration
-                let worker = Task.detached {
-                    let result = try loader.load(source, configuration: configuration, sessions: sessions, agents: agents)
-                    return (FuzzyMatcher(result.entries), result)
+                let loadTask = Task.detached {
+                    let result = try loader.loadSources(source, configuration: configuration)
+                    // Providers can be slow. Capture the live rows after they finish, just before indexing.
+                    let (revision, sessions, agents, remote) = try await MainActor.run {
+                        guard self.generation == request else { throw CancellationError() }
+                        return (self.entriesRevision, self.allSessions, self.agentSnapshot, self.remoteEntriesBySource)
+                    }
+                    let entries = loader.availableEntries(source, configuration: configuration, sessions: sessions,
+                        entriesBySource: result.entriesBySource, remoteEntriesBySource: remote, agents: agents)
+                    return (providers: result, matcher: FuzzyMatcher(entries), revision: revision)
                 }
-                let result = try await withTaskCancellationHandler(operation: { try await worker.value }, onCancel: { worker.cancel() })
+                let result = try await withTaskCancellationHandler(operation: { try await loadTask.value }, onCancel: { loadTask.cancel() })
                 guard generation == request else { return }
-                search = result.0
-                sourceSnapshots = result.1.snapshots
-                reportDiagnostic(result.1.warnings.isEmpty ? nil : ReshError(result.1.warnings.joined(separator: "\n")), source: "source")
-                refreshEntries()
+                localEntriesBySource = result.providers.entriesBySource
+                reportDiagnostic(result.providers.warnings.isEmpty ? nil : ReshError(result.providers.warnings.joined(separator: "\n")), source: "source")
+                if scope == source, entriesRevision == result.revision {
+                    applySearch(result.matcher)
+                } else {
+                    // A live update arrived during indexing. Keep it and reuse the keys for the loaded rows.
+                    refreshEntries(reusing: result.matcher)
+                }
             } catch {
                 guard generation == request else { return }
                 if !(error is CancellationError) { reportDiagnostic(error, source: "source:\(scope.rawValue)") }
