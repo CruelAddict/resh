@@ -49,7 +49,9 @@ struct ConfigurationTests {
         #expect(map.diagnostics(sources: Set(config.sources.map(\.id))).isEmpty)
         #expect(input.handle(code: 13, character: "w", modifiers: 2) == .action(.scope(config.initialSource)))
         #expect(map.label(for: config.initialSource) == "⌃W")
-        let entries = try SourceLoader(tools: tools).load(config.initialSource, configuration: config, sessions: []).entries
+        let loader = SourceLoader(tools: tools)
+        let result = try loader.loadSources(config.initialSource, configuration: config)
+        let entries = loader.availableEntries(config.initialSource, configuration: config, sessions: [], entriesBySource: result.entriesBySource)
         #expect(entries.count == 1)
         #expect(entries.first?.displayTitle == "Backend")
         #expect(entries.first?.path == path)
@@ -204,8 +206,9 @@ struct ConfigurationTests {
         cwd = "."
         command = ["/usr/bin/printf", "%s\\n", '\(weird)', '\(weird)/.', 'missing']
         """, directory: fixture.url)
-        let result = try SourceLoader(tools: tools).load(.init(rawValue: "Custom"), configuration: config, sessions: [])
-        #expect(result.entries.map(\.path) == [path])
+        let source = SearchScope(rawValue: "Custom")
+        let result = try SourceLoader(tools: tools).loadSources(source, configuration: config)
+        #expect(result.entriesBySource[source]?.map(\.path) == [path])
     }
     @Test func unionPreservesSourcePriorityAndPathOrder() throws {
         let fixture = try TemporaryDirectory()
@@ -223,9 +226,30 @@ struct ConfigurationTests {
         type = "union"
         sources = ["Projects", "Work folders"]
         """, directory: fixture.url)
-        let entries = try SourceLoader(tools: tools).load(.all, configuration: config, sessions: []).entries
+        let loader = SourceLoader(tools: tools)
+        let result = try loader.loadSources(.all, configuration: config)
+        let entries = loader.availableEntries(.all, configuration: config, sessions: [], entriesBySource: result.entriesBySource)
         #expect(entries.map(\.path) == [one, two])
         #expect(entries.map(\.kind) == [.project, .directory])
+    }
+    @Test func unionPrefersOpenSessionsToMatchingProjects() throws {
+        let config = try ReshConfiguration.parse("""
+        [[session]]
+        name = "Work"
+        path = "work"
+        [[sources]]
+        name = "All"
+        type = "union"
+        sources = ["Projects", "Sessions"]
+        """)
+        let loader = SourceLoader(tools: tools)
+        let sessions = ["a", "b"].map { RexSession(sessionID: $0, label: "Work") }
+        let local = ReshService.candidates(from: sessions)
+        let host = RexHost(id: "build", label: "Build", endpoints: ["https://build.example"])
+        let remote = ReshService.candidates(from: sessions, host: host)
+        for (sessions, expected) in [(local, local), (remote, config.projects.map(\.candidate) + remote)] {
+            #expect(loader.availableEntries(.all, configuration: config, sessions: sessions) == expected)
+        }
     }
     @Test func configLocationHonorsEnvironment() {
         #expect(ConfigurationFile.url(environment: ["RESH_CONFIG":"/custom/a.toml"]).path == "/custom/a.toml")

@@ -37,6 +37,19 @@ public struct ReshConfiguration: Equatable, Sendable {
     public static let defaults: Self = try! parse("")
 
     public func source(_ id: SearchScope) -> SourceDefinition? { sources.first { $0.id == id } }
+    /// Expand nested unions in source order; a shared provider is visited only once.
+    func flattenedSources(_ root: SourceDefinition) -> [SourceDefinition] {
+        guard root.kind == .union else { return [root] }
+        var leaves: [SourceDefinition] = [], seen = Set<SearchScope>()
+        func visit(_ node: SourceDefinition) {
+            guard seen.insert(node.id).inserted else { return }
+            if node.kind == .union {
+                for id in node.members { if let member = source(id) { visit(member) } }
+            } else { leaves.append(node) }
+        }
+        visit(root)
+        return leaves
+    }
     public func project(at path: String) -> ProjectDefinition? {
         let canonical = PathIdentity.canonical(path)
         return projects.first { $0.path == canonical }
